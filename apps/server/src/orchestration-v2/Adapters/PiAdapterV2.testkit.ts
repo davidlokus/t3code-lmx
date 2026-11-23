@@ -3,6 +3,7 @@ import {
   ProviderReplayEntry,
   ProviderInstanceId,
   type ResolvedProviderInstanceEnvironment,
+  type ProviderDriverKind,
   type ProviderReplayTranscript,
   type ProviderReplayEntry as ProviderReplayEntryType,
 } from "@t3tools/contracts";
@@ -20,21 +21,21 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
-import { PI_PROVIDER, PiAdapterV2Driver } from "@t3tools/provider-pi/server";
+import { PiAdapterV2Driver } from "@t3tools/provider-pi/server";
 
 export const PI_RPC_REPLAY_PROTOCOL = "pi.rpc-jsonl";
+export const OMP_RPC_REPLAY_PROTOCOL = "omp.rpc-jsonl"; // fork:
 export const PI_REPLAY_ANY = "<any>";
 
-const PiRpcReplayTranscript = Schema.Struct({
-  provider: Schema.Literal(PI_PROVIDER),
-  protocol: Schema.Literal(PI_RPC_REPLAY_PROTOCOL),
-  version: Schema.String,
-  scenario: Schema.String,
-  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  entries: Schema.Array(ProviderReplayEntry),
-});
-type PiRpcReplayTranscript = typeof PiRpcReplayTranscript.Type;
-const decodePiRpcReplayTranscript = Schema.decodeUnknownEffect(PiRpcReplayTranscript);
+const rpcReplayTranscript = (driver: ProviderDriverKind, protocol: string) =>
+  Schema.Struct({
+    provider: Schema.Literal(driver),
+    protocol: Schema.Literal(protocol),
+    version: Schema.String,
+    scenario: Schema.String,
+    metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    entries: Schema.Array(ProviderReplayEntry),
+  });
 
 class PiReplayTranscriptDecodeError extends Schema.TaggedError<PiReplayTranscriptDecodeError>()(
   "PiReplayTranscriptDecodeError",
@@ -189,9 +190,9 @@ class PiReplayController {
   private readonly held: Array<{ readonly process: PiReplayProcess; readonly actual: unknown }> =
     [];
   private readonly processes: Array<PiReplayProcess> = [];
-  private readonly transcript: PiRpcReplayTranscript;
+  private readonly transcript: ProviderReplayTranscript;
 
-  constructor(transcript: PiRpcReplayTranscript) {
+  constructor(transcript: ProviderReplayTranscript) {
     this.transcript = transcript;
   }
 
@@ -363,23 +364,27 @@ function makePiReplaySpawner(
 
 export function layer<E, R>(input: {
   readonly scenario: string;
+  readonly adapterDriver?: typeof PiAdapterV2Driver; // fork:
   readonly spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner, E, R>;
   readonly binaryPath: string;
   readonly launchArgs: string;
   readonly environment?: ResolvedProviderInstanceEnvironment;
 }) {
+  const adapterDriver = input.adapterDriver ?? PiAdapterV2Driver;
   return ProviderAdapterRegistry.layerFromAdaptersEffect(
-    PiAdapterV2Driver.create({
-      instanceId: ProviderInstanceId.make(PI_PROVIDER),
-      environment: input.environment ?? [],
-      displayName: undefined,
-      enabled: true,
-      config: {
-        ...PiAdapterV2Driver.defaultConfig(),
-        binaryPath: input.binaryPath,
-        launchArgs: input.launchArgs,
-      },
-    }).pipe(Effect.map((adapter) => [adapter])),
+    adapterDriver
+      .create({
+        instanceId: ProviderInstanceId.make(adapterDriver.driverKind),
+        environment: input.environment ?? [],
+        displayName: undefined,
+        enabled: true,
+        config: {
+          ...adapterDriver.defaultConfig(),
+          binaryPath: input.binaryPath,
+          launchArgs: input.launchArgs,
+        },
+      })
+      .pipe(Effect.map((adapter) => [adapter])),
   ).pipe(
     Layer.provide(input.spawner),
     Layer.provide(
@@ -392,43 +397,55 @@ export function layer<E, R>(input: {
   );
 }
 
-function metadataString(transcript: PiRpcReplayTranscript, key: string): string {
+function metadataString(transcript: ProviderReplayTranscript, key: string): string {
   const value = transcript.metadata?.[key];
   return typeof value === "string" ? value : "";
 }
 
-export const PiOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
-  PiRpcReplayTranscript,
-  PiOrchestratorReplayHarnessError
-> = {
-  driver: PI_PROVIDER,
-  decodeTranscript: (transcript: ProviderReplayTranscript) =>
-    decodePiRpcReplayTranscript(transcript).pipe(
-      Effect.mapError(
-        (cause) =>
-          new PiReplayTranscriptDecodeError({
-            driver: transcript.provider,
-            protocol: transcript.protocol,
-            scenario: transcript.scenario,
-            cause,
+export function makeRpcReplayHarness(
+  adapterDriver: typeof PiAdapterV2Driver,
+  protocol: string,
+  binaryPath: string,
+): OrchestratorV2ProviderReplayHarness<ProviderReplayTranscript, PiOrchestratorReplayHarnessError> {
+  const driver = adapterDriver.driverKind;
+  const decode = Schema.decodeUnknownEffect(rpcReplayTranscript(driver, protocol));
+  return {
+    driver,
+    decodeTranscript: (transcript) =>
+      decode(transcript).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PiReplayTranscriptDecodeError({
+              driver: transcript.provider,
+              protocol: transcript.protocol,
+              scenario: transcript.scenario,
+              cause,
+            }),
+        ),
+      ),
+    makeProviderAdapterRegistryLayer: (transcript) =>
+      layer({
+        scenario: transcript.scenario,
+        adapterDriver,
+        binaryPath,
+        launchArgs: metadataString(transcript, "launchArgs"),
+        spawner: Layer.effect(
+          ChildProcessSpawner.ChildProcessSpawner,
+          Effect.gen(function* () {
+            const controller = new PiReplayController(transcript);
+            yield* Effect.addFinalizer(() => Effect.sync(() => controller.assertComplete()));
+            return makePiReplaySpawner(controller);
           }),
-      ),
-    ),
-  makeProviderAdapterRegistryLayer: (transcript) =>
-    layer({
-      scenario: transcript.scenario,
-      binaryPath: "pi",
-      launchArgs: metadataString(transcript, "launchArgs"),
-      spawner: Layer.effect(
-        ChildProcessSpawner.ChildProcessSpawner,
-        Effect.gen(function* () {
-          const controller = new PiReplayController(transcript);
-          yield* Effect.addFinalizer(() => Effect.sync(() => controller.assertComplete()));
-          return makePiReplaySpawner(controller);
-        }),
-      ),
-    }),
-};
+        ),
+      }),
+  };
+}
+
+export const PiOrchestratorReplayHarness = makeRpcReplayHarness(
+  PiAdapterV2Driver,
+  PI_RPC_REPLAY_PROTOCOL,
+  "pi",
+);
 
 export function makePiRecordingSpawner(
   live: ChildProcessSpawner.ChildProcessSpawner["Service"],

@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { SESSION_UNAVAILABLE_NOTICE } from "@t3tools/shared/forkNotices";
 import * as DateTime from "effect/DateTime";
 
 import {
   resolveWorkEntryToolPresentation,
   toolItemForDisplay,
+  translateForkNotice,
   type WorkLogPresentationEntry,
   workEntryIndicatesToolFailure,
   workEntryDisplayIndicatesToolFailure,
 } from "./presentation.js";
+
+it("localizes only the known fork notice", () => {
+  const translate = () => "Translated";
+  expect(translateForkNotice(SESSION_UNAVAILABLE_NOTICE)).toBe(SESSION_UNAVAILABLE_NOTICE);
+  expect(translateForkNotice(SESSION_UNAVAILABLE_NOTICE, translate)).toBe("Translated");
+  expect(translateForkNotice("Allow once", translate)).toBe("Allow once");
+});
 
 function commandItem(
   fields: Partial<Extract<OrchestrationV2TurnItem, { type: "command_execution" }>> = {},

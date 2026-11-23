@@ -15,6 +15,34 @@
       "types": "./src/server.ts",
       "import": "./src/server.ts"
     },
+    "./server/dialect": {
+      "types": "./src/server/dialect.ts",
+      "import": "./src/server/dialect.ts"
+    },
+    "./server/rpc": {
+      "types": "./src/server/rpc.ts",
+      "import": "./src/server/rpc.ts"
+    },
+    "./server/adapter": {
+      "types": "./src/server/adapter.ts",
+      "import": "./src/server/adapter.ts"
+    },
+    "./server/commands": {
+      "types": "./src/server/commands.ts",
+      "import": "./src/server/commands.ts"
+    },
+    "./server/modelCapabilities": {
+      "types": "./src/server/modelCapabilities.ts",
+      "import": "./src/server/modelCapabilities.ts"
+    },
+    "./server/mcpInjection": {
+      "types": "./src/server/mcpInjection.ts",
+      "import": "./src/server/mcpInjection.ts"
+    },
+    "./server/status": {
+      "types": "./src/server/status.ts",
+      "import": "./src/server/status.ts"
+    },
     "./server/usage": {
       "types": "./src/server/usage.ts",
       "import": "./src/server/usage.ts"

@@ -99,3 +99,4 @@
 | #2 `feat/t3-lab-identity`       | `forkIdentity.ts`、桌面启动与打包、Web 品牌与 CLI 设置、桌面 Origin、`vite.config.ts` boot 内联 | 与官方桌面版并存，隔离数据、命令、入口和更新源                    |
 | #3 `fix/fork-ci-checkout`       | `.github/workflows/fork-ci.yml`                                                                 | 跳过 `.repos/` 孤立 gitlink 并缓存 Playwright Chromium            |
 | #4 `chore/agent-eng-foundation` | `LESSONS.md`、`forkIdentity.guard.test.ts`、`fork/scripts/*`、`fork-release.yml`、`FORK.md`     | 建立教训自进化闭环、代码级隔离守卫测试与 Tag 驱动自动化发版流水线 |
+| `feat/provider-omp`             | `packages/provider-omp`、Pi RPC 方言接口、服务端与客户端注册、版本策略、用户文档                | 原生接入 oh-my-pi，保留其模型、会话和审批，不影响 Pi              |

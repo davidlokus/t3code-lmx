@@ -2,7 +2,7 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 
-import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
+import type { PiDialectLaunch, PiDialectLaunchInput } from "./dialect.ts"; // fork:
 import {
   PI_T3_MCP_EXTENSION_FILENAME,
   PI_T3_MCP_EXTENSION_SOURCE,
@@ -246,23 +246,7 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
   return dest;
 });
 
-export function buildPiRpcLaunch(input: {
-  readonly launchArgs: ReadonlyArray<string>;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly mcpSession: McpProviderSessionConfig | undefined;
-  readonly extensionPath: string | undefined;
-  readonly sessionPath?: string | undefined;
-  readonly ephemeral?: boolean;
-  // T3 stops these processes as soon as they answer. They run --offline because Pi's startup
-  // catalog refresh renews expired OAuth tokens, and a stop mid-request loses the rotated one.
-  readonly shortLived?: boolean;
-  readonly disableExtensions?: boolean;
-  readonly disableTools?: boolean;
-  readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "auto" | "full-access";
-}): {
-  readonly args: ReadonlyArray<string>;
-  readonly env: NodeJS.ProcessEnv;
-} {
+export function buildPiRpcLaunch(input: PiDialectLaunchInput): PiDialectLaunch {
   const hasT3Extension = input.disableExtensions !== true && input.extensionPath !== undefined;
   const hasT3Mcp = hasT3Extension && input.mcpSession !== undefined;
   const extensionSafeArgs =

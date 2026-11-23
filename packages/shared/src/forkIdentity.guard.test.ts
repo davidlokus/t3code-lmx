@@ -84,6 +84,24 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
     }),
   );
 
+  it.effect("keeps the native omp provider registered on the server and clients", () =>
+    Effect.gen(function* () {
+      const drivers = yield* readRepoFile("apps/server/src/provider/builtInDrivers.ts");
+      const driverList = drivers.match(/^export const BUILT_IN_DRIVERS[^=]*=\s*\[([\s\S]*?)^\];/m);
+      assert.match(driverList?.[1] ?? "", /^\s*OmpDriver\s*,/m, "native server driver");
+
+      const clients = yield* readRepoFile("packages/client-runtime/src/providerClients.ts");
+      const clientList = clients.match(
+        /^export const providerClients = makeProviderClientRegistry\(\[([\s\S]*?)^\]\);/m,
+      );
+      assert.match(clientList?.[1] ?? "", /^\s*ompClient\s*,/m, "shared client registration");
+
+      const raw = yield* readRepoFile("apps/server/src/provider/model-manifest.json");
+      const manifest = JSON.parse(raw) as { compatibility: Array<{ driver: string }> };
+      assert.isTrue(manifest.compatibility.some(({ driver }) => driver === "omp"));
+    }),
+  );
+
   it.effect("preserves fork governance files and AGENTS/CLAUDE override wiring", () =>
     Effect.gen(function* () {
       const agents = yield* readRepoFile("AGENTS.md");

@@ -28,6 +28,7 @@ import {
   summarizeToolGroup,
   toolGroupAction,
   toolGroupSummaryKind,
+  translateForkNotice, // fork:
   contextCompactionTokenCounts,
   workEntriesViewedImagePaths,
   type ToolGroupSummaryKind,
@@ -151,7 +152,7 @@ export function workEntryDisplayLabel(
   workspaceRoot: string | undefined,
   resolve: MessageResolver = m,
 ) {
-  if (entry.itemType === "system_notice") return entry.label;
+  if (entry.itemType === "system_notice") return translateForkNotice(entry.label, resolve);
   if (entry.itemType === "reasoning" || entry.tone === "thinking") {
     const thought = entry.detail?.trim().replace(/\s+/g, " ");
     return thought || entry.label;
