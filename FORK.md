@@ -82,10 +82,31 @@
 
 ## 上游同步
 
-1. 选定上游目标：将镜像 `main` 快进到 `upstream/main`，或只拉取 `upstream/main`（`git fetch upstream main`）或稳定标签（`git fetch upstream tag <tag>`）。
-2. 拉取 `origin/lmx-lab`，从它新建 `sync/upstream-<target>` 分支和相邻 worktree。在同步分支运行 `git merge --no-ff <target>`。解决冲突时保留上游原文和独立的 Fork 覆写；核对文末台账并记录本次上游 SHA。
-3. 必跑 `vp test run packages/shared/src/forkIdentity.guard.test.ts`；小范围同步跑 `vp run check:changed origin/lmx-lab`，大范围同步跑 `vp run typecheck` 与受影响 Fork 模块定向测试。
-4. 推送同步分支到 `origin`，向 `lmx-lab` 开 PR，只用 **`--merge`（merge commit）** 合入。
+使用只读预检 + 隔离合并脚本 [fork/scripts/sync-upstream.mjs](fork/scripts/sync-upstream.mjs) 标准化每次上游同步：
+
+1. **只读预检（选定目标点）**：
+   ```bash
+   node fork/scripts/sync-upstream.mjs [upstream/main 或官方标签，如 v0.1.12-nightly.20261123.5138]
+   ```
+   核对 `origin`/`upstream` 指向（`upstream` push URL 必须为 `DISABLE`）、确认目标提交在 `upstream/main` 祖先链上且可快进 `origin/main`、检测新增上游 `.github/workflows/*.yml`、并执行无侵入 `git merge-tree` 冲突预测。
+2. **快进 `origin/main` 镜像并准备隔离同步 worktree**：
+   ```bash
+   node fork/scripts/sync-upstream.mjs <target> --prepare --fast-forward-main
+   ```
+   自动快进 `origin/main` 到目标提交，并从 `origin/lmx-lab` 新建 `sync/upstream-<YYYYMMDD>-<shortsha>` 分支与相邻 worktree，执行 `git merge --no-ff --no-commit <target>`。
+3. **解决冲突与必过门禁**（在同步 worktree 内执行）：
+   - `pnpm-lock.yaml` 若冲突，优先采用上游版本后跑 `vp i` 重新对齐 workspace 依赖。
+   - 保留 `AGENTS.md` 顶部 `FORK-OVERRIDE` 与所有 `// fork:` 钩子，同步更新下方「上游同步基线」表。
+   - 必跑：`vp test run packages/shared/src/forkIdentity.guard.test.ts`、`vp run check:changed origin/lmx-lab`、`vp run i18n:check`；若改动 `apps/desktop/` 或 `forkIdentity.ts`，补跑 `vp test run apps/desktop/scripts/main-process-bundle.test.mjs`。
+4. **提 PR、过 `Fork CI` 并以真 Merge Commit 合入**：
+   - 提交合并、推送 `sync/upstream-*`、向 `davidlokus/t3code-lmx`（`--base lmx-lab`）开 PR 并等待 `Fork CI` 绿灯。
+   - **严禁 `--squash` 或 `rebase`**，必须使用真 merge commit 推进 `merge-base`：
+     ```bash
+     gh pr merge <n> --repo davidlokus/t3code-lmx --merge --match-head-commit <sha> --delete-branch
+     ```
+5. **合并后巡检与清理**：
+   - 若本次同步新增了上游 `.github/workflows/*.yml`，立刻执行 `gh workflow disable <id> -R davidlokus/t3code-lmx` 禁用。
+   - 主目录快进 `lmx-lab` 并 `git worktree remove` 回收同步 worktree。
 
 | 日期       | 上游基线     | 记录         |
 | ---------- | ------------ | ------------ |
@@ -99,4 +120,5 @@
 | #2 `feat/t3-lab-identity`       | `forkIdentity.ts`、桌面启动与打包、Web 品牌与 CLI 设置、桌面 Origin、`vite.config.ts` boot 内联 | 与官方桌面版并存，隔离数据、命令、入口和更新源                    |
 | #3 `fix/fork-ci-checkout`       | `.github/workflows/fork-ci.yml`                                                                 | 跳过 `.repos/` 孤立 gitlink 并缓存 Playwright Chromium            |
 | #4 `chore/agent-eng-foundation` | `LESSONS.md`、`forkIdentity.guard.test.ts`、`fork/scripts/*`、`fork-release.yml`、`FORK.md`     | 建立教训自进化闭环、代码级隔离守卫测试与 Tag 驱动自动化发版流水线 |
-| `feat/provider-omp`             | `packages/provider-omp`、Pi RPC 方言接口、服务端与客户端注册、版本策略、用户文档                | 原生接入 oh-my-pi，保留其模型、会话和审批，不影响 Pi              |
+| #5 `feat/provider-omp`          | `packages/provider-omp`、Pi RPC 方言接口、服务端与客户端注册、版本策略、用户文档                | 原生接入 oh-my-pi，保留其模型、会话和审批，不影响 Pi              |
+| #6 `chore/sync-upstream-tool`   | `fork/scripts/sync-upstream.mjs`、`FORK.md`、`forkIdentity.guard.test.ts`                       | 固化上游同步预检、快进镜像与 `--merge` 隔离同步工作流             |
