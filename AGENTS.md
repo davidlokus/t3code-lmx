@@ -1,3 +1,18 @@
+<!-- FORK-OVERRIDE:START -->
+
+## Fork overrides
+
+- `davidlokus/t3code-lmx` is a personal fork of `pingdotgg/t3code`, branded **T3 Lab (Extend)**.
+- Read [FORK.md](FORK.md) first. If it conflicts with the upstream instructions below, `FORK.md` wins.
+- `origin` is `davidlokus/t3code-lmx`; `upstream` is `pingdotgg/t3code` (read-only, push disabled).
+- Never push to `upstream`. Do not open a PR against `pingdotgg/t3code` unless explicitly asked. For fork PRs, always pass `--repo davidlokus/t3code-lmx --base lmx-lab` to `gh pr create`.
+- `main` is a fast-forward-only mirror of `upstream/main`; `lmx-lab` is the fork's default integration branch. Never commit directly to or force-push either branch.
+- Cut feature branches and worktrees (`../t3code-lmx-<topic>`) from `origin/lmx-lab`. Feature PRs may squash-merge; upstream sync PRs (`sync/upstream-*`) must use a merge commit, never squash or rebase.
+- Run `vp run check:changed origin/lmx-lab` before pushing a feature branch.
+- Never touch live `~/.t3/userdata`.
+
+<!-- FORK-OVERRIDE:END -->
+
 # T3 Code
 
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity, Kiro, Pi, Muse Code, fx) and serves web, desktop, and mobile clients.

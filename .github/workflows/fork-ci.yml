@@ -1,0 +1,64 @@
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [lmx-lab]
+  push:
+    branches: [lmx-lab]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Fork checks
+    if: github.repository == 'davidlokus/t3code-lmx'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Cache Electron download
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install browser test dependencies
+        run: |
+          node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
+          sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Check pull request changes
+        if: github.event_name == 'pull_request'
+        run: vp run check:changed origin/lmx-lab
+
+      - name: Check changes pushed to lmx-lab
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
+            vp run check:changed "$BEFORE_SHA"
+          else
+            vp check
+          fi
+
+      - name: Check checkout on demand
+        if: github.event_name == 'workflow_dispatch'
+        run: vp check
