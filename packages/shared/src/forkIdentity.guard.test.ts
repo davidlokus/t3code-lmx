@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - loads .github/scripts/ci-changes.cjs directly to guard Fork CI scoping.
+import * as NodeModule from "node:module";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -129,6 +132,57 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
       ]) {
         assert.isTrue(yield* repoFileExists(required), `missing required fork file: ${required}`);
       }
+    }),
+  );
+
+  it.effect("keeps OpenSpec tiered workflow, router skill, and CI/fmt isolation intact", () =>
+    Effect.gen(function* () {
+      for (const required of [
+        "openspec/config.yaml",
+        "openspec/schemas/t3lab-light/schema.yaml",
+        "openspec/schemas/t3lab-light/templates/proposal.md",
+        "openspec/schemas/t3lab-light/templates/tasks.md",
+        ".agents/skills/t3lab-dev/SKILL.md",
+        ".agents/skills/t3lab-dev/references/direct-flow.md",
+        ".agents/skills/t3lab-dev/references/light-spec-flow.md",
+        ".agents/skills/t3lab-dev/references/fork-gates.md",
+      ]) {
+        assert.isTrue(
+          yield* repoFileExists(required),
+          `missing required OpenSpec fork file: ${required}`,
+        );
+      }
+
+      const viteConfig = yield* readRepoFile("vite.config.ts");
+      assert.include(
+        viteConfig,
+        '".agents/skills/openspec-*/**"',
+        "vite.config.ts must ignore OpenSpec-generated skills in fmt.ignorePatterns",
+      );
+
+      const require = NodeModule.createRequire(import.meta.url);
+      const ciChanges = require("../../../.github/scripts/ci-changes.cjs") as {
+        readonly readWorkspace: () => ReadonlyArray<unknown>;
+        readonly decide: (
+          files: ReadonlyArray<string>,
+          packages: ReadonlyArray<unknown>,
+          full: boolean,
+        ) => { readonly affected: ReadonlyArray<string> };
+      };
+      const decision = ciChanges.decide(
+        [
+          "openspec/config.yaml",
+          "openspec/changes/demo/proposal.md",
+          ".agents/skills/t3lab-dev/SKILL.md",
+        ],
+        ciChanges.readWorkspace(),
+        false,
+      );
+      assert.deepStrictEqual(
+        decision.affected,
+        [],
+        "openspec/** and .agents/skills/** changes must stay inert in ci-changes.cjs",
+      );
     }),
   );
 });

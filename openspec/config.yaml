@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  - 本仓库是 pingdotgg/t3code 的个人 Fork（davidlokus/t3code-lmx，品牌 T3 Lab (Extend)），默认集成分支 origin/lmx-lab；主规则见 FORK.md 与 LESSONS.md。
+  - 低冲突二开纪律：优先新增独立包、模块或 fork/ 脚本；接入上游代码仅保留最小 // fork: 钩子，不顺手重构无关上游代码。
+  - Spec 边界：openspec/specs/ 仅维护 Fork 自有能力与不变量，不为上游既有 T3 Code 行为编写全量 spec。
+  - 硬性红线：严禁触碰正式版 ~/.t3/userdata；严禁修改或删除继承的上游 .github/workflows/*.yml；桌面端身份隔离集中在 packages/shared/src/forkIdentity.ts。
+  - 编写语言：proposal.md、design.md、tasks.md 使用简体中文；specs/**/*.md 保持规范英文结构关键字（## Purpose、## ADDED/MODIFIED/REMOVED Requirements、### Requirement:、#### Scenario:、SHALL/MUST、WHEN/THEN）以通过 openspec validate --strict。
+
+rules:
+  proposal:
+    - "必须包含「Out of Scope」与「上游同步冲突面」（区分新增独立文件与需加 // fork: 钩子的上游文件）。"
+    - "必须逐项评估多面影响（Web / Desktop / Mobile / Server / Contracts / Providers / i18n），不涉及的显式标 N/A。"
+    - "需求存在次要模糊点时，先做合理假设并集中在「Assumptions」中列出供用户一句纠偏；仅当猜错代价高（架构边界、安全、破坏性兼容）时停下来反问。"
+  design:
+    - "仅在跨包/跨端改动、新增依赖、涉及打包/安全/性能边界或存在非平凡技术权衡时编写；否则说明跳过原因即可。"
+    - "若涉及 apps/desktop 独立打包入口（boot.ts、compileCache.ts、serverCompileCache.ts、preload.ts），必须显式核对 deps.alwaysBundle 与工作区包内联。"
+  tasks:
+    - "每个实现任务组必须自带对应单测或回归守卫，每条 checkbox 都要写明具体验证命令或可观测验收标准。"
+    - "收尾验证组必须包含 vp run check:changed origin/lmx-lab 与 vp test run packages/shared/src/forkIdentity.guard.test.ts；改动文案补 vp run i18n:check；改动桌面启动或打包路径补完整 DMG 构建 + verify-mac-dmg.sh + smoke-desktop-app.ts（禁止设 T3CODE_DESKTOP_UNTRUSTED_BUNDLE=true）。"
+    - "逻辑或缺陷修复任务必须包含「Broken by hand」手工证伪步骤，确认破坏守卫后新测试真正失败。"
+
+operations:
+  apply:
+    guidance:
+      - "[auto / apply.before] 动手前确认当前位于独立功能分支与相邻 worktree（../t3code-lmx-<topic>），绝不直接提交到 lmx-lab 或 main。"
+      - "[auto / apply.completed] 执行对应验证门禁，并按 FORK.md 输出三段式审计证据：Verified、Broken by hand、Not tried。"
+  archive:
+    guidance:
+      - "[suggest / archive.before] 若本次变更引入、调整或移除长期分叉能力，询问是否同步更新 FORK.md 文末「分叉改动台账」。"
+      - "[suggest / archive.completed] 若实施或验收过程遇到真实返工、回归或 CI 故障，询问是否记入 LESSONS.md（同类 ≥ 2 次升级为 FORK.md 硬条款并下沉守卫测试）；同时检查是否值得往 openspec/config.yaml 的 context 补充新约束（经用户确认后再修改）。"
