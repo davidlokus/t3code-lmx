@@ -254,6 +254,7 @@ import {
   GROK_MODEL_SELECTION,
   KIRO_MODEL_SELECTION,
   MUSE_MODEL_SELECTION,
+  OMP_MODEL_SELECTION, // fork:
   OPENCODE_MODEL_SELECTION,
   OPENCODE2_MODEL_SELECTION,
   PI_MODEL_SELECTION,
@@ -883,6 +884,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         assertOutput: assertPiSimpleOutput,
       },
       {
+        driver: ProviderDriverKind.make("omp"), // fork:
+        transcriptFile: new URL("./simple/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
+        assertOutput: assertSimpleOutput,
+      },
+      {
         driver: ProviderDriverKind.make("muse"),
         transcriptFile: new URL("./simple/muse_transcript.ndjson", import.meta.url),
         modelSelection: MUSE_MODEL_SELECTION,
@@ -922,6 +929,19 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         transcriptFile: new URL("./tool_call_denied_write/fx_transcript.ndjson", import.meta.url),
         modelSelection: FX_MODEL_SELECTION,
         runtimePolicyOverride: DENIED_WRITE_POLICY,
+        expectedAbsentWorkspacePaths: [TOOL_CALL_DENIED_WRITE_TARGET],
+        assertOutput: assertToolCallDeniedWriteFxOutput,
+      },
+    ],
+  },
+  {
+    name: "omp_tool_call_denied_write", // fork: omp enforces the thread's runtime mode directly.
+    buildInput: () => ({ ...toolCallDeniedWriteInput(), runtimeMode: "approval-required" }),
+    providers: [
+      {
+        driver: ProviderDriverKind.make("omp"),
+        transcriptFile: new URL("./tool_call_denied_write/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
         expectedAbsentWorkspacePaths: [TOOL_CALL_DENIED_WRITE_TARGET],
         assertOutput: assertToolCallDeniedWriteFxOutput,
       },
@@ -1536,6 +1556,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         assertOutput: assertPiMultiTurnOutput,
       },
       {
+        driver: ProviderDriverKind.make("omp"), // fork:
+        transcriptFile: new URL("./multi_turn/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
+        assertOutput: assertMultiTurnOutput,
+      },
+      {
         driver: ProviderDriverKind.make("muse"),
         transcriptFile: new URL("./multi_turn/muse_transcript.ndjson", import.meta.url),
         modelSelection: MUSE_MODEL_SELECTION,
@@ -1684,6 +1710,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         driver: ProviderDriverKind.make("kiro"),
         transcriptFile: new URL("./queued_turn/kiro_transcript.ndjson", import.meta.url),
         modelSelection: KIRO_MODEL_SELECTION,
+        assertOutput: assertQueuedTurnOutput,
+      },
+      {
+        driver: ProviderDriverKind.make("omp"), // fork:
+        transcriptFile: new URL("./queued_turn/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
         assertOutput: assertQueuedTurnOutput,
       },
       {

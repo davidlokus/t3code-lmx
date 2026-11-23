@@ -17,6 +17,7 @@ import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
+import { parseGenericCliVersion } from "@t3tools/provider-core/server/snapshotProbe";
 import * as Schema from "effect/Schema";
 import {
   applyProviderCompatibility,
@@ -127,6 +128,20 @@ describe("provider compatibility", () => {
       resolveProviderCompatibility([policy], driver, "2.0.0-a1b2c3d")?.status,
       "unknown",
     );
+  });
+
+  it("requires omp 18.20.0 and rates its prefixed CLI version output", () => {
+    const policies = ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility;
+    const omp = ProviderDriverKind.make("omp");
+    for (const [output, expected] of [
+      ["omp/18.19.9", "broken"],
+      ["omp/18.20.0", "supported"],
+      ["omp/19.1.1", "supported"],
+    ] as const) {
+      const advisory = resolveProviderCompatibility(policies, omp, parseGenericCliVersion(output));
+      assert.strictEqual(advisory?.status, expected, output);
+      assert.strictEqual(advisory?.recommendedRange, ">=18.20.0");
+    }
   });
 
   it("marks Antigravity below 1.5 broken and recommends 1.5.12 in the bundled manifest", () => {

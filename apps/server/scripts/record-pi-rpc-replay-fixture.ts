@@ -13,13 +13,15 @@ import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
+  makeRpcReplayHarness,
   makePiRecordingSpawner,
+  OMP_RPC_REPLAY_PROTOCOL,
   PI_REPLAY_ANY,
   PI_RPC_REPLAY_PROTOCOL,
-  PiOrchestratorReplayHarness,
 } from "../src/orchestration-v2/Adapters/PiAdapterV2.testkit.ts";
 import * as PiAdapterV2Testkit from "../src/orchestration-v2/Adapters/PiAdapterV2.testkit.ts";
-import { PI_PROVIDER } from "@t3tools/provider-pi/server";
+import { PiAdapterV2Driver } from "@t3tools/provider-pi/server";
+import { OmpAdapterV2Driver } from "@t3tools/provider-omp/server"; // fork:
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { provideDeterministicTestRuntime } from "../src/orchestration-v2/testkit/DeterministicRuntime.ts";
 import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fixtures/index.ts";
@@ -33,6 +35,9 @@ import {
 // Exclude user context; --approve lets the throwaway workspace's `.pi/settings.json` load.
 const HERMETIC_LAUNCH_ARGS =
   "--no-extensions --no-skills --no-prompt-templates --no-context-files --approve";
+// fork: OMP fixtures use an explicitly isolated profile and a loopback model.
+const OMP_RECORDING_ARGS =
+  "--offline --no-title --no-extensions --no-skills --no-context-files --no-rules --no-lsp";
 // Pi excludes ~20k recent tokens from compaction; lower the budget for this short fixture.
 const WORKSPACE_PI_SETTINGS = { compaction: { keepRecentTokens: 50 } };
 const CLOCK_TICK = Duration.millis(20);
@@ -42,20 +47,35 @@ function readArgValue(name: string): string | undefined {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-const scenario = readArgValue("--scenario");
-const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
-const variant = fixture?.providers.find((provider) => provider.driver === PI_PROVIDER);
-if (fixture === undefined || variant === undefined) {
-  const names = ORCHESTRATOR_REPLAY_FIXTURES.filter((entry) =>
-    entry.providers.some((provider) => provider.driver === PI_PROVIDER),
-  ).map((entry) => entry.name);
-  throw new Error(`Pass --scenario with a fixture that registers Pi: ${names.join(", ")}`);
+const driverArg = readArgValue("--driver") ?? "pi";
+if (driverArg !== "pi" && driverArg !== "omp") throw new Error("Use --driver pi or --driver omp.");
+const isOmp = driverArg === "omp";
+const adapterDriver = isOmp ? OmpAdapterV2Driver : PiAdapterV2Driver;
+const driver = adapterDriver.driverKind;
+const protocol = isOmp ? OMP_RPC_REPLAY_PROTOCOL : PI_RPC_REPLAY_PROTOCOL;
+const replayHarness = makeRpcReplayHarness(adapterDriver, protocol, driverArg);
+const ompHome = process.env.T3_OMP_REPLAY_HOME;
+const ompAgentDir = process.env.T3_OMP_REPLAY_AGENT_DIR;
+if (isOmp && (!ompHome || !ompAgentDir || ompHome === process.env.HOME)) {
+  throw new Error("Set T3_OMP_REPLAY_HOME and T3_OMP_REPLAY_AGENT_DIR to an isolated OMP profile.");
 }
 
-const piBinary = process.env.T3_PI_BIN ?? "pi";
+const scenario = readArgValue("--scenario");
+const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
+const variant = fixture?.providers.find((provider) => provider.driver === driver);
+if (fixture === undefined || variant === undefined) {
+  const names = ORCHESTRATOR_REPLAY_FIXTURES.filter((entry) =>
+    entry.providers.some((provider) => provider.driver === driver),
+  ).map((entry) => entry.name);
+  throw new Error(`Use --scenario with a ${driverArg} replay fixture: ${names.join(", ")}`);
+}
+
+const binary = isOmp ? (process.env.T3_OMP_BIN ?? "omp") : (process.env.T3_PI_BIN ?? "pi");
 const [modelProvider, ...modelId] = variant.modelSelection.model.split("/");
-const launchArgs = `--provider ${modelProvider} --model ${modelId.join("/")} ${HERMETIC_LAUNCH_ARGS}`;
-const home = process.env.HOME ?? "";
+const launchArgs = isOmp
+  ? `--model ${variant.modelSelection.model} ${OMP_RECORDING_ARGS}`
+  : `--provider ${modelProvider} --model ${modelId.join("/")} ${HERMETIC_LAUNCH_ARGS}`;
+const home = (isOmp ? ompHome : process.env.HOME) ?? "";
 
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu;
 const ISO_TIMESTAMP_PATTERN = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/gu;
@@ -99,6 +119,7 @@ function normalizeEntries(input: {
       .replaceAll(input.sessionDir, "/pi-sessions")
       .replaceAll(input.workspace, "<workspace>")
       .replaceAll(home.length > 1 ? home : "\0", "~")
+      .replace(/http:\/\/127\.0\.0\.1:\d+/gu, isOmp ? "http://127.0.0.1:1" : "$&")
       .replace(ISO_TIMESTAMP_PATTERN, (iso) =>
         pipe(
           DateTime.makeUnsafe(iso),
@@ -149,6 +170,19 @@ function normalizeEntries(input: {
       });
     }
     const data = frame.data;
+    if (isOmp && frame.command === "get_state" && isRecord(data)) {
+      // These diagnostic dumps include local prompts and tool schemas that the adapter never reads.
+      const { dumpTools: _tools, systemPrompt: _prompt, ...state } = data;
+      return normalizeValue({ ...frame, data: state });
+    }
+    if (isOmp && frame.type === "available_commands_update" && Array.isArray(frame.commands)) {
+      return normalizeValue({
+        ...frame,
+        commands: frame.commands.filter(
+          (command) => !isRecord(command) || command.source !== "builtin",
+        ),
+      });
+    }
     if (frame.command === "get_available_models" && isRecord(data) && Array.isArray(data.models)) {
       return normalizeValue({
         ...frame,
@@ -186,26 +220,28 @@ const followWallClock = Effect.gen(function* () {
   }
 });
 
-const readPiVersion = Effect.gen(function* () {
+const readVersion = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  return (yield* spawner.string(ChildProcess.make(piBinary, ["--version"]))).trim();
+  return (yield* spawner.string(ChildProcess.make(binary, ["--version"]))).trim();
 });
 
 const record = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const piVersion = yield* readPiVersion;
+  const version = yield* readVersion;
   const outputPath = readArgValue("--out") ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const fixtureInput = fixture.buildInput();
   const workspace = yield* Effect.promise(() =>
-    makeCheckpointWorkspace(`pi-rpc-record-${fixture.name}`, fixtureInput.workspaceFiles),
+    makeCheckpointWorkspace(`${driverArg}-rpc-record-${fixture.name}`, fixtureInput.workspaceFiles),
   );
-  yield* fs.makeDirectory(path.join(workspace, ".pi"));
-  yield* fs.writeFileString(
-    path.join(workspace, ".pi", "settings.json"),
-    encodeJson(WORKSPACE_PI_SETTINGS),
-  );
-  const sessionDir = yield* fs.makeTempDirectory({ prefix: `t3-pi-record-sessions-` });
+  if (!isOmp) {
+    yield* fs.makeDirectory(path.join(workspace, ".pi"));
+    yield* fs.writeFileString(
+      path.join(workspace, ".pi", "settings.json"),
+      encodeJson(WORKSPACE_PI_SETTINGS),
+    );
+  }
+  const sessionDir = yield* fs.makeTempDirectory({ prefix: `t3-${driverArg}-record-sessions-` });
   yield* Effect.addFinalizer(() =>
     Effect.all([
       fs.remove(workspace, { recursive: true, force: true }),
@@ -215,9 +251,9 @@ const record = Effect.gen(function* () {
 
   const entries: Array<ProviderReplayEntry> = [];
   const placeholder: ProviderReplayTranscript = {
-    provider: PI_PROVIDER,
-    protocol: PI_RPC_REPLAY_PROTOCOL,
-    version: piVersion,
+    provider: driver,
+    protocol,
+    version,
     scenario: fixture.name,
     entries: [],
   };
@@ -242,7 +278,7 @@ const record = Effect.gen(function* () {
     const materialized = yield* materializeInput;
     yield* runOrchestratorV2ProviderReplayScenario(
       {
-        name: `${fixture.name}/pi:record`,
+        name: `${fixture.name}/${driverArg}:record`,
         transcript: placeholder,
         commands: materialized.commands,
         steps: materialized.steps,
@@ -250,14 +286,22 @@ const record = Effect.gen(function* () {
         runtimePolicyOverride: { ...variant.runtimePolicyOverride, cwd: workspace },
       },
       {
-        driver: PI_PROVIDER,
+        driver,
         decodeTranscript: Effect.succeed,
         makeProviderAdapterRegistryLayer: () =>
           PiAdapterV2Testkit.layer({
             scenario: fixture.name,
-            binaryPath: piBinary,
+            adapterDriver,
+            binaryPath: binary,
             launchArgs,
             environment: [
+              ...(ompHome !== undefined && ompAgentDir !== undefined && isOmp
+                ? [
+                    { name: "HOME", value: ompHome, sensitive: false },
+                    { name: "PI_CODING_AGENT_DIR", value: ompAgentDir, sensitive: false },
+                    { name: "OMP_PROFILE", value: "", sensitive: false },
+                  ]
+                : []),
               { name: "PI_CODING_AGENT_SESSION_DIR", value: sessionDir, sensitive: false },
               { name: "PI_SKIP_VERSION_CHECK", value: "1", sensitive: false },
             ],
@@ -271,8 +315,8 @@ const record = Effect.gen(function* () {
   const transcript = {
     ...placeholder,
     metadata: {
-      generatedBy: "live-pi-recorder",
-      piVersion,
+      generatedBy: `live-${driverArg}-recorder`,
+      ...(isOmp ? { ompVersion: version } : { piVersion: version }),
       model: variant.modelSelection.model,
       launchArgs,
     },
@@ -290,14 +334,14 @@ const record = Effect.gen(function* () {
     const materialized = yield* materializeInput;
     const replayResult = yield* runOrchestratorV2ProviderReplayScenario(
       {
-        name: `${fixture.name}/pi:verify`,
-        transcript: yield* PiOrchestratorReplayHarness.decodeTranscript(transcript),
+        name: `${fixture.name}/${driverArg}:verify`,
+        transcript: yield* replayHarness.decodeTranscript(transcript),
         commands: materialized.commands,
         steps: materialized.steps,
         projectionThreadIds: materialized.projectionThreadIds,
         runtimePolicyOverride: { ...variant.runtimePolicyOverride, cwd: replayWorkspace },
       },
-      PiOrchestratorReplayHarness,
+      replayHarness,
       continuationOptions,
     );
     variant.assertOutput(replayResult, transcript);
@@ -305,7 +349,9 @@ const record = Effect.gen(function* () {
 
   yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
   yield* fs.writeFileString(outputPath, encodeTranscriptNdjson(transcript));
-  yield* Console.log(`Wrote ${transcript.entries.length} Pi RPC replay entries to ${outputPath}`);
+  yield* Console.log(
+    `Wrote ${transcript.entries.length} ${driverArg} RPC replay entries to ${outputPath}`,
+  );
 });
 
 await Effect.runPromise(record.pipe(Effect.scoped, Effect.provide(NodeServices.layer)));

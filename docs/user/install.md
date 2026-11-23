@@ -205,6 +205,7 @@ computer.
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                                                                  |
 | Antigravity | Install and sign in with Google from T3 Code's provider settings.                                                                                         |
 | Pi          | Install [Pi](./providers-pi.md#set-up-pi) with Node.js 22.19 or newer, then run `pi` and `/login`.                                                        |
+| omp         | Install [omp 18.20.0 or newer](./providers-omp.md#set-up-omp), then run `omp` and `/login`.                                                               |
 | Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
 | fx          | Install [fx](https://fx.sh) with `curl -fsSL https://fx.sh/setup.sh \| bash`, then run `fx login`.                                                        |
 
@@ -246,7 +247,8 @@ their original values.
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
 [Antigravity](./providers-antigravity.md), [Kiro](./providers-kiro.md),
-[Pi](./providers-pi.md), [Muse Code](./providers-muse.md), and [fx](./providers-fx.md).
+[Pi](./providers-pi.md), [omp](./providers-omp.md), [Muse Code](./providers-muse.md),
+and [fx](./providers-fx.md).
 
 ### Provider check timeouts
 
@@ -280,6 +282,7 @@ greater than 2147483647; unset or invalid values keep the defaults.
 | Kiro                | `T3CODE_KIRO_PROBE_TIMEOUT_MS`         |
 | fx                  | `T3CODE_FX_PROBE_TIMEOUT_MS`           |
 | Pi                  | `T3CODE_PI_PROBE_TIMEOUT_MS`           |
+| omp                 | `T3CODE_OMP_PROBE_TIMEOUT_MS`          |
 | Muse Code           | `T3CODE_MUSE_PROBE_TIMEOUT_MS`         |
 | OpenCode            | `T3CODE_OPENCODE_PROBE_TIMEOUT_MS`     |
 | ACP Registry agents | `T3CODE_ACP_REGISTRY_PROBE_TIMEOUT_MS` |

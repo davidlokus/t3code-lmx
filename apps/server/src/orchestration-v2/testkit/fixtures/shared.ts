@@ -375,6 +375,12 @@ export const PI_MODEL_SELECTION = {
   model: "openrouter/deepseek/deepseek-v4-flash",
 } satisfies ModelSelection;
 
+// fork: recorded using omp's native RPC and a loopback-only model endpoint.
+export const OMP_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("omp"),
+  model: "t3-replay/fixture",
+} satisfies ModelSelection;
+
 export const ACP_REGISTRY_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("acpRegistry"),
   model: "default",

@@ -79,6 +79,7 @@ import {
   materializePiT3McpExtension,
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
+import type { PiDialect } from "./dialect.ts"; // fork:
 import { PI_FILE_CHANGE_TOOLS, PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
 import { PI_STANDARD_SERVICE_TIER } from "./modelCapabilities.ts";
 
@@ -101,8 +102,11 @@ const PI_UNSOLICITED_ACTIVITY_ERROR =
   "Pi started agent work outside an active T3 turn. The session was stopped to prevent invisible tool execution.";
 const SETTLE_PROBE_MAX_ATTEMPTS = 3;
 const SETTLE_PROBE_RETRY_DELAY = Duration.millis(100);
+// fork: OMP can record its cwd after the first line, but never read unbounded history to find it.
+const SESSION_HEADER_LINES = 8;
+const SESSION_HEADER_MAX_BYTES = 64 * 1024;
 
-const PiProviderCapabilitiesV2 = {
+export const PiProviderCapabilitiesV2 = {
   runtimePolicy: { enforcement: "client-boundary" },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
@@ -197,10 +201,22 @@ const PiProviderCapabilitiesV2 = {
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
+// fork: the original Pi launch and transport are the default dialect.
+const PI_DIALECT: PiDialect = {
+  driverKind: PI_PROVIDER,
+  defaultBinary: "pi",
+  capabilities: PiProviderCapabilitiesV2,
+  materializeExtension: materializePiT3McpExtension,
+  resolveLaunchArgs: resolvePiLaunchArgs,
+  buildLaunch: buildPiRpcLaunch,
+  connect: makePiRpcConnection,
+};
+
 export interface PiAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
   readonly settings: PiSettings;
   readonly environment: NodeJS.ProcessEnv;
+  readonly dialect?: PiDialect; // fork:
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -311,13 +327,6 @@ function piToolOutput(result: unknown, toolName: string): unknown {
     content,
     ...(structured === undefined ? {} : { structuredContent: structured }),
   };
-}
-
-function providerRef(
-  nativeId: string,
-  strength: "strong" | "weak" = "strong",
-): OrchestrationV2ProviderRef {
-  return { driver: PI_PROVIDER, nativeId, strength };
 }
 
 const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -476,6 +485,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { continuationRequests } = options;
 
+  // fork: the selected dialect owns the driver identity, including all emitted native refs.
+  const dialect = options.dialect ?? PI_DIALECT;
+  const PI_PROVIDER = dialect.driverKind;
+  const providerRef = (
+    nativeId: string,
+    strength: "strong" | "weak" = "strong",
+  ): OrchestrationV2ProviderRef => ({ driver: PI_PROVIDER, nativeId, strength });
+
   const protocolError = (detail: string, payload?: unknown) =>
     new ProviderAdapter.ProviderAdapterProtocolError({
       driver: PI_PROVIDER,
@@ -487,7 +504,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
     instanceId: options.instanceId,
     driver: PI_PROVIDER,
     getCapabilities: Effect.fn("PiAdapter.getCapabilities")(function () {
-      return Effect.succeed(PiProviderCapabilitiesV2);
+      return Effect.succeed(dialect.capabilities); // fork:
     }),
     planSelectionTransition: Effect.fn("PiAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
@@ -512,14 +529,51 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         );
       // Always inject the permission hook even without MCP credentials; otherwise Supervised becomes unrestricted.
       const extensionPath = yield* provideCacheFs(
-        materializePiT3McpExtension(host.paths.providerStatusCacheDir),
+        dialect.materializeExtension(host.paths.providerStatusCacheDir), // fork:
       );
-      const resolvedLaunchArgs = resolvePiLaunchArgs(options.settings.launchArgs);
+      const resolvedLaunchArgs = dialect.resolveLaunchArgs(options.settings.launchArgs); // fork:
       if (!resolvedLaunchArgs.ok) {
         return yield* protocolError(resolvedLaunchArgs.message);
       }
+      // fork: the filesystem decides case folding, so compare identity after resolving aliases.
+      const sameDirectory = Effect.fnUntraced(function* (recorded: string) {
+        if (recorded === cwd) return true;
+        if (!path.isAbsolute(recorded)) return false;
+        const [recordedPath, cwdPath] = yield* Effect.all([
+          fileSystem.realPath(recorded),
+          fileSystem.realPath(cwd),
+        ]).pipe(Effect.orElseSucceed(() => []));
+        if (recordedPath === undefined || cwdPath === undefined) return false;
+        if (recordedPath === cwdPath) return true;
+        return yield* Effect.all([fileSystem.stat(recordedPath), fileSystem.stat(cwdPath)]).pipe(
+          Effect.map(
+            ([left, right]) =>
+              left.type === "Directory" &&
+              right.type === "Directory" &&
+              left.dev === right.dev &&
+              Option.isSome(left.ino) &&
+              Option.isSome(right.ino) &&
+              left.ino.value === right.ino.value,
+          ),
+          Effect.orElseSucceed(() => false),
+        );
+      });
       // A workspace handoff restarts Pi in a new cwd, but the session header still names the old one.
       const sessionHeaderNamesCwd = Effect.fnUntraced(function* (sessionFile: string) {
+        // fork: only the alternate dialect reads a bounded multi-line header.
+        if (dialect.readSessionCwd !== undefined) {
+          const lines = yield* fileSystem
+            .stream(sessionFile, { bytesToRead: SESSION_HEADER_MAX_BYTES })
+            .pipe(
+              Stream.decodeText(),
+              Stream.splitLines,
+              Stream.take(SESSION_HEADER_LINES),
+              Stream.runCollect,
+              Effect.orElseSucceed(() => []),
+            );
+          const recorded = dialect.readSessionCwd(lines);
+          return recorded !== undefined && (yield* sameDirectory(recorded));
+        }
         const header = yield* fileSystem.stream(sessionFile).pipe(
           Stream.decodeText(),
           Stream.splitLines,
@@ -542,7 +596,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       const startConnection = Effect.fnUntraced(function* (sessionPath?: string) {
         const connectionScope = yield* Scope.fork(scope, "sequential");
         return yield* Effect.gen(function* () {
-          const launch = buildPiRpcLaunch({
+          // fork: launch and transport belong to the dialect.
+          const launch = dialect.buildLaunch({
             launchArgs: resolvedLaunchArgs.args,
             // PortScanner.AGENT_THREAD_ENV, as a literal because this package cannot reach apps/server.
             environment: { ...options.environment, T3CODE_THREAD_ID: input.threadId },
@@ -552,9 +607,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             runtimeMode: input.runtimePolicy.runtimeMode,
           });
           const scopedLaunch = yield* agentScope.wrap({
-            command: options.settings.binaryPath || "pi",
+            command: options.settings.binaryPath || dialect.defaultBinary, // fork:
             args: launch.args,
-            name: "pi",
+            name: dialect.defaultBinary, // fork:
             threadId: input.threadId,
             env: launch.env,
           });
@@ -565,11 +620,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               ? Effect.void
               : yield* Effect.cached(agentScope.stop(scopeUnit));
           yield* Effect.addFinalizer(() => stopScope);
-          const connection = yield* makePiRpcConnection({
+          const connection = yield* dialect.connect({
             command: scopedLaunch.command,
             args: scopedLaunch.args,
             cwd,
             env: launch.env,
+            ...(mcpSession === undefined ? {} : { mcpSession }), // fork:
           });
           // Its tools carry T3CODE_THREAD_ID, so port discovery must scan while Pi runs.
           const trackAgent = host.trackAgent;
@@ -616,7 +672,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         status: "ready",
         cwd,
         model: input.modelSelection.model,
-        capabilities: PiProviderCapabilitiesV2,
+        capabilities: dialect.capabilities, // fork:
         extensionStatuses: [],
         createdAt: now,
         updatedAt: now,
@@ -784,6 +840,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       // Frequent notifications share the event pump's tracing boundary and outlive individual turns.
       const updateExtensionStatus = Effect.fnUntraced(function* (event: PiRpcRecord) {
         if (
+          dialect.showsExtensionStatuses === false || // fork:
           closed ||
           stopRequested ||
           runtimeRetired ||
@@ -1853,7 +1910,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         }
         const approvalTitle = recordString(event, "title") ?? "";
         const approvalKey = `${approvalTitle.length}:${approvalTitle}${recordString(event, "message") ?? ""}`;
-        if (method === "confirm" && sessionApprovals.has(approvalKey)) {
+        if (
+          dialect.forwardsSessionApproval !== true && // fork: native grants stay with the agent
+          method === "confirm" &&
+          sessionApprovals.has(approvalKey)
+        ) {
           yield* connection.send({
             type: "extension_ui_response",
             id: nativeRequestId,
@@ -2935,7 +2996,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         boundary: PiForkBoundary,
         providerThreadCreatedAt: DateTime.Utc,
       ) {
-        const forkLaunch = buildPiRpcLaunch({
+        // fork: the short-lived fork still needs the provider's native transport.
+        const forkLaunch = dialect.buildLaunch({
           launchArgs: resolvedLaunchArgs.args,
           environment: options.environment,
           mcpSession: undefined,
@@ -2946,8 +3008,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         });
         return yield* Effect.scoped(
           Effect.gen(function* () {
-            const forkConnection = yield* makePiRpcConnection({
-              command: options.settings.binaryPath || "pi",
+            const forkConnection = yield* dialect.connect({
+              command: options.settings.binaryPath || dialect.defaultBinary,
               args: [...forkLaunch.args, "--fork", sourceFile],
               cwd,
               env: forkLaunch.env,
@@ -2964,6 +3026,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                     boundary,
                     providerThreadCreatedAt,
                     forkConnection.request({ type: "get_entries" }),
+                    PI_PROVIDER,
                   );
             if (beforeEntry !== null) {
               const result = yield* forkConnection.request({
@@ -3763,10 +3826,20 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               type: "extension_ui_response",
               id: pending.nativeRequestId,
               ...response,
+              // fork: send the native session choice instead of manufacturing a host-side grant.
+              ...(dialect.forwardsSessionApproval === true &&
+              pending.method === "confirm" &&
+              requestInput.decision === "acceptForSession"
+                ? { forSession: true }
+                : {}),
             });
             pendingPrompts.delete(String(requestInput.requestId));
             if (pending.expirationFiber !== null) yield* Fiber.interrupt(pending.expirationFiber);
-            if (pending.method === "confirm" && requestInput.decision === "acceptForSession") {
+            if (
+              dialect.forwardsSessionApproval !== true &&
+              pending.method === "confirm" &&
+              requestInput.decision === "acceptForSession"
+            ) {
               sessionApprovals.add(pending.approvalKey);
             }
             const resolvedAt = yield* DateTime.now;
@@ -3774,6 +3847,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               ...pending.runtimeRequest,
               status: "resolved",
               resolvedAt,
+              ...(pending.method === "confirm" && requestInput.decision !== undefined
+                ? { decision: requestInput.decision }
+                : {}),
             };
             yield* emit({
               type: "runtime_request.updated",
@@ -3917,6 +3993,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               boundary,
               rollbackInput.providerThread.createdAt,
               request({ type: "get_entries" }),
+              PI_PROVIDER,
             );
             return yield* Effect.acquireUseRelease(
               sessionEventPermit.withPermits(1)(
@@ -4260,6 +4337,7 @@ function piForkEntry<E>(
   boundary: Exclude<PiForkBoundary, { type: "nothing" }>,
   providerThreadCreatedAt: DateTime.Utc,
   readEntries: Effect.Effect<unknown, E>,
+  driver: ProviderDriverKind,
 ): Effect.Effect<string, E | ProviderAdapter.ProviderAdapterProtocolError> {
   if (boundary.type === "entry") return Effect.succeed(boundary.entryId);
   return readEntries.pipe(
@@ -4272,7 +4350,7 @@ function piForkEntry<E>(
       return entryId === undefined
         ? Effect.fail(
             new ProviderAdapter.ProviderAdapterProtocolError({
-              driver: PI_PROVIDER,
+              driver,
               detail: `Pi turn ${boundary.turn.ordinal} has no captured session-tree entry and none was found in the session tree`,
             }),
           )

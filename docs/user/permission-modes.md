@@ -38,6 +38,10 @@ including some personal Google accounts, do not. Without it, an Antigravity thre
 Muse Code offers only **Supervised** and **Full access**. A Muse thread already set to another mode
 runs in **Supervised**.
 
+omp offers **Supervised**, **Auto-accept edits**, and **Full access**. An omp thread set to **Auto**
+runs in **Supervised**. See [omp permissions](./providers-omp.md#permission-modes) for how
+session-wide approvals work.
+
 T3 Code offers no **Auto-accept edits** for fx, and **Full access** only with fx 0.0.14 or later. An fx
 thread set to a mode its fx lacks runs in **Supervised**.
 

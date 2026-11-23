@@ -46,6 +46,23 @@ const EFFORT_CHOICES = [
   { id: "xhigh", label: msg("Extra High", { $context: "reasoning level" }) },
 ] as const;
 
+const PI_FAMILY_THINKING_PRESETS = [
+  {
+    id: "thinking",
+    label: msg("Thinking", { $context: "model option name" }),
+    type: "select",
+    choices: [
+      { id: "off", label: msg("Off", { $context: "reasoning level" }) },
+      { id: "minimal", label: msg("Minimal", { $context: "reasoning level" }) },
+      { id: "low", label: msg("Low", { $context: "reasoning level" }) },
+      { id: "medium", label: msg("Medium", { $context: "reasoning level" }), isDefault: true },
+      { id: "high", label: msg("High", { $context: "reasoning level" }) },
+      { id: "xhigh", label: msg("Extra High", { $context: "reasoning level" }) },
+      { id: "max", label: msg("Max", { $context: "reasoning level" }) },
+    ],
+  },
+] as const satisfies ReadonlyArray<DescriptorPreset>;
+
 export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
   Record<ProviderDriverKind, ReadonlyArray<DescriptorPreset>>
 > = {
@@ -100,22 +117,8 @@ export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
       choices: EFFORT_CHOICES,
     },
   ],
-  [ProviderDriverKind.make("pi")]: [
-    {
-      id: "thinking",
-      label: msg("Thinking", { $context: "model option name" }),
-      type: "select",
-      choices: [
-        { id: "off", label: msg("Off", { $context: "reasoning level" }) },
-        { id: "minimal", label: msg("Minimal", { $context: "reasoning level" }) },
-        { id: "low", label: msg("Low", { $context: "reasoning level" }) },
-        { id: "medium", label: msg("Medium", { $context: "reasoning level" }), isDefault: true },
-        { id: "high", label: msg("High", { $context: "reasoning level" }) },
-        { id: "xhigh", label: msg("Extra High", { $context: "reasoning level" }) },
-        { id: "max", label: msg("Max", { $context: "reasoning level" }) },
-      ],
-    },
-  ],
+  [ProviderDriverKind.make("pi")]: PI_FAMILY_THINKING_PRESETS,
+  [ProviderDriverKind.make("omp")]: PI_FAMILY_THINKING_PRESETS, // fork:
   [ProviderDriverKind.make("opencode")]: [
     {
       id: "variant",

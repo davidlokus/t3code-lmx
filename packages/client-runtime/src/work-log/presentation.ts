@@ -20,6 +20,7 @@ import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-im
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
+import { SESSION_UNAVAILABLE_NOTICE } from "@t3tools/shared/forkNotices";
 import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
@@ -32,6 +33,17 @@ import {
 import { mFallback, msg } from "gt-i18n";
 import { t3ToolSentence } from "./t3ToolSentences.ts";
 import type { MFunctionType } from "gt-i18n/types";
+
+export function translateForkNotice(
+  label: string,
+  resolve: (message: string) => string = mFallback,
+): string {
+  return label === SESSION_UNAVAILABLE_NOTICE
+    ? resolve(
+        msg("omp did not offer a session-wide approval, so this request was approved once only."),
+      )
+    : label;
+}
 
 export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped" | "idle";
 

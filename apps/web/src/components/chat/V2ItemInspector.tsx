@@ -1,4 +1,4 @@
-import { T, Var, useGT } from "gt-react";
+import { T, Var, useGT, useMessages } from "gt-react";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import {
@@ -9,6 +9,7 @@ import {
   turnItemOutputImages,
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
+import { translateForkNotice } from "@t3tools/client-runtime/work-log/presentation";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { ExternalLinkIcon } from "lucide-react";
@@ -243,6 +244,7 @@ function ToolCallBody(
 
 export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspectorProps) {
   const gt = useGT();
+  const m = useMessages();
   // Command rows stream their output, including the final output, from the server.
   const environmentStreamsOutput = useCommandOutputStreaming(props.environmentId);
   const streamsOutput =
@@ -417,7 +419,9 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         />
       ) : null}
       {item.type === "notification" ? <StructuredValue value={item.detail} /> : null}
-      {item.type === "system_notice" ? <StructuredValue value={item.message} /> : null}
+      {item.type === "system_notice" ? (
+        <StructuredValue value={translateForkNotice(item.message, m)} />
+      ) : null}
       {item.type === "error" ? <StructuredValue value={item.failure.message} /> : null}
       {item.type === "todo_list" ? (
         <StructuredValue

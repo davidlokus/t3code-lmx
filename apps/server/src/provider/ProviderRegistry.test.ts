@@ -1610,7 +1610,7 @@ it.layer(
       assert.deepStrictEqual(mergedEmptyCatalog.skills, previousProvider.skills);
     });
 
-    describe("Pi model inventories", () => {
+    describe("Pi-family model inventories", () => {
       const defaultModel = {
         slug: "default",
         name: "Pi default",
@@ -1673,21 +1673,29 @@ it.layer(
         message: "Pi is available, but T3 Code could not refresh its models and commands.",
       } satisfies ServerProvider;
 
-      it("retains Pi inventories during incomplete probes without restoring removed custom models", () => {
-        const incompleteProviders = [
-          pendingProvider,
-          { ...pendingProvider, installed: false },
-          failedProvider,
-          { ...failedProvider, status: "error" },
-        ] satisfies ReadonlyArray<ServerProvider>;
+      it.each(["pi", "omp"] as const)(
+        "retains %s inventories during incomplete probes without restoring removed custom models",
+        (kind) => {
+          const driver = ProviderDriverKind.make(kind);
+          const instanceId = ProviderInstanceId.make(`${kind}-personal`);
+          const incompleteProviders = [
+            pendingProvider,
+            { ...pendingProvider, installed: false },
+            failedProvider,
+            { ...failedProvider, status: "error" },
+          ] satisfies ReadonlyArray<ServerProvider>;
 
-        for (const provider of incompleteProviders) {
-          assert.deepStrictEqual(
-            ProviderRegistry.mergeProviderSnapshot(cachedProvider, provider).models,
-            [defaultModel, customModel, currentModel, removedModel],
-          );
-        }
-      });
+          for (const provider of incompleteProviders) {
+            assert.deepStrictEqual(
+              ProviderRegistry.mergeProviderSnapshot(
+                { ...cachedProvider, driver, instanceId },
+                { ...provider, driver, instanceId },
+              ).models,
+              [defaultModel, customModel, currentModel, removedModel],
+            );
+          }
+        },
+      );
 
       it("does not restore disconnected Pi models after a later discovery failure", () => {
         const afterRemoval = ProviderRegistry.mergeProviderSnapshot(

@@ -303,7 +303,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   );
   const noticeMessage =
     workEntry.structuredPayload?.type === "system_notice"
-      ? workEntry.structuredPayload.message
+      ? workEntryDisplayLabel(workEntry, workspaceRoot, m)
       : null;
   const labelRef = useRef<HTMLSpanElement>(null);
   const [noticeCutOff, setNoticeCutOff] = useState(false);
@@ -425,7 +425,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? workEntry.toolLifecycleStatus === "inProgress"
         ? gt("Thinking")
         : gt("Thought")
-      : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot, m));
+      : questionHeading ||
+        (displayLabel ?? noticeMessage ?? workEntryDisplayLabel(workEntry, workspaceRoot, m));
   const answerPreview =
     workEntry.questionAnswer && hasQuestionAnswer(workEntry.questionAnswer)
       ? getQuestionAnswerPreview(workEntry.questionAnswer)
