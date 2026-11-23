@@ -33,6 +33,13 @@ import {
   ThreadDetailsUsage,
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
+// fork: T3 Lab right-side HUD sections
+import {
+  ThreadHudHeader,
+  ThreadHudSections,
+  useHudLegacySuppression,
+  type ThreadHudCompactContext,
+} from "../../fork/hud/ThreadHudSections";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
@@ -95,10 +102,17 @@ interface ThreadDetailsPanelProps extends Pick<
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   usage: ThreadDetailsUsageInput;
+  // fork: optional in-place /compact context action for T3 Lab HUD
+  compactContext?: ThreadHudCompactContext | undefined;
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
+  // fork: suppress duplicate legacy Usage/Context rows only when corresponding HUD cards render
+  const hudDedup = useHudLegacySuppression(props.usage);
+  const showLegacyUsage = visible.usage && !hudDedup.suppressLegacyUsage;
+  const showLegacyContext =
+    visible.context && !hudDedup.suppressLegacyContext && props.usage?.contextWindow != null;
   const gt = useGT();
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
@@ -160,7 +174,13 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
-      contentKey={THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
+      contentKey={THREAD_DETAILS_ITEMS.filter((item) =>
+        item.id === "usage"
+          ? showLegacyUsage
+          : item.id === "context"
+            ? showLegacyContext
+            : visible[item.id],
+      )
         .map((item) => item.id)
         .join(",")}
       onContextMenu={(event) => {
@@ -182,7 +202,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         setMenuPosition({ x: event.clientX, y: event.clientY });
       }}
     >
-      {(density) => {
+      {(density, panelOpen) => {
         // Section flags follow the rows that will render, so no empty section steals the divider rule.
         const show = {
           environment: density === "full" && visible.environment,
@@ -202,6 +222,12 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         };
         return (
           <>
+            {/* fork: T3 Lab HUD status header + display options */}
+            <ThreadHudHeader
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              usage={props.usage}
+            />
             <div className="group/details-items">
               {show.environment || show.openIn || show.scripts ? (
                 <ThreadDetailsSection
@@ -326,9 +352,18 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
+              {/* fork: T3 Lab HUD dashboard cards */}
+              <ThreadHudSections
+                environmentId={props.environmentId}
+                threadId={props.threadId}
+                usage={props.usage}
+                compactContext={props.compactContext}
+                panelOpen={panelOpen}
+              />
 
-              {visible.context && props.usage.contextWindow ? (
+              {showLegacyUsage ? <ThreadDetailsUsage {...props.usage} /> : null}
+
+              {showLegacyContext && props.usage?.contextWindow ? (
                 <ThreadDetailsContext usage={props.usage.contextWindow} />
               ) : null}
 

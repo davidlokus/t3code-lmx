@@ -34,7 +34,8 @@ export function ThreadDetailsCard({
   /** Changes when the set of rendered items changes, so cached heights are measured again. */
   contentKey: string;
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
-  children: (density: "full" | "compact" | "essential") => ReactNode;
+  // fork: optional second arg reports active presentation visibility so System telemetry unsubscribes on narrow popover close
+  children: (density: "full" | "compact" | "essential", panelOpen: boolean) => ReactNode;
 }) {
   const gt = useGT();
   const detailsArea = workspaceAreaProps("details", 3, gt("Thread details"));
@@ -83,7 +84,8 @@ export function ThreadDetailsCard({
       // PR lists, servers, lineage, side chats and automations scroll as they grow. Counting them
       // toward density would hide the section and workspace controls when the user asks to see more.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow]",
+        // fork: exclude T3 Lab HUD sections from density-collapse measurement so Workspace/Git stay visible
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-hud-panel]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
@@ -126,7 +128,9 @@ export function ThreadDetailsCard({
       data-thread-details-card
     >
       <ScrollArea scrollFade className="min-h-0">
-        <div ref={setContentElement}>{children(density)}</div>
+        <div ref={setContentElement}>
+          {children(density, mode === "inline" ? inlineOpen : popoverOpen)}
+        </div>
       </ScrollArea>
     </div>
   );
@@ -141,7 +145,12 @@ export function ThreadDetailsCard({
             : details.reason === "outside-press"
               ? details.event.target
               : null;
-        if (!open && target instanceof Element && target.closest("[data-thread-find-bar]")) {
+        if (
+          !open &&
+          target instanceof Element &&
+          // fork: keep popover card open while interacting with the HUD options menu
+          target.closest("[data-thread-find-bar], [data-thread-hud-menu]")
+        ) {
           details.cancel();
           return;
         }
