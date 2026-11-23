@@ -1,0 +1,48 @@
+name: t3lab-light
+version: 1
+description: Lightweight Fork workflow for scoped T3 Lab changes - proposal -> tasks
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Scoped proposal capturing intent, assumptions, conflict surface, and affected surfaces
+    template: proposal.md
+    instruction: |
+      Create a concise proposal.md in Simplified Chinese for a scoped Fork change (L1 Light Spec).
+
+      Sections:
+      - **Why**: 1-2 sentences on the problem or goal.
+      - **What Changes**: Concrete bullet list of additions, modifications, or removals.
+      - **Assumptions**: Reasonable calls made for minor ambiguities so the user can correct them in one reply. Only pause to ask before writing if a wrong guess would materially break architecture, security, or compatibility.
+      - **Out of Scope**: Explicitly state what this change will not touch.
+      - **上游同步冲突面**: Separate newly added isolated files from upstream files needing minimal `// fork:` hooks.
+      - **Surface Matrix**: Mark each surface (`Web`, `Desktop`, `Mobile`, `Server`, `Contracts`, `Providers`, `i18n`) as affected (with a brief note) or `N/A`.
+
+      Keep the whole proposal under 1 page. If the change introduces a durable multi-surface Fork capability that needs formal behavior specs, switch to the default `spec-driven` schema instead.
+    requires: []
+
+  - id: tasks
+    generates: tasks.md
+    description: Trackable implementation and Fork verification checklist
+    template: tasks.md
+    instruction: |
+      Create tasks.md in Simplified Chinese with concrete, trackable checkboxes (`- [ ] X.Y ...`).
+
+      Guidelines:
+      - Order groups by dependency.
+      - Each task MUST include how to verify completion (a specific command, test file, or observable behavior).
+      - Each implementation group MUST land its own unit/regression tests rather than deferring all tests to the end.
+      - Include a final `## Verification & Fork Closeout` group covering:
+        - `vp run check:changed origin/lmx-lab`
+        - `vp test run packages/shared/src/forkIdentity.guard.test.ts`
+        - Conditional gates when applicable (`vp run i18n:check`; desktop DMG build + `verify-mac-dmg.sh` + `smoke-desktop-app.ts` without `T3CODE_DESKTOP_UNTRUSTED_BUNDLE=true`)
+        - `Broken by hand` falsification for logic/bug fixes
+        - Three-part audit evidence (`Verified`, `Broken by hand`, `Not tried`)
+    requires:
+      - proposal
+
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md
+  instruction: |
+    Read proposal.md and tasks.md, confirm you are on an isolated feature branch and adjacent worktree, work through pending checkboxes in order, and mark each complete as you verify it. Report Verified, Broken by hand, and Not tried at completion.

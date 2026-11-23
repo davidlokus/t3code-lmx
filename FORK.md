@@ -7,6 +7,7 @@
 - 上游 [CONTRIBUTING.md](CONTRIBUTING.md) 的特性 PR 限制和 `.github/VOUCHED.td` 准入规则不适用于本 Fork。
 - 本 Fork 使用 GitHub 和 `gh`，不用上游的 `source.tanstack.com` 镜像或 `src`。
 - 本 Fork 使用 [Fork CI](.github/workflows/fork-ci.yml) 与 [Fork Release](.github/workflows/fork-release.yml)，不用上游 Blacksmith `ci.yml`、官方 `release.yml` 或生产 `T3 Connect`。继承的官方工作流原样保留并在 Actions 页面禁用，不设为必过检查，也不接入官方发布凭据或生产连接服务。
+- 本 Fork 接入 OpenSpec（[openspec/config.yaml](openspec/config.yaml)、`openspec/schemas/t3lab-light/`、`.agents/skills/t3lab-dev/` 与 `.agents/skills/openspec-*`）管理 **Fork 自有能力**的规划与归档，覆写上游 [AGENTS.md](AGENTS.md) 中 `Plans and work artifacts` 的禁止提交条款；日常按 `t3lab-dev` 路由分 L0（直通）/ L1（`t3lab-light`）/ L2（`spec-driven`）三档执行，不为上游既有行为编写全量 Spec。
 - Effect、Oxlint、测试和性能规范沿用 [AGENTS.md](AGENTS.md)。
 
 ## 桌面产品身份与隔离
@@ -115,11 +116,12 @@
 
 ## 分叉改动台账
 
-| PR / 分支                       | 改动位置                                                                                        | 保留原因                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| #1 `chore/fork-bootstrap`       | `AGENTS.md` 顶部覆写、`CLAUDE.md` 导入、`FORK.md`、`.github/workflows/fork-ci.yml`              | 独立维护 Fork 规则与 CI，不改动上游规则正文和工作流               |
-| #2 `feat/t3-lab-identity`       | `forkIdentity.ts`、桌面启动与打包、Web 品牌与 CLI 设置、桌面 Origin、`vite.config.ts` boot 内联 | 与官方桌面版并存，隔离数据、命令、入口和更新源                    |
-| #3 `fix/fork-ci-checkout`       | `.github/workflows/fork-ci.yml`                                                                 | 跳过 `.repos/` 孤立 gitlink 并缓存 Playwright Chromium            |
-| #4 `chore/agent-eng-foundation` | `LESSONS.md`、`forkIdentity.guard.test.ts`、`fork/scripts/*`、`fork-release.yml`、`FORK.md`     | 建立教训自进化闭环、代码级隔离守卫测试与 Tag 驱动自动化发版流水线 |
-| #5 `feat/provider-omp`          | `packages/provider-omp`、Pi RPC 方言接口、服务端与客户端注册、版本策略、用户文档                | 原生接入 oh-my-pi，保留其模型、会话和审批，不影响 Pi              |
-| #6 `chore/sync-upstream-tool`   | `fork/scripts/sync-upstream.mjs`、`FORK.md`、`forkIdentity.guard.test.ts`                       | 固化上游同步预检、快进镜像与 `--merge` 隔离同步工作流             |
+| PR / 分支                       | 改动位置                                                                                                                           | 保留原因                                                          |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| #1 `chore/fork-bootstrap`       | `AGENTS.md` 顶部覆写、`CLAUDE.md` 导入、`FORK.md`、`.github/workflows/fork-ci.yml`                                                 | 独立维护 Fork 规则与 CI，不改动上游规则正文和工作流               |
+| #2 `feat/t3-lab-identity`       | `forkIdentity.ts`、桌面启动与打包、Web 品牌与 CLI 设置、桌面 Origin、`vite.config.ts` boot 内联                                    | 与官方桌面版并存，隔离数据、命令、入口和更新源                    |
+| #3 `fix/fork-ci-checkout`       | `.github/workflows/fork-ci.yml`                                                                                                    | 跳过 `.repos/` 孤立 gitlink 并缓存 Playwright Chromium            |
+| #4 `chore/agent-eng-foundation` | `LESSONS.md`、`forkIdentity.guard.test.ts`、`fork/scripts/*`、`fork-release.yml`、`FORK.md`                                        | 建立教训自进化闭环、代码级隔离守卫测试与 Tag 驱动自动化发版流水线 |
+| #5 `feat/provider-omp`          | `packages/provider-omp`、Pi RPC 方言接口、服务端与客户端注册、版本策略、用户文档                                                   | 原生接入 oh-my-pi，保留其模型、会话和审批，不影响 Pi              |
+| #6 `chore/sync-upstream-tool`   | `fork/scripts/sync-upstream.mjs`、`FORK.md`、`forkIdentity.guard.test.ts`                                                          | 固化上游同步预检、快进镜像与 `--merge` 隔离同步工作流             |
+| `chore/setup-openspec`          | `openspec/`、`.agents/skills/{openspec-*,t3lab-dev}/`、`ci-changes.cjs`、`vite.config.ts`、`FORK.md`、`forkIdentity.guard.test.ts` | 接入 OpenSpec 规划层与 L0/L1/L2 分流路由，并隔离格式化与 CI 范围  |

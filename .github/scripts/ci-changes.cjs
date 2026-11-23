@@ -7,6 +7,8 @@ const root = path.resolve(__dirname, "../..");
 
 const INERT = [
   /^docs\//,
+  // fork: OpenSpec specs/changes are Fork planning docs and must not trigger full-repo CI rebuilds.
+  /^openspec\//,
   /^\.(agents|cursor|vscode|devcontainer|macroscope|repos)\//,
   /^[^/]+\.md$/,
   /^LICENSE$/,
