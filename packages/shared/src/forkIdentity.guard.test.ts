@@ -146,6 +146,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         ".agents/skills/t3lab-dev/references/direct-flow.md",
         ".agents/skills/t3lab-dev/references/light-spec-flow.md",
         ".agents/skills/t3lab-dev/references/fork-gates.md",
+        ".agents/skills/t3lab-dev/references/handoff.md",
       ]) {
         assert.isTrue(
           yield* repoFileExists(required),

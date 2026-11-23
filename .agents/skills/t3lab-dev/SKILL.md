@@ -26,7 +26,11 @@ Route work by complexity so simple changes stay fast while cross-cutting Fork wo
 
 Before coding, after verification, and during archive/closeout, read [references/fork-gates.md](references/fork-gates.md) and apply the configured `auto` / `suggest` hooks (`apply.before`, `apply.completed`, `archive.before`, `archive.completed`).
 
-## 3. Quick status & next-step checks
+## 3. Cross-agent handoff (`agy × omp` via `hc`)
+
+When splitting L1/L2 work across `agy` (Coordinator/UI) and `omp` (Data/Logic + independent read-only Reviewer) or running cross-model `openspec-verify-change`, read [references/handoff.md](references/handoff.md) for `hc` launch flags, export/token checklists, and prompt templates.
+
+## 4. Quick status & next-step checks
 
 When the user asks where active work stands or what to do next:
 

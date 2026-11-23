@@ -14,6 +14,7 @@ rules:
     - "需求存在次要模糊点时，先做合理假设并集中在「Assumptions」中列出供用户一句纠偏；仅当猜错代价高（架构边界、安全、破坏性兼容）时停下来反问。"
   design:
     - "仅在跨包/跨端改动、新增依赖、涉及打包/安全/性能边界或存在非平凡技术权衡时编写；否则说明跳过原因即可。"
+    - "若涉及跨 Agent 交接（agy × omp），必须在契约中明确区分对外消费导出与模块内部 helper（避免触发 knip:check:exports），并将新 UI 槽位与逻辑收口到 apps/web/src/fork/<area>/。"
     - "若涉及 apps/desktop 独立打包入口（boot.ts、compileCache.ts、serverCompileCache.ts、preload.ts），必须显式核对 deps.alwaysBundle 与工作区包内联。"
   tasks:
     - "每个实现任务组必须自带对应单测或回归守卫，每条 checkbox 都要写明具体验证命令或可观测验收标准。"
