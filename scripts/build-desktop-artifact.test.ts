@@ -504,54 +504,49 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("omits update feeds for pull request preview builds", () =>
-    Effect.gen(function* () {
-      const preview = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.0.33-pr.8182.1",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const release = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.0.33",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
+  it.effect(
+    "isolates the macOS package and enables update feeds only for configured non-upstream releases",
+    () =>
+      Effect.gen(function* () {
+        const build = (version: string, env: Record<string, string> = {}) =>
+          createBuildConfig("mac", "dmg", version, false, false, undefined, undefined).pipe(
+            Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+          );
+        const local = yield* build("0.0.33");
+        assert.equal(local.appId, "com.davidlokus.t3lab");
+        assert.equal(local.productName, "T3 Lab (Extend)");
+        assert.equal(local.artifactName, "T3-Lab-Extend-${version}-${arch}.${ext}");
+        assert.deepInclude((local.mac as { protocols: readonly unknown[] }).protocols, {
+          name: "T3 Lab (Extend)",
+          schemes: ["t3lab", "t3lab-dev"],
+        });
+        assert.isNull(local.publish);
 
-      const previewChannel = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.0.41-preview.20260912.1589",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
+        const fork = { GITHUB_REPOSITORY: "davidlokus/t3code-lmx" };
+        const release = yield* build("0.0.33", fork);
+        assert.deepStrictEqual(release.publish, [
+          {
+            provider: "github",
+            owner: "davidlokus",
+            repo: "t3code-lmx",
+            releaseType: "release",
+          },
+        ]);
+        const nightly = yield* build("0.0.34-nightly.20261026.1", fork);
+        assert.equal(nightly.productName, "T3 Lab (Nightly)");
 
-      assert.isNull(preview.publish);
-      assert.isNull(previewChannel.publish);
-      assert.deepStrictEqual(release.publish, [
-        {
-          provider: "github",
-          owner: "pingdotgg",
-          repo: "t3code",
-          releaseType: "release",
-        },
-      ]);
-    }).pipe(
-      Effect.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
-        ),
-      ),
-    ),
+        for (const version of ["0.0.33-pr.8182.1", "0.0.41-preview.20260912.1589"]) {
+          const preview = yield* build(version, fork);
+          assert.isNull(preview.publish);
+        }
+        const upstream = yield* build("0.0.33", { GITHUB_REPOSITORY: "pingdotgg/t3code" });
+        assert.isNull(upstream.publish);
+        const explicitUpstream = yield* build("0.0.33", {
+          ...fork,
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: " PingDotGG/T3Code ",
+        });
+        assert.isNull(explicitUpstream.publish);
+      }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>
@@ -566,7 +561,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      assert.nestedPropertyVal(linux, "linux.desktop.entry.StartupWMClass", "com.t3tools.T3Code");
+      assert.nestedPropertyVal(linux, "linux.desktop.entry.StartupWMClass", "com.davidlokus.T3Lab");
     }),
   );
 
@@ -586,7 +581,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "davidlokus/t3code-lmx" } }),
         ),
       ),
     ),
@@ -1564,7 +1559,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.davidlokus.t3lab",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -1587,7 +1582,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.davidlokus.t3lab</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");

@@ -9,11 +9,11 @@
 - 本 Fork 使用 [Fork CI](.github/workflows/fork-ci.yml)，不用上游 Blacksmith `ci.yml`、官方 `release.yml` 或生产 `T3 Connect`。继承的官方工作流原样保留；在 Fork 的 Actions 页面禁用，不设为必过检查，也不接入官方发布凭据或生产连接服务。
 - Effect、Oxlint、测试和性能规范沿用 [AGENTS.md](AGENTS.md)。
 
-## 产品身份与隔离目标
+## 桌面产品身份与隔离
 
-下表是目标配置；本次只建立规则和 CI，不改变运行时默认值。
+桌面端已使用下列独立身份，集中配置见 [forkIdentity.ts](packages/shared/src/forkIdentity.ts)。默认不读取或迁移官方桌面应用的 Electron 配置。
 
-| 项目              | 目标                                     |
+| 项目              | 配置                                     |
 | ----------------- | ---------------------------------------- |
 | 产品名            | `T3 Lab (Extend)`                        |
 | Bundle ID         | `com.davidlokus.t3lab`                   |
@@ -22,7 +22,8 @@
 | URL Scheme        | 正式版 `t3lab://`，开发版 `t3lab-dev://` |
 | CLI shim          | `t3lab`                                  |
 | 默认桌面后端端口  | `3973`                                   |
-| 官方自动更新源    | 禁用                                     |
+| Node 编译缓存     | `t3lab` 命名空间                         |
+| 官方自动更新源    | 禁用；本地 DMG 不配置更新源              |
 
 ## Git、分支、Worktree 与 PR
 
@@ -63,3 +64,4 @@
 | 分支                   | 改动位置                                                                           | 保留原因                                            |
 | ---------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
 | `chore/fork-bootstrap` | `AGENTS.md` 顶部覆写、`CLAUDE.md` 导入、`FORK.md`、`.github/workflows/fork-ci.yml` | 独立维护 Fork 规则与 CI，不改动上游规则正文和工作流 |
+| `feat/t3-lab-identity` | `forkIdentity.ts`、桌面启动与打包、Web 品牌与 CLI 设置、桌面 Origin                | 与官方桌面版并存，隔离数据、命令、入口和更新源      |

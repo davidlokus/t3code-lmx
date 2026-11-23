@@ -71,6 +71,7 @@
   "cd03eb1b84271c02": "Agent",
   "bfe1a60f3f9c60fb": "Runde {turn} · {what}",
   "dfdaa6255a416140": "Übersicht über {turns, plural, one {{turns} letzte Runde} other {{turns} letzte Runden}}, {textTurns, plural, =0 {ohne Nachrichtentext} one {mit dem Nachrichtentext der letzten Runde} other {mit den Nachrichtentexten der letzten {textTurns} Runden}}{truncated, select, yes {, passend gekürzt} other {}}",
+  "260c6b45f52d2f27": "Fügt den Text deiner Nachrichten und der Antworten des Agenten aus {textTurns, plural, one {der letzten Runde} other {den letzten {textTurns} Runden}} hinzu.",
   "afac52a5cc2dc801": "Deine Antwort konnte nicht gesendet werden. Versuche es erneut.",
   "79d776428f4d0650": "Die Datei konnte nicht geladen werden. Verbinde dich erneut und versuch es noch einmal.",
   "3ea34cbb1ca5ba9b": "Vorschau abgebrochen.",
@@ -2734,9 +2735,9 @@
   "db7b3a938c45e56c": "Update {version} bereit zum Download",
   "9a951140b69ba740": "Update wird heruntergeladen ({percent} %)",
   "7fdece033260e9fb": "Update wird heruntergeladen",
+  "52e1d4a487c0cf4b": "Installation von {version} fehlgeschlagen. Klicke, um es erneut zu versuchen.",
   "09ef51903e99e876": "Update heruntergeladen. Klicke zum Neustarten und Installieren.",
   "d62631cab06d2b80": "Update {version} heruntergeladen. Klicke zum Neustarten und Installieren.",
-  "52e1d4a487c0cf4b": "Installation von {version} fehlgeschlagen. Klicke, um es erneut zu versuchen.",
   "78a04e0e625c0990": "Update fehlgeschlagen",
   "c24de5eb69373a55": "Dieser {build}-Build ignoriert {track}-Releases. Prüfe den Update-Kanal in den Einstellungen, um den Wechsel abzuschließen.",
   "b02ae45a6109c93b": "Auf dem neuesten Stand",
@@ -3639,7 +3640,6 @@
   "4e0710d19dfc2e7e": "Diesen Bericht an das T3-Team senden?",
   "87d0ae0723ba75d1": "Das ist alles, was deinen Rechner verlässt. Erst wenn du auf Senden klickst, wird etwas gesendet.",
   "bf19826f81484328": "Unterhaltung mitsenden",
-  "260c6b45f52d2f27": "Fügt den Text deiner Nachrichten und der Antworten des Agenten aus {textTurns, plural, one {der letzten Runde} other {den letzten {textTurns} Runden}} hinzu.",
   "ddb7e6f8ce99e657": "Nur wer auf diesem Rechner Agenten ausführen kann, kann den Bericht senden oder ablehnen.",
   "03c1eb603c112f47": "Nicht senden",
   "653405e4ed498d9f": "Senden",
@@ -7892,15 +7892,15 @@
       "v": "v"
     }
   ],
-  "d0e747ae0c4f68a5": "t3 konnte nicht installiert werden",
-  "ba3ac338f36cba74": "t3 konnte nicht entfernt werden",
-  "9c942b53b58119b8": "t3 konnte nicht zu PATH hinzugefügt werden",
-  "dbd9a279df913da0": "Ein anderes t3 unter {path} wird in einem neuen Terminal zuerst ausgeführt. Entferne es, um das von T3 Code zu verwenden.",
-  "20a48e388fd71c1d": "Die CLI von T3 Code als `t3` in jedem Terminal ausführen.",
+  "a20b66761ab8743d": "{command} konnte nicht installiert werden",
+  "2d8c72d1fbb24ccd": "{command} konnte nicht entfernt werden",
+  "5231206d848f0f51": "{command} konnte nicht zu PATH hinzugefügt werden",
+  "1ff646b902f69863": "Ein anderes {command} unter {path} hat in neuen Terminals Vorrang. Entferne es, um den Befehl dieser App zu verwenden.",
+  "3d8350f6a49c6909": "Führe die Desktop-CLI mit `{command}` in einem beliebigen Terminal aus.",
   "4f6e93011ef2da6f": "Installiert unter {path}. Öffne ein neues Terminal, um es zu verwenden.",
   "371ca438cf467125": "Installiert unter {path} und in {file} zu PATH hinzugefügt. Öffne ein neues Terminal, um es zu verwenden.",
   "fd3eece9d1a7ea38": "Installiert unter {path}, das noch nicht in deinem PATH ist.",
-  "5fff98fa978bd008": "Installiert unter {path}, das noch nicht in deinem PATH ist. Füge den Ordner zu deinem PATH hinzu, um `t3` auszuführen.",
+  "8567db625e5549ae": "Installiert unter {path}. Das Verzeichnis ist noch nicht in PATH. Füge es zu PATH hinzu, um `{command}` auszuführen.",
   "dc06294dd4078b00": "Entfernen",
   "b707d919dbf0222a": "Installieren",
   "9a284b5893dc04a2": "OpenRouter-Modell",
@@ -8756,9 +8756,13 @@
   "ed83b25c71c98a20": "Wähle für jedes Projekt ein oder mehrere {scope}s in {tracker}. Ihre Issues erscheinen neben denen des Repositorys, und Agenten legen neue Issues im ersten an, sofern kein anderes verlangt wird.",
   "19c2d5e81ff8f89a": "{tracker} {scope} für {project}",
   "68e061510b765772": "Nicht zugeordnet",
+  "99d51127f573296b": "Weiteres Konto",
+  "8ec2c57414669b79": "Verbinde einen zweiten {tracker}-Workspace oder -Nutzer.",
+  "99963c0142e17f00": "Für das neue {tracker}-Konto.",
   "a2d95d39d3398bda": "Anmeldedaten abgelehnt",
   "9eae463720500113": "Auf dem Server gespeichert.",
   "b6e27ab2537ef874": "Erstellen",
+  "6d8e4ebc889bace9": "Konto hinzufügen",
   "13ef526271b0f5d4": "Alle Bedingungen löschen",
   "d1938a629f039515": "Bedingung entfernen",
   "84a605b241ce65b7": "Gruppe und ihre Bedingungen entfernen",
@@ -11913,7 +11917,7 @@
   "0c5fc3b5e41e1956": "generierte thread-titel prompt benutzerdefiniert stil benennung umbenennen neu generieren",
   "a83570bcb45d8fa1": "info nach updates suchen herunterladen installieren upgrade version",
   "d65bdf6748801734": "release-kanal stabil latest nightly vorabversion",
-  "0767c794edea8f03": "t3-Befehl",
+  "7a761ec0d7eb5be7": "Befehl {command}",
   "46dd4dc08c1e552f": "cli terminal shell pfad installieren kommandozeile",
   "86479042bae0e2db": "Mobile App",
   "dc2a999ca67ccf31": "telefon tablet iPhone iPad iOS Android App Store Google Play QR",
@@ -12605,6 +12609,16 @@
   "156ff7b625287a1e": "Übersprungene ausblenden",
   "69b985b97ab45e6b": "{count} übersprungene anzeigen",
   "2400254d362de84d": "Workflow-Ausführungen werden geladen…",
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "Eine Workflow-Datei hat ein Problem."
+    },
+    " ",
+    "Die letzte funktionierende Version läuft weiter."
+  ],
+  "ed8ce6ebc73dc12d": "Datei öffnen",
   "145e1f7503ba3b2c": [
     "Diese Umgebung hat keinen Lauf mit diesem Link.",
     " ",
@@ -12630,16 +12644,6 @@
       "c": "Anleitung lesen"
     }
   ],
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "Eine Workflow-Datei hat ein Problem."
-    },
-    " ",
-    "Die letzte funktionierende Version läuft weiter."
-  ],
-  "ed8ce6ebc73dc12d": "Datei öffnen",
   "5d8d278ff828102d": "Alle Workflows",
   "39459da07479f482": "Agent",
   "7741243632056b81": "{step} · Transkript",
@@ -12782,9 +12786,5 @@
   "27d76249d09eb69f": "Review-Leitfaden bereit",
   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
   "b7df38b7d8792d78": "Leitfaden öffnen",
-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
-  "99d51127f573296b": "Weiteres Konto",
-  "8ec2c57414669b79": "Verbinde einen zweiten {tracker}-Workspace oder -Nutzer.",
-  "99963c0142e17f00": "Für das neue {tracker}-Konto.",
-  "6d8e4ebc889bace9": "Konto hinzufügen"
+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
 }

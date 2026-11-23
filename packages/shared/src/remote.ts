@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 
+import { forkIdentity, isForkDesktopProtocol } from "./forkIdentity.ts";
 import { parseUrl } from "./url.ts";
 
 const PAIRING_TOKEN_PARAM = "token";
@@ -189,15 +190,19 @@ export const readHostedPairingRequest = (url: URL): HostedPairingRequest | null 
   };
 };
 
-/** Wraps a pairing URL in the `t3code://pair` link that desktop opens and mobile scans. */
+/** Wraps a pairing URL in a desktop app link. */
 export const buildPairingAppLink = (pairingUrl: string): string =>
-  `t3code://pair?${new URLSearchParams([[PAIRING_APP_LINK_PARAM, pairingUrl]])}`;
+  `${forkIdentity.protocolScheme}://pair?${new URLSearchParams([[PAIRING_APP_LINK_PARAM, pairingUrl]])}`;
 
-/** Reads the pairing URL from a `t3code://pair` link on any app channel scheme. */
+/** Reads a pairing URL from a fork or upstream app link. */
 export const readPairingAppLink = (value: string): string | null => {
   const url = parseUrl(value);
   if (!url) return null;
-  if (!APP_LINK_PROTOCOL.test(url.protocol) || url.host !== "pair") return null;
+  if (
+    url.host !== "pair" ||
+    (!isForkDesktopProtocol(url.protocol) && !APP_LINK_PROTOCOL.test(url.protocol))
+  )
+    return null;
   if (url.pathname !== "" && url.pathname !== "/") return null;
   return url.searchParams.get(PAIRING_APP_LINK_PARAM)?.trim() || null;
 };

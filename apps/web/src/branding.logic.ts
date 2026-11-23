@@ -1,3 +1,5 @@
+import { forkIdentity } from "@t3tools/shared/forkIdentity";
+
 const NIGHTLY_SERVER_VERSION_PATTERN = /^[^-+]+-(?:nightly|preview)\.\d{8}\.\d+$/;
 
 export function formatAppDisplayName(input: {
@@ -23,8 +25,8 @@ export function resolveWebAppStageLabel(input: {
   readonly development: boolean;
 }): string {
   return (
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- release channel name, part of the product name
-    resolveHostedAppChannelLabel(input.hostedAppChannel) ?? (input.development ? "Dev" : "Beta")
+    resolveHostedAppChannelLabel(input.hostedAppChannel) ??
+    (input.development ? forkIdentity.stageLabels.development : forkIdentity.stageLabels.release)
   );
 }
 
