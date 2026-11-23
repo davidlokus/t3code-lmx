@@ -124,6 +124,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         ".github/workflows/fork-ci.yml",
         ".github/workflows/fork-release.yml",
         "fork/scripts/release-preflight.mjs",
+        "fork/scripts/sync-upstream.mjs",
         "fork/scripts/verify-mac-dmg.sh",
       ]) {
         assert.isTrue(yield* repoFileExists(required), `missing required fork file: ${required}`);
