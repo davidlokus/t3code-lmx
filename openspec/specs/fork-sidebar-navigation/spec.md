@@ -1,10 +1,10 @@
-# Spec Delta: fork-sidebar-navigation
+# fork-sidebar-navigation Specification
 
 ## Purpose
 
 Defines T3 Lab (Extend)'s Fork-owned left sidebar navigation model, including brand identity, cross-host project disambiguation, aligned status lane, compact metadata slots, deleted-provider icon fallback, and local display options.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Fork brand wordmark in sidebar header
 
@@ -45,8 +45,8 @@ Each sidebar thread row MUST render a fixed-width left status lane following str
 
 #### Scenario: Status lane resolves strict priority
 
-- **WHEN** a thread has concurrent status signals such as working, failed, approval, input, request, woke, unread completion, or unsent draft
-- **THEN** the status lane selects the highest-priority indicator in order: `working` > `failed` > `approval` > `input` > `request` > `woke` > `unread-done` > `draft` > `none`
+- **WHEN** a thread has concurrent status signals such as approval, input, request, working, failed, woke, unread completion, or unsent draft
+- **THEN** upstream row status resolves runtime/request priority (`approval` > `input` > `request` > `working` > `failed`/`limited` > quiet) and the status lane layers row-level signals underneath (`woke` > `unread-done` > `draft` > `none`)
 
 #### Scenario: Quiet read thread title dims while active or urgent threads stay emphasized
 

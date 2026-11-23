@@ -7,8 +7,10 @@ import { memo } from "react";
 
 import { cn } from "~/lib/utils";
 import { contextMenuSourceOf } from "../../contextMenuSource";
+import type { ProjectHeaderHostContext } from "../../fork/sidebar/sidebarPresentation.logic";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { useUiStateStore } from "../../uiStateStore";
+import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
@@ -42,6 +44,8 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   group: SidebarProjectSnapshot;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
+  // fork: multi-host collision or remote-only disambiguation pill
+  hostContext?: ProjectHeaderHostContext | null | undefined;
   onToggle: (group: SidebarProjectSnapshot) => void;
   onNewThread: (group: SidebarProjectSnapshot) => void;
   onContextMenu: (
@@ -52,7 +56,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
 }) {
   const gt = useGT();
   const m = useMessages();
-  const { group, collapsed, hiddenThreads } = props;
+  const { group, collapsed, hiddenThreads, hostContext } = props;
   const rowId = sidebarFolderRowId(group.projectKey);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -92,6 +96,20 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
           {group.displayName}
         </span>
+        {hostContext ? (
+          // fork: compact host disambiguation chip shown only in multi-host setups
+          <span
+            data-testid="sidebar-project-host-badge"
+            className="inline-flex max-w-28 shrink-0 items-center gap-1 rounded bg-sidebar-row-hover px-1.5 py-0.5 text-2xs font-medium text-sidebar-muted-foreground"
+          >
+            <EnvironmentMachineIcon
+              aria-hidden
+              kind={hostContext.machineKind}
+              className="size-3 shrink-0"
+            />
+            <span className="truncate">{hostContext.label}</span>
+          </span>
+        ) : null}
         {dot ? (
           <span className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME[dot])}>
             <span className="sr-only">{m(FOLDER_DOT_LABEL[dot])}</span>

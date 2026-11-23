@@ -20,6 +20,8 @@ import {
 } from "./useScopedSettings";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { firstManagedDenial, usePrimaryManagedPolicy } from "~/state/managedPolicy";
+// fork: keep Settings sidebar switches synced with T3 Lab local sidebar options store
+import { useSidebarOptionsStore } from "~/fork/sidebar/sidebarOptionsStore";
 
 /** Features still settling in. */
 export function LabsSettingsPanel() {
@@ -43,8 +45,10 @@ export function LabsSettingsPanel() {
 
 function BoringSidebarRow() {
   const searchableSetting = useSearchableSetting();
-  const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  // fork: read and update T3 Lab sidebar options store alongside client settings
+  const projectGrouped = useSidebarOptionsStore((state) => state.groupBy === "project");
+  const setGroupBy = useSidebarOptionsStore((state) => state.setGroupBy);
   const gt = useGT();
   return (
     <SettingsRow
@@ -54,13 +58,17 @@ function BoringSidebarRow() {
       )}
       control={
         <Switch
-          checked={settings.boringSidebarEnabled}
-          onCheckedChange={(checked) => updateSettings({ boringSidebarEnabled: Boolean(checked) })}
+          checked={projectGrouped}
+          onCheckedChange={(checked) => {
+            const next = Boolean(checked);
+            setGroupBy(next ? "project" : "status");
+            updateSettings({ boringSidebarEnabled: next });
+          }}
           aria-label={gt("Boring sidebar (group by project)")}
         />
       }
     >
-      {settings.boringSidebarEnabled ? (
+      {projectGrouped ? (
         <div className="mt-2 mb-2 border-l-2 border-border/60 ps-3">
           <BoringSidebarMultilineRow />
         </div>
@@ -71,8 +79,10 @@ function BoringSidebarRow() {
 
 function BoringSidebarMultilineRow() {
   const searchableSetting = useSearchableSetting();
-  const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  // fork: read and update compact single-line inverse in T3 Lab sidebar options store
+  const multilineRows = useSidebarOptionsStore((state) => !state.compactSingleLine);
+  const setOption = useSidebarOptionsStore((state) => state.setOption);
   const gt = useGT();
   return (
     <SettingsRow
@@ -83,10 +93,12 @@ function BoringSidebarMultilineRow() {
       )}
       control={
         <Switch
-          checked={settings.boringSidebarMultilineRows}
-          onCheckedChange={(checked) =>
-            updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
-          }
+          checked={multilineRows}
+          onCheckedChange={(checked) => {
+            const next = Boolean(checked);
+            setOption("compactSingleLine", !next);
+            updateSettings({ boringSidebarMultilineRows: next });
+          }}
           aria-label={gt("Two-line folder rows")}
         />
       }
