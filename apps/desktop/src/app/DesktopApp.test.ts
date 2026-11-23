@@ -185,7 +185,8 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           list: Effect.succeed(stub.backends ?? []),
         } as unknown as DesktopBackendPool.DesktopBackendPool["Service"]),
         Effect.provideService(DesktopServerExposure.DesktopServerExposure, {
-          configureFromSettings: () => Effect.succeed({ mode: "local-only" }),
+          configureFromSettings: ({ port }: { port: number }) =>
+            stub.record(`port=${port}`).pipe(Effect.as({ mode: "local-only" })),
           backendConfig: Effect.succeed({ httpBaseUrl: new URL("http://127.0.0.1:3773") }),
         } as unknown as DesktopServerExposure.DesktopServerExposure["Service"]),
         Effect.provideService(DesktopWslBackend.DesktopWslBackend, {
@@ -242,7 +243,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
             },
           }),
           stub.fileSystem,
-          Layer.mock(NetService.NetService, {}),
+          Layer.mock(NetService.NetService, { canListenOnHost: () => Effect.succeed(true) }),
           Path.layer,
           Layer.succeed(
             HttpClient.HttpClient,
@@ -271,7 +272,7 @@ it.effect.each([false, true])(
       const events: string[] = [];
       const app = yield* runStubbedDesktop({
         localEnvironmentEnabled: true,
-        environment: {},
+        environment: { configuredBackendPort: Option.none() },
         fileSystem: FileSystem.layerNoop({}),
         record: (event) =>
           Effect.sync(() => {
@@ -309,7 +310,7 @@ it.effect.each([false, true])(
       // The backend spawns before menus, and its token is minted without waiting for the renderer.
       assert.deepEqual(
         events.filter((event) => event !== "token"),
-        ["identity", "ready", "identity", "backend", "menu", "window"],
+        ["identity", "ready", "identity", "port=3973", "backend", "menu", "window"],
       );
       assert.isAbove(events.indexOf("token"), events.indexOf("backend"));
       assert.isFalse(yield* Deferred.isDone(registrationStopped));

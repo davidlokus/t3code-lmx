@@ -114,56 +114,68 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
 it("loads the emitted packaged boot entry and backend cache preload", async () => {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-boot-"));
   try {
-    const entries = ["src/boot.ts", "src/compileCache.ts"];
-    assert.ok(Array.isArray(desktopConfig.pack));
-    for (const packConfig of desktopConfig.pack) {
-      if (!Array.isArray(packConfig.entry)) continue;
-      if (!packConfig.entry.some((entry) => entries.includes(entry))) continue;
-      await build({
-        ...packConfig,
-        entry: packConfig.entry.map((entry) =>
-          NodeURL.fileURLToPath(new URL(`../${entry}`, import.meta.url)),
-        ),
-        outDir: NodePath.join(directory, "dist-electron"),
-        config: false,
-        cwd: directory,
-        tsconfig: false,
-        sourcemap: false,
-        onSuccess: undefined,
-        logLevel: "silent",
-      });
-    }
     const outputDirectory = NodePath.join(directory, "dist-electron");
-    const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');`;
+    assert.ok(Array.isArray(desktopConfig.pack));
+    const bootPack = desktopConfig.pack.find(
+      ({ entry }) => Array.isArray(entry) && entry.includes("src/boot.ts"),
+    );
+    assert.ok(bootPack);
+    await build({
+      ...bootPack,
+      outDir: outputDirectory,
+      config: false,
+      // tsdown uses the package manifest at cwd to decide which imports to externalize.
+      cwd: NodeURL.fileURLToPath(new URL("../", import.meta.url)),
+      sourcemap: false,
+      logLevel: "silent",
+    });
+
+    const compileCachePath = NodePath.join(outputDirectory, "compileCache.cjs");
+    assert.notMatch(
+      await NodeFSP.readFile(compileCachePath, "utf8"),
+      /\brequire\s*\(\s*["']@t3tools\//u,
+      "compileCache.cjs must not require workspace packages",
+    );
+    const fixture = `console.log(require('node:module').getCompileCacheDir() ?? '');`;
     await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), fixture);
     await NodeFSP.writeFile(
       NodePath.join(outputDirectory, "backend.mjs"),
-      `import { getCompileCacheDir } from 'node:module'; console.log(getCompileCacheDir() ? 'cached' : 'uncached');`,
+      `import { getCompileCacheDir } from 'node:module'; console.log(getCompileCacheDir() ?? '');`,
     );
     for (const disabled of [false, true]) {
       for (const args of [
         [NodePath.join(outputDirectory, "boot.cjs")],
-        [
-          "--require",
-          NodePath.join(outputDirectory, "compileCache.cjs"),
-          NodePath.join(outputDirectory, "backend.mjs"),
-        ],
+        ["--require", compileCachePath, NodePath.join(outputDirectory, "backend.mjs")],
       ]) {
-        const child = NodeChildProcess.spawnSync(process.execPath, args, {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            APPIMAGE: "",
-            NODE_COMPILE_CACHE: undefined,
-            NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,
-            XDG_CACHE_HOME: directory,
-            TMPDIR: directory,
-            TEMP: directory,
-            TMP: directory,
+        const child = NodeChildProcess.spawnSync(
+          process.execPath,
+          ["--no-global-search-paths", ...args],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              APPIMAGE: "",
+              NODE_OPTIONS: undefined,
+              NODE_COMPILE_CACHE: undefined,
+              NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,
+              XDG_CACHE_HOME: directory,
+              TMPDIR: directory,
+              TEMP: directory,
+              TMP: directory,
+            },
           },
-        });
+        );
         assert.equal(child.status, 0, child.stderr);
-        assert.equal(child.stdout.trim(), disabled ? "uncached" : "cached");
+        const cacheDirectory = child.stdout.trim();
+        if (disabled) {
+          assert.equal(cacheDirectory, "");
+        } else {
+          assert.equal(
+            NodePath.dirname(cacheDirectory),
+            NodePath.join(directory, "t3lab", "compile-cache"),
+          );
+        }
       }
     }
   } finally {

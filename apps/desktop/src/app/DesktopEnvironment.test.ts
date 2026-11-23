@@ -3,9 +3,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { DesktopAppBrandingSchema } from "@t3tools/contracts";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
+
+const decodeAppBranding = Schema.decodeUnknownSync(DesktopAppBrandingSchema);
 
 const defaultInput = {
   dirname: "/repo/apps/desktop/dist-electron",
@@ -13,9 +17,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/T3 Lab (Extend).app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/T3 Lab (Extend).app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -68,8 +72,17 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.t3/dev");
-      assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
+      const custom = yield* makeEnvironment({}, { T3CODE_HOME: " /tmp/custom-t3lab " });
+      assert.equal(development.stateDir, "/Users/alice/.t3lab/dev");
+      assert.equal(production.stateDir, "/Users/alice/.t3lab/userdata");
+      assert.equal(custom.stateDir, "/tmp/custom-t3lab/userdata");
+      assert.equal(development.appUserModelId, "com.davidlokus.t3lab.dev");
+      assert.equal(production.appUserModelId, "com.davidlokus.t3lab");
+      assert.deepEqual(decodeAppBranding(production.branding), {
+        baseName: "T3 Lab",
+        stageLabel: "Extend",
+        displayName: "T3 Lab (Extend)",
+      });
     }),
   );
 });
