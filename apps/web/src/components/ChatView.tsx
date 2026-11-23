@@ -2639,6 +2639,18 @@ export default function ChatView(props: ChatViewProps) {
     pendingApprovals.length > 0 ||
     pendingUserInputs.length > 0;
   const compactDisabled = compactThreadUnavailable;
+  // fork: surface a clear disabled reason tooltip for the HUD in-place /compact action
+  const compactDisabledReason = !compactDisabled
+    ? null
+    : isWorking
+      ? gt("Wait for the current turn to finish before compacting.")
+      : pendingApprovals.length > 0 || pendingUserInputs.length > 0
+        ? gt("Resolve pending requests before compacting.")
+        : !manualCompactionProviderAvailable
+          ? gt("This provider does not support manual compaction.")
+          : !activeThreadHasCompactableConversation || !isServerThread
+            ? gt("Send a message before compacting context.")
+            : gt("Context compaction is currently unavailable.");
   const freshSessionAvailable =
     activeMessageCount > 0 && serverConfig?.environment.capabilities.freshContext === true;
   const freshSessionArmed = useFreshSessionArmed(routeThreadKey);
@@ -4160,6 +4172,12 @@ export default function ChatView(props: ChatViewProps) {
                     providers: providerStatuses,
                     sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
                     contextWindow: activeContextWindow,
+                  }}
+                  // fork: pass existing /compact handler to T3 Lab HUD Context card
+                  compactContext={{
+                    onCompact: onComposerCompactContextStable,
+                    disabled: compactDisabled,
+                    disabledReason: compactDisabledReason,
                   }}
                 />
 
