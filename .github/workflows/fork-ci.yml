@@ -25,7 +25,11 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
@@ -39,14 +43,33 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
       - name: Install browser test dependencies
         run: |
-          node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
-          sudo apt-get install -y libsecret-1-dev pkg-config
+          if [ "${{ steps.chromium_cache.outputs.cache-hit }}" != "true" ]; then
+            node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+          fi
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          if [ -n "$browser" ] && ldd "$browser" | grep -q '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y libsecret-1-dev pkg-config
 
       - name: Check pull request changes
         if: github.event_name == 'pull_request'
-        run: vp run check:changed origin/lmx-lab
+        run: |
+          git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags origin lmx-lab:refs/remotes/origin/lmx-lab
+          vp run check:changed origin/lmx-lab
 
       - name: Check changes pushed to lmx-lab
         if: github.event_name == 'push'
