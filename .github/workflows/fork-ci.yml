@@ -65,6 +65,9 @@ jobs:
           fi
           sudo apt-get update -qq && sudo apt-get install -y libsecret-1-dev pkg-config
 
+      - name: Run Fork invariant guard
+        run: vp test run packages/shared/src/forkIdentity.guard.test.ts
+
       - name: Check pull request changes
         if: github.event_name == 'pull_request'
         run: |

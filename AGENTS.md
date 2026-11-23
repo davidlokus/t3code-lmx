@@ -3,12 +3,12 @@
 ## Fork overrides
 
 - `davidlokus/t3code-lmx` is a personal fork of `pingdotgg/t3code`, branded **T3 Lab (Extend)**.
-- Read [FORK.md](FORK.md) first. If it conflicts with the upstream instructions below, `FORK.md` wins.
+- Read [FORK.md](FORK.md) and [LESSONS.md](LESSONS.md) first. If they conflict with the upstream instructions below, `FORK.md` wins.
 - `origin` is `davidlokus/t3code-lmx`; `upstream` is `pingdotgg/t3code` (read-only, push disabled).
-- Never push to `upstream`. Do not open a PR against `pingdotgg/t3code` unless explicitly asked. For fork PRs, always pass `--repo davidlokus/t3code-lmx --base lmx-lab` to `gh pr create`.
+- Never push to `upstream`. Do not open a PR against `pingdotgg/t3code` unless explicitly asked. For fork PRs, always pass `--repo davidlokus/t3code-lmx --base lmx-lab` to `gh pr create` and `--match-head-commit <sha>` to `gh pr merge`.
 - `main` is a fast-forward-only mirror of `upstream/main`; `lmx-lab` is the fork's default integration branch. Never commit directly to or force-push either branch.
 - Cut feature branches and worktrees (`../t3code-lmx-<topic>`) from `origin/lmx-lab`. Feature PRs may squash-merge; upstream sync PRs (`sync/upstream-*`) must use a merge commit, never squash or rebase.
-- Run `vp run check:changed origin/lmx-lab` before pushing a feature branch.
+- Run `vp run check:changed origin/lmx-lab` and `vp test run packages/shared/src/forkIdentity.guard.test.ts` before pushing. Every PR/commit body must state `Verified`, `Broken by hand` (for behavior fixes), and `Not tried`.
 - Never touch live `~/.t3/userdata`.
 
 <!-- FORK-OVERRIDE:END -->

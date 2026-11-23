@@ -1,2 +1,3 @@
 @FORK.md
+@LESSONS.md
 @AGENTS.md
