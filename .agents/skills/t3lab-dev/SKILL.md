@@ -19,6 +19,7 @@ Route work by complexity so simple changes stay fast while cross-cutting Fork wo
 
 - **State the tier up front in one line** (e.g. `Tier: L0 Direct — ...`), then proceed unless the user explicitly wants a heavier or lighter tier.
 - **Keep moving on minor ambiguity**: make reasonable calls and list all assumptions together for one-reply correction. Only stop to ask before proceeding when a wrong guess is costly (architecture boundary, security, or breaking compatibility).
+- **In-flight scope escalation**: if an L0/L1 task ends up adding `packages/contracts` fields or touching ≥ 3 workspace packages, keep moving in the same branch/worktree without restarting, but backfill the Surface Matrix and run cross-package typechecks before handoff.
 - **Never write wholesale specs for upstream T3 Code**: `openspec/specs/` tracks Fork-owned capabilities and invariants only.
 - **Honor explicit user overrides**: if the user explicitly names an `openspec-*` skill or asks to skip planning, follow their choice.
 
