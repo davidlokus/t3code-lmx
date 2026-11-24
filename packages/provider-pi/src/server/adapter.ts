@@ -370,7 +370,7 @@ function compactionTitle(status: PiCompactionStatus): string {
 
 type PiMessageTokenUsage = Pick<
   OrchestrationV2ProviderTurnTokenUsage,
-  "inputTokens" | "cachedInputTokens" | "outputTokens"
+  "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens"
 >;
 
 interface ActivePiTurn {
@@ -391,6 +391,9 @@ interface ActivePiTurn {
   promptMayBeCommandOnly: boolean;
   latestCompactionAfterTokens: number | null;
   lastLiveUsedTokens: number | null;
+  lastLiveCostUsd: number; // fork:
+  completedTurnCostUsd: number; // fork:
+  currentMessageCostUsd: number; // fork:
   lastMessageUsage: PiMessageTokenUsage | undefined;
   settleProbeGeneration: number;
   /** An extension may start compaction immediately after Pi emits agent_settled. */
@@ -759,6 +762,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       let baselineModel: { provider: string; modelId: string } | null = null;
       let baselineThinking: string | null = null;
       let contextWindow: number | null = null;
+      let baselineSessionCostUsd = 0; // fork:
       const modelContextWindows = new Map<string, number>();
       let discoveredModels: ReadonlyArray<unknown> | null = null;
       let nextPromptId = 0;
@@ -966,12 +970,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         const value = recordNumber(input, key);
         return value === undefined ? undefined : Math.max(0, Math.trunc(value));
       };
+      // fork: extract positive finite USD cost from Pi/omp message usage or session stats
+      const positiveFiniteNumber = (input: unknown, key: string): number | undefined => {
+        const value = recordNumber(input, key);
+        return value !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
+      };
+      const piMessageCostUsd = (usage: unknown): number | undefined =>
+        positiveFiniteNumber(recordField(usage, "cost"), "total");
+      const piUsdCost = (amount: number): OrchestrationV2ProviderTurnTokenUsage["cost"] =>
+        amount > 0 ? { amount, currency: "USD" } : undefined;
 
       // Pi counts uncached input, cache reads and cache writes separately; input includes all three.
       const piMessageTokenUsage = (usage: unknown): PiMessageTokenUsage => {
         const uncachedInputTokens = nonNegativeInteger(usage, "input");
         const cachedInputTokens = nonNegativeInteger(usage, "cacheRead");
         const outputTokens = nonNegativeInteger(usage, "output");
+        // fork: preserve reasoning token counts reported by omp (`reasoningTokens`) or Pi (`reasoning`)
+        const reasoningOutputTokens =
+          nonNegativeInteger(usage, "reasoningTokens") ?? nonNegativeInteger(usage, "reasoning");
         return {
           ...(uncachedInputTokens === undefined
             ? {}
@@ -983,6 +999,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               }),
           ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
           ...(outputTokens === undefined ? {} : { outputTokens }),
+          ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
         };
       };
 
@@ -1077,16 +1094,30 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         stats: unknown,
         fallbackUsedTokens: number | null,
         messageUsage: PiMessageTokenUsage | undefined,
+        fallbackSessionCostUsd: number,
         updatedAt: DateTime.Utc,
       ): OrchestrationV2ProviderTurnTokenUsage | undefined => {
         const contextUsage = recordField(stats, "contextUsage");
         const maxTokens = nonNegativeInteger(contextUsage, "contextWindow");
         const usedTokens =
           nonNegativeInteger(contextUsage, "tokens") ?? fallbackUsedTokens ?? undefined;
+        // fork: preserve authoritative whole-session USD cost when positive; omit zero/unpriced cost
+        const statsCostUsd = positiveFiniteNumber(stats, "cost");
+        const resolvedCostUsd = statsCostUsd ?? fallbackSessionCostUsd;
+        if (resolvedCostUsd > 0) {
+          baselineSessionCostUsd = resolvedCostUsd;
+        }
+        const cost = piUsdCost(resolvedCostUsd);
         if (usedTokens === undefined || maxTokens === undefined || maxTokens === 0)
           return undefined;
         // Stats `tokens` are whole-session totals; the breakdown comes from the turn's last message.
-        return { usedTokens, maxTokens, ...messageUsage, updatedAt: DateTime.formatIso(updatedAt) };
+        return {
+          usedTokens,
+          maxTokens,
+          ...messageUsage,
+          ...(cost === undefined ? {} : { cost }),
+          updatedAt: DateTime.formatIso(updatedAt),
+        };
       };
 
       const readTokenUsage = (turn: ActivePiTurn, updatedAt: DateTime.Utc) =>
@@ -1096,6 +1127,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               stats,
               turn.latestCompactionAfterTokens,
               turn.lastMessageUsage,
+              baselineSessionCostUsd + turn.completedTurnCostUsd + turn.currentMessageCostUsd,
               updatedAt,
             ),
           ),
@@ -1112,16 +1144,25 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           if (usedTokens !== undefined && usedTokens > 0) {
             turn.lastMessageUsage = piMessageTokenUsage(usage);
           }
+          // fork: track live per-message USD cost alongside token counters
+          const messageCostUsd = piMessageCostUsd(usage);
+          if (messageCostUsd !== undefined) {
+            turn.currentMessageCostUsd = messageCostUsd;
+          }
+          const liveCostUsd =
+            baselineSessionCostUsd + turn.completedTurnCostUsd + turn.currentMessageCostUsd;
           if (
             usedTokens === undefined ||
             usedTokens === 0 ||
-            usedTokens === turn.lastLiveUsedTokens ||
+            (usedTokens === turn.lastLiveUsedTokens && liveCostUsd === turn.lastLiveCostUsd) ||
             contextWindow === null ||
             contextWindow === 0
           ) {
             return;
           }
           turn.lastLiveUsedTokens = usedTokens;
+          turn.lastLiveCostUsd = liveCostUsd;
+          const cost = piUsdCost(liveCostUsd);
           const updatedAt = yield* DateTime.now;
           yield* emit({
             type: "provider_turn.updated",
@@ -1133,6 +1174,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 usedTokens,
                 maxTokens: contextWindow,
                 ...turn.lastMessageUsage,
+                ...(cost === undefined ? {} : { cost }),
                 updatedAt: DateTime.formatIso(updatedAt),
               },
             },
@@ -2448,6 +2490,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const message = event["message"];
             if (recordString(message, "role") !== "assistant") return;
             yield* completeOpenStreamItems(turn);
+            // fork: fold completed assistant message cost into the running turn total
+            const completedMessageCost = piMessageCostUsd(recordField(message, "usage"));
+            turn.completedTurnCostUsd += completedMessageCost ?? turn.currentMessageCostUsd;
+            turn.currentMessageCostUsd = 0;
             const reportedProvider = recordString(message, "provider");
             const reportedModelId = recordString(message, "model");
             if (reportedProvider && reportedModelId) {
@@ -3173,6 +3219,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             baselineModel = null;
             baselineThinking = null;
             contextWindow = null;
+            baselineSessionCostUsd = 0; // fork:
             const result = yield* lifecycleRequest(
               resumeId != null && existing !== undefined
                 ? {
@@ -3555,6 +3602,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 compactCommand !== null || (payload?.message.trimStart().startsWith("/") ?? false),
               latestCompactionAfterTokens: null,
               lastLiveUsedTokens: null,
+              lastLiveCostUsd: 0, // fork:
+              completedTurnCostUsd: 0, // fork:
+              currentMessageCostUsd: 0, // fork:
               lastMessageUsage: undefined,
               settleProbeGeneration: 0,
               settleWhenIdle: false,

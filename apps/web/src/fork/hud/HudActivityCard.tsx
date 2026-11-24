@@ -28,15 +28,38 @@ const SUBAGENT_DOT_CLASS: Record<HudSubagentStatus, string> = {
 };
 
 function toolDisplayName(name: string, gt: ReturnType<typeof useGT>): string {
-  switch (name) {
+  switch (name.toLowerCase()) {
     case "command_execution":
+    case "bash":
+    case "shell":
       return gt("Shell", { $context: "HUD tool activity chip" });
     case "file_change":
+    case "edit":
+    case "multiedit":
       return gt("Edit", { $context: "HUD tool activity chip" });
+    case "read":
+      return gt("Read", { $context: "HUD tool activity chip" });
+    case "write":
+      return gt("Write", { $context: "HUD tool activity chip" });
     case "file_search":
+    case "grep":
       return gt("Search", { $context: "HUD tool activity chip" });
+    case "find":
+    case "glob":
+      return gt("Find", { $context: "HUD tool activity chip" });
     case "web_search":
       return gt("Web", { $context: "HUD tool activity chip" });
+    case "fetch":
+    case "webfetch":
+    case "web_fetch":
+      return gt("Fetch", { $context: "HUD tool activity chip" });
+    case "todo":
+    case "todowrite":
+    case "todo_write":
+      return gt("Todo", { $context: "HUD tool activity chip" });
+    case "task":
+    case "agent":
+      return gt("Task", { $context: "HUD tool activity chip" });
     case "dynamic_tool":
       return gt("Tool", { $context: "HUD tool activity chip" });
     default:

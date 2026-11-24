@@ -36,6 +36,50 @@ function formatSpeed(tokensPerSecond: number | null): string {
   return `${tokensPerSecond.toFixed(1)} tok/s`;
 }
 
+function formatThinkingEffortLabel(effort: string, gt: ReturnType<typeof useGT>): string {
+  switch (effort.toLowerCase()) {
+    case "enabled":
+      return gt("Thinking", { $context: "thinking enabled tag" });
+    case "minimal":
+      return gt("Minimal", { $context: "thinking effort level" });
+    case "low":
+      return gt("Low", { $context: "thinking effort level" });
+    case "medium":
+      return gt("Medium", { $context: "thinking effort level" });
+    case "high":
+      return gt("High", { $context: "thinking effort level" });
+    case "xhigh":
+      return gt("XHigh", { $context: "thinking effort level" });
+    case "max":
+      return gt("Max", { $context: "thinking effort level" });
+    default:
+      return effort;
+  }
+}
+
+/** Isolated second-clock leaf mounted only while a running turn is producing output tokens. */
+function HudLiveSpeed(props: {
+  readonly outputTokens: number;
+  readonly startedAtMs: number;
+  readonly fallbackSpeed: number | null;
+}) {
+  const nowMs = useSyncExternalStore(
+    secondTick.subscribe,
+    secondTick.getSnapshot,
+    secondTick.getSnapshot,
+  );
+  const elapsedMs = nowMs - props.startedAtMs;
+  const liveRate =
+    Number.isFinite(elapsedMs) && elapsedMs >= 500
+      ? (props.outputTokens / elapsedMs) * 1_000
+      : props.fallbackSpeed;
+  return (
+    <span className="truncate text-xs font-semibold text-foreground tabular-nums">
+      {formatSpeed(liveRate)}
+    </span>
+  );
+}
+
 function formatRuntimeModeLabel(
   runtimeMode: string | null,
   gt: ReturnType<typeof useGT>,
@@ -112,11 +156,7 @@ export function HudSessionCard(props: { readonly metrics: HudSessionMetrics }) {
   const modelValue = metrics.servedModel ?? metrics.requestedModel ?? "–";
   const modeBits: string[] = [];
   if (metrics.thinkingEffort) {
-    modeBits.push(
-      metrics.thinkingEffort === "enabled"
-        ? gt("Thinking", { $context: "thinking enabled tag" })
-        : metrics.thinkingEffort,
-    );
+    modeBits.push(formatThinkingEffortLabel(metrics.thinkingEffort, gt));
   }
   if (metrics.interactionMode === "plan") {
     modeBits.push(gt("Plan", { $context: "interaction mode" }));
@@ -155,9 +195,17 @@ export function HudSessionCard(props: { readonly metrics: HudSessionMetrics }) {
           <span className="text-3xs text-muted-foreground">
             <T context="session throughput label">Speed</T>
           </span>
-          <span className="truncate text-xs font-semibold text-foreground tabular-nums">
-            {speedValue}
-          </span>
+          {metrics.liveTurnOutputTokens !== null && metrics.liveTurnStartedAtMs !== null ? (
+            <HudLiveSpeed
+              outputTokens={metrics.liveTurnOutputTokens}
+              startedAtMs={metrics.liveTurnStartedAtMs}
+              fallbackSpeed={metrics.tokensPerSecond}
+            />
+          ) : (
+            <span className="truncate text-xs font-semibold text-foreground tabular-nums">
+              {speedValue}
+            </span>
+          )}
           <span className="truncate text-3xs text-muted-foreground tabular-nums">
             TTFT {ttftValue}
           </span>

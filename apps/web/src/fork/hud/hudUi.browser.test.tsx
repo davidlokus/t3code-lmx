@@ -584,6 +584,9 @@ describe("T3 Lab right-side Thread HUD", () => {
     await expect
       .element(screen.getByTestId("hud-kpi-model-delta").getByText("claude-opus-4-6"))
       .toBeVisible();
+    await expect
+      .element(screen.getByTestId("hud-kpi-model").getByText("High · Plan · Full"))
+      .toBeVisible();
 
     // B5 Quota: directly visible countdown without hovering
     await expect.element(screen.getByTestId("hud-quota-card")).toBeVisible();
@@ -883,5 +886,163 @@ describe("T3 Lab right-side Thread HUD", () => {
     });
     await expect.element(page.getByTestId("hud-system-card")).not.toBeInTheDocument();
     expect(useResourceTelemetry).not.toHaveBeenCalled();
+  });
+
+  it("renders omp thinking effort, live running-turn speed, TTFT, reported cost, and localized built-in tools", async () => {
+    resetTestState();
+    const base = makeThreadProjectionFixture();
+    const turnStartedAt = utc("2026-11-23T11:59:50.000Z");
+    const firstReasoningAt = utc("2026-11-23T11:59:51.600Z");
+    const ompModelSelection = {
+      instanceId: ProviderInstanceId.make("omp"),
+      model: "openai-codex/gpt-6.1-terra",
+      options: [{ id: "thinking", value: "high" }],
+    };
+    const ompStructure: EnvironmentThreadStructure = {
+      environmentId: ENV_ID,
+      projection: {
+        ...base,
+        thread: {
+          ...base.thread,
+          id: THREAD_ID,
+          projectId: PROJECT_ID,
+          providerInstanceId: ompModelSelection.instanceId,
+          activeProviderThreadId: PROVIDER_THREAD_ID,
+          modelSelection: ompModelSelection,
+          interactionMode: "default",
+          runtimeMode: "full-access",
+        },
+        runs: [
+          {
+            id: RunId.make("run-omp"),
+            threadId: THREAD_ID,
+            ordinal: 1,
+            providerInstanceId: ompModelSelection.instanceId,
+            modelSelection: ompModelSelection,
+            providerThreadId: PROVIDER_THREAD_ID,
+            userMessageId: MessageId.make("msg-omp-u1"),
+            rootNodeId: NodeId.make("node-omp-1"),
+            activeAttemptId: null,
+            status: "running",
+            requestedAt: turnStartedAt,
+            startedAt: turnStartedAt,
+            workStartedAt: turnStartedAt,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        ],
+        providerTurns: [
+          {
+            id: ProviderTurnId.make("turn-omp-1"),
+            providerThreadId: PROVIDER_THREAD_ID,
+            nodeId: NodeId.make("node-omp-1"),
+            runAttemptId: null,
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: turnStartedAt,
+            completedAt: null,
+            model: "openai-codex/gpt-6.1-terra",
+            tokenUsage: {
+              usedTokens: 28_738,
+              maxTokens: 1_000_000,
+              inputTokens: 28_528,
+              cachedInputTokens: 12_000,
+              outputTokens: 210,
+              reasoningOutputTokens: 9,
+              cost: { amount: 0.073945, currency: "USD" },
+              updatedAt: "2026-11-23T11:59:59.000Z",
+            },
+          },
+        ],
+        turnItems: [
+          {
+            id: TurnItemId.make("item-omp-reason"),
+            threadId: THREAD_ID,
+            runId: RunId.make("run-omp"),
+            nodeId: NodeId.make("node-omp-r"),
+            providerThreadId: PROVIDER_THREAD_ID,
+            providerTurnId: ProviderTurnId.make("turn-omp-1"),
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "completed",
+            title: null,
+            startedAt: firstReasoningAt,
+            completedAt: firstReasoningAt,
+            type: "reasoning",
+            streaming: false,
+          },
+          {
+            id: TurnItemId.make("item-omp-read"),
+            threadId: THREAD_ID,
+            runId: RunId.make("run-omp"),
+            nodeId: NodeId.make("node-omp-t"),
+            providerThreadId: PROVIDER_THREAD_ID,
+            providerTurnId: ProviderTurnId.make("turn-omp-1"),
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 2,
+            status: "completed",
+            title: null,
+            startedAt: firstReasoningAt,
+            completedAt: firstReasoningAt,
+            updatedAt: firstReasoningAt,
+            type: "dynamic_tool",
+            toolName: "read",
+            input: { path: "README.md" },
+            output: "ok",
+          },
+        ],
+        subagents: [],
+      },
+    };
+    vi.mocked(useQuietThreadProjection).mockReturnValue(ompStructure);
+
+    const usage: ThreadDetailsUsageInput = {
+      providerInstanceId: ompModelSelection.instanceId,
+      model: ompModelSelection.model,
+      providers: [],
+      sources: EMPTY_SOURCES,
+      contextWindow: {
+        usedTokens: 28_738,
+        maxTokens: 1_000_000,
+        remainingTokens: 971_262,
+        usedPercentage: 2.9,
+        remainingPercentage: 97.1,
+        totalProcessedTokens: null,
+        inputTokens: 28_528,
+        cachedInputTokens: 12_000,
+        outputTokens: 210,
+        reasoningOutputTokens: 9,
+        lastUsedTokens: null,
+        lastInputTokens: null,
+        lastCachedInputTokens: null,
+        lastOutputTokens: null,
+        lastReasoningOutputTokens: null,
+        toolUses: null,
+        durationMs: null,
+        compactsAutomatically: true,
+        autoCompactThreshold: null,
+        cost: { amount: 0.073945, currency: "USD" },
+        updatedAt: "2026-11-23T11:59:59.000Z",
+      },
+    };
+
+    await using screen = await render(
+      <div className="w-[280px]">
+        <ThreadHudSections environmentId={ENV_ID} threadId={THREAD_ID} usage={usage} />
+      </div>,
+    );
+
+    const speedKpi = screen.getByTestId("hud-kpi-speed");
+    await expect.element(speedKpi.getByText(/tok\/s/)).toBeVisible();
+    await expect.element(speedKpi.getByText("TTFT 1.6s")).toBeVisible();
+    await expect.element(screen.getByTestId("hud-kpi-billing").getByText("$0.07")).toBeVisible();
+    await expect
+      .element(screen.getByTestId("hud-kpi-model").getByText("High · Full"))
+      .toBeVisible();
+    await expect.element(screen.getByTestId("hud-tool-chip").getByText("Read")).toBeVisible();
   });
 });

@@ -43,6 +43,7 @@ import { OmpSettings } from "../settings.ts";
 import { OmpAdapterV2Driver, ompInstanceEnvironment } from "./adapter.ts";
 import { OMP_PROVIDER } from "./dialect.ts";
 import { buildInitialOmpProviderSnapshot, checkOmpProviderStatus } from "./status.ts";
+import { ompUsageReader } from "./usage.ts";
 
 const decodeOmpSettings = Schema.decodeSync(OmpSettings);
 
@@ -94,6 +95,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
   },
   configSchema: OmpSettings,
   defaultConfig: (): OmpSettings => decodeOmpSettings({}),
+  usage: ompUsageReader,
   create: Effect.fn("OmpDriver.create")(function* ({
     instanceId,
     displayName,

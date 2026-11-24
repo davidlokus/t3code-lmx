@@ -9,6 +9,7 @@ export function providerColors(scheme: "light" | "dark"): Record<UsageProviderKi
     opencode: "#5b9bbd",
     antigravity: "#8c7bd1",
     pi: "#4d9f8a",
+    omp: "#9b4dff", // fork:
     muse: "#0866ff",
   };
 }

@@ -666,6 +666,8 @@ export type HudBillingMode = "cost" | "subscription" | "unknown";
 
 export interface HudSessionMetrics {
   readonly tokensPerSecond: number | null;
+  readonly liveTurnOutputTokens: number | null;
+  readonly liveTurnStartedAtMs: number | null;
   readonly ttftMs: number | null;
   readonly activeDurationMs: number | null;
   readonly completedDurationMs: number;
@@ -683,29 +685,52 @@ export interface HudSessionMetrics {
   readonly runtimeMode: string | null;
 }
 
+const MAX_TTFT_MS = 30 * 60_000;
+
 function outputRate(
   tokens: number | null | undefined,
   durationMs: number | null | undefined,
+  minDurationMs = 100,
 ): number | null {
   const output = positiveCount(tokens);
-  return output !== null && durationMs != null && Number.isFinite(durationMs) && durationMs >= 100
+  return output !== null &&
+    durationMs != null &&
+    Number.isFinite(durationMs) &&
+    durationMs >= minDurationMs
     ? (output / durationMs) * 1_000
     : null;
 }
 
-function measureTurns(turns: ThreadStructure["providerTurns"]) {
+function measureTurns(
+  turns: ThreadStructure["providerTurns"],
+  activeThreadId: ProviderThreadId | null,
+) {
   let turnCount = 0;
   let tokensPerSecond: number | null = null;
   let latestRateAt = -Infinity;
+  let liveTurn: OrchestrationV2ProviderTurn | undefined;
+  let liveTurnOutputTokens: number | null = null;
+  let liveTurnStartedAtMs: number | null = null;
   for (const turn of turns) {
     if (turn.promptDropped) continue;
     turnCount++;
+    if (turn.turnTokenUsage?.localCommand) continue;
     if (
-      turn.status !== "completed" ||
-      turn.startedAt === null ||
-      turn.completedAt === null ||
-      turn.turnTokenUsage?.localCommand
-    )
+      turn.status === "running" &&
+      deliveredOnThread(turn, activeThreadId) &&
+      turn.startedAt !== null
+    ) {
+      const liveOutput = positiveCount(
+        turn.turnTokenUsage?.outputTokens ?? turn.tokenUsage?.outputTokens,
+      );
+      if (liveOutput !== null && (!liveTurn || isLaterTurn(turn, liveTurn))) {
+        liveTurn = turn;
+        liveTurnOutputTokens = liveOutput;
+        liveTurnStartedAtMs = DateTime.toEpochMillis(turn.startedAt);
+      }
+      continue;
+    }
+    if (turn.status !== "completed" || turn.startedAt === null || turn.completedAt === null)
       continue;
     const completedAt = DateTime.toEpochMillis(turn.completedAt);
     if (completedAt < latestRateAt) continue;
@@ -719,7 +744,56 @@ function measureTurns(turns: ThreadStructure["providerTurns"]) {
       latestRateAt = completedAt;
     }
   }
-  return { turnCount, tokensPerSecond };
+  return { turnCount, tokensPerSecond, liveTurnOutputTokens, liveTurnStartedAtMs };
+}
+
+function measureTurnTtft(
+  projection:
+    | (Pick<ThreadStructure, "thread" | "providerTurns"> &
+        Partial<Pick<ThreadStructure, "turnItems">>)
+    | null
+    | undefined,
+): number | null {
+  const items = projection?.turnItems;
+  if (!projection || !items || items.length === 0) return null;
+  const activeThreadId = projection.thread.activeProviderThreadId ?? null;
+  const earliestOutputByTurn = new Map<string, number>();
+  for (const item of items) {
+    if (
+      item.providerTurnId === null ||
+      item.startedAt === null ||
+      !(item.type === "reasoning" || item.type === "assistant_message" || isToolItem(item))
+    ) {
+      continue;
+    }
+    const startedAt = DateTime.toEpochMillis(item.startedAt);
+    const existing = earliestOutputByTurn.get(item.providerTurnId);
+    if (existing === undefined || startedAt < existing) {
+      earliestOutputByTurn.set(item.providerTurnId, startedAt);
+    }
+  }
+  if (earliestOutputByTurn.size === 0) return null;
+
+  let chosenTurn: OrchestrationV2ProviderTurn | undefined;
+  let chosenTtftMs: number | null = null;
+  for (const turn of projection.providerTurns) {
+    if (
+      !deliveredOnThread(turn, activeThreadId) ||
+      turn.turnTokenUsage?.localCommand ||
+      turn.startedAt === null
+    ) {
+      continue;
+    }
+    const firstOutputAt = earliestOutputByTurn.get(turn.id);
+    if (firstOutputAt === undefined) continue;
+    const delta = firstOutputAt - DateTime.toEpochMillis(turn.startedAt);
+    if (!Number.isFinite(delta) || delta <= 0 || delta > MAX_TTFT_MS) continue;
+    if (!chosenTurn || isLaterTurn(turn, chosenTurn)) {
+      chosenTurn = turn;
+      chosenTtftMs = delta;
+    }
+  }
+  return chosenTtftMs;
 }
 
 function measureRuns(runs: ThreadStructure["runs"], nowMs: number) {
@@ -757,20 +831,24 @@ function measureRuns(runs: ThreadStructure["runs"], nowMs: number) {
 function readThinkingEffort(thread: ThreadStructure["thread"] | undefined): string | null {
   const options = thread?.modelSelection.options;
   if (!options) return null;
-  for (const id of ["reasoningEffort", "effort", "thinkingLevel"]) {
+  for (const id of ["reasoningEffort", "effort", "thinkingLevel", "thinking"]) {
     const value = options.find((option) => option.id === id)?.value;
-    const effort = typeof value === "string" ? nonEmptyText(value) : null;
-    if (effort !== null) return effort;
+    if (typeof value === "string") {
+      const effort = nonEmptyText(value);
+      if (effort !== null) {
+        return effort.toLowerCase() === "off" ? null : effort;
+      }
+    }
+    if (id === "thinking" && value === true) return "enabled";
   }
-  return options.some((option) => option.id === "thinking" && option.value === true)
-    ? "enabled"
-    : null;
+  return null;
 }
 
 export function deriveHudSessionMetrics(input: {
   readonly contextWindow: ContextWindowSnapshot | null | undefined;
   readonly projection:
-    | Pick<ThreadStructure, "thread" | "runs" | "providerTurns">
+    | (Pick<ThreadStructure, "thread" | "runs" | "providerTurns"> &
+        Partial<Pick<ThreadStructure, "turnItems">>)
     | null
     | undefined;
   readonly requestedModel: string | null | undefined;
@@ -778,7 +856,8 @@ export function deriveHudSessionMetrics(input: {
   readonly nowMs: number;
 }): HudSessionMetrics {
   const { contextWindow, projection } = input;
-  const turns = measureTurns(projection?.providerTurns ?? []);
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  const turns = measureTurns(projection?.providerTurns ?? [], activeThreadId);
   const runs = measureRuns(projection?.runs ?? [], input.nowMs);
   const reportedCost = contextWindow?.cost;
   const cost =
@@ -791,11 +870,18 @@ export function deriveHudSessionMetrics(input: {
       : null;
   const requestedModel = nonEmptyText(input.requestedModel);
   const servedModel = reportedModel(latestDeliveredTurn(projection));
+  const liveTokensPerSecond =
+    turns.liveTurnOutputTokens !== null && turns.liveTurnStartedAtMs !== null
+      ? outputRate(turns.liveTurnOutputTokens, input.nowMs - turns.liveTurnStartedAtMs, 500)
+      : null;
   return {
     tokensPerSecond:
       turns.tokensPerSecond ??
+      liveTokensPerSecond ??
       outputRate(contextWindow?.lastOutputTokens, contextWindow?.durationMs),
-    ttftMs: null,
+    liveTurnOutputTokens: turns.liveTurnOutputTokens,
+    liveTurnStartedAtMs: turns.liveTurnStartedAtMs,
+    ttftMs: measureTurnTtft(projection),
     activeDurationMs: runs.activeDurationMs ?? positiveCount(contextWindow?.durationMs),
     completedDurationMs: runs.completedDurationMs,
     activeRunStartedAtMs: runs.activeRunStartedAtMs,

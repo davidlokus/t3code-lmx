@@ -42,6 +42,12 @@ export const PROVIDER_PRESENTATION = {
     color: "#4d9f8a",
     driverKind: ProviderDriverKind.make("pi"),
   },
+  // fork: native omp provider usage series
+  omp: {
+    label: "omp",
+    color: "#9b4dff",
+    driverKind: ProviderDriverKind.make("omp"),
+  },
   muse: {
     label: "Muse Code",
     color: "#0866ff",

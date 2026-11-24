@@ -14,7 +14,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { compactBeforeSendTokens } from "./contextWindow.ts";
+import { compactBeforeSendTokens, deriveLatestContextWindowSnapshot } from "./contextWindow.ts";
 import type { ThreadStructure } from "./models.ts";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 
@@ -260,5 +260,30 @@ describe("compactBeforeSendTokens", () => {
     expect(compactBeforeSendTokens(sendInput(overrides as Parameters<typeof sendInput>[0]))).toBe(
       expected ? 293_611 : null,
     );
+  });
+});
+
+describe("deriveLatestContextWindowSnapshot", () => {
+  it("forwards provider-reported cost attached to live turn token usage", () => {
+    const withCost = deriveLatestContextWindowSnapshot([], {
+      usedTokens: 28_738,
+      maxTokens: 200_000,
+      inputTokens: 28_528,
+      outputTokens: 210,
+      reasoningOutputTokens: 9,
+      cost: { amount: 0.073945, currency: "USD" },
+      updatedAt: lastTurnAt,
+    });
+    expect(withCost?.cost).toEqual({ amount: 0.073945, currency: "USD" });
+    expect(withCost?.reasoningOutputTokens).toBe(9);
+
+    const withoutCost = deriveLatestContextWindowSnapshot([], {
+      usedTokens: 24_016,
+      maxTokens: 1_000_000,
+      inputTokens: 22_354,
+      outputTokens: 1_662,
+      updatedAt: lastTurnAt,
+    });
+    expect(withoutCost?.cost).toBeNull();
   });
 });

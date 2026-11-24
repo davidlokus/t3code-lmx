@@ -158,6 +158,19 @@ export function resolveOmpLaunchArgs(launchArgs: string): PiLaunchArgsResolution
   return { ok: true, args };
 }
 
+export function ompLaunchSessionDir(launchArgs: string): string | undefined {
+  const resolved = resolveOmpLaunchArgs(launchArgs);
+  if (!resolved.ok) return undefined;
+  let sessionDir: string | undefined;
+  for (let index = 0; index < resolved.args.length; index += 1) {
+    const arg = resolved.args[index];
+    if (arg === undefined || !ARGUMENTS_WITH_VALUES.has(arg)) continue;
+    index += 1;
+    if (arg === "--session-dir") sessionDir = resolved.args[index] || undefined;
+  }
+  return sessionDir;
+}
+
 export function ompInventoryLaunchArgs(
   args: ReadonlyArray<string>,
   isAbsolute: (path: string) => boolean,
