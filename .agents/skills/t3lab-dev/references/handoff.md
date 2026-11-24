@@ -4,26 +4,28 @@ Battle-tested playbook for splitting L1/L2 Fork work across **Coordinator/UI (`a
 
 ## 1. Role split & ownership boundary
 
-| Phase                                                 | Default Owner                                     | Responsibility                                                                                                                                                                                                                                                                                           | Allowed Writes                                                  |
-| ----------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **Phase 1: Plan & Contract**                          | Coordinator (`agy`)                               | Cut feature branch + adjacent worktree (`../t3code-lmx-<topic>`), write OpenSpec artifacts (`proposal.md`, `specs/`, `design.md`, `tasks.md`), run `openspec validate <change> --strict`, and **commit the plan baseline** before delegating                                                             | `openspec/changes/<change>/**`                                  |
-| **Phase 2: Group 1 (Data / Store / Pure Logic)**      | Worker (`omp`)                                    | Implement pure logic, stores, backend/contract modules, and unit tests strictly matching `design.md` contracts; check off Group 1 in `tasks.md`                                                                                                                                                          | Explicitly assigned files only + `tasks.md` checkboxes          |
-| **Phase 3: Group 2 (UI / Wiring / i18n / Visual QA)** | Coordinator (`agy`)                               | Verify Group 1 tests independently, build UI in `apps/web/src/fork/<area>/`, wire minimal `// fork:` hooks in upstream files, run `i18n:generate` + translate all 10 locales, run browser tests + isolated real-app visual QA (`vp run dev --no-seed` + `ego-browser`)                                   | Group 2 files + translations + `tasks.md`                       |
-| **Phase 4: Group 3 (Cross-Model Review & Closeout)**  | Reviewer (`omp`, read-only) → Coordinator (`agy`) | `omp` runs `openspec-verify-change <change>` strictly read-only against `git diff <plan-sha>`, classifies findings (`CRITICAL`/`WARNING`/`SUGGESTION`); `agy` fixes real findings, kills `omp` child, executes `Broken by hand` + mandatory Fork gates + `openspec archive` + `FORK.md` ledger + Fork PR | Reviewer: **none** (read-only); Coordinator: fixes, archive, PR |
+| Phase                                                 | Default Owner                                     | Responsibility                                                                                                                                                                                                                                                                                                                                                                   | Allowed Writes                                                  |
+| ----------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Phase 1: Ground-Truth & Plan**                      | Coordinator (`agy`)                               | Cut feature branch + adjacent worktree (`../t3code-lmx-<topic>`). When consuming provider runtime data, **sample real payloads** (`omp` + ≥1 upstream provider) first and record a field truth table. Write OpenSpec artifacts (`proposal.md`, `specs/`, `design.md`, `tasks.md`), run `openspec validate <change> --strict`, and **commit the plan baseline** before delegating | `openspec/changes/<change>/**`                                  |
+| **Phase 2: Group 1 (Data / Store / Pure Logic)**      | Worker (`omp`)                                    | Implement pure logic, stores, backend/contract modules, and unit tests strictly matching `design.md` contracts; check off Group 1 in `tasks.md`                                                                                                                                                                                                                                  | Explicitly assigned files only + `tasks.md` checkboxes          |
+| **Phase 3: Group 2 (UI / Wiring / i18n / Visual QA)** | Coordinator (`agy`)                               | Verify Group 1 tests independently, build UI in `apps/web/src/fork/<area>/`, wire minimal `// fork:` hooks in upstream files, run `i18n:generate` + translate all 10 locales, pass the **Pre-Review Gate** (`fmt`, `lint`, affected `typecheck` & tests), and run isolated real-app visual QA (`vp run dev --no-seed` + `ego-browser`)                                           | Group 2 files + translations + `tasks.md`                       |
+| **Phase 4: Group 3 (Cross-Model Review & Closeout)**  | Reviewer (`omp`, read-only) → Coordinator (`agy`) | `omp` runs `openspec-verify-change <change>` strictly read-only against `git diff <plan-sha>`, classifies findings (`CRITICAL`/`WARNING`/`SUGGESTION`); `agy` fixes real findings, kills `omp` child, executes `Broken by hand` + mandatory Fork gates + optional local macOS dogfood install + `openspec archive` + `FORK.md`/`LESSONS.md` + Fork PR                            | Reviewer: **none** (read-only); Coordinator: fixes, archive, PR |
 
 ### Hard rules
 
+- **Sample real Provider payloads before designing**: whenever a feature reads provider usage, cost, model options, tool items, or transcripts, inspect real payloads (`~/.omp/agent/sessions/*.jsonl`, `omp --mode rpc`, or real adapter output) for `omp` plus at least one upstream provider before locking `design.md`. Never guess fixture shapes.
 - **Commit the OpenSpec plan before delegating Group 1** so `git diff <plan-sha>` cleanly isolates implementation during cross-review.
+- **Pre-Review Gate before Group 3**: Coordinator MUST pass `vp fmt --check`, `vp lint`, `vp run --filter <affected> typecheck`, and `vp test run <affected>` **before** asking `omp` to review—never waste a cross-model review round catching compiler or lint errors.
 - **One active writer per worktree**: run Group 1 → verify → Group 2 sequentially in the shared feature worktree (or use separate worktrees if two agents must edit concurrently).
 - **Workers never commit, push, merge, or archive** unless explicitly instructed.
 - **Never touch live `~/.t3/userdata`**; linked worktrees automatically isolate dev state under `<worktree>/.t3/userdata` (`vp run dev --no-seed`).
 
 ## 2. `hc` orchestration runbook
 
-Confirm `HC_TERMINAL_ID` (your parent terminal ID, e.g. `t84`), then spawn `omp` inside the feature worktree:
+Confirm `HC_TERMINAL_ID` (your parent terminal ID, e.g. `t84`), then launch `omp` in the background inside the feature worktree:
 
 ```bash
-hc spawn --name omp-<topic> --cwd "$WORKTREE" -- \
+hc run --bg --name omp-<topic> --cwd "$WORKTREE" -- \
   omp --provider openai-codex --model gpt-6.2-sol --thinking max --service-tier priority
 hc wait omp-<topic> --timeout 60
 ```
@@ -39,7 +41,7 @@ hc wait --children all --timeout 300
 
 - **Initial `hc send` idle quirk**: if `hc send` reports `idle; it did not start working`, run `hc read --lines 40 omp-<topic>` before resending—the message is often already queued and starts executing a few seconds later.
 - **Long-task timeout**: if `hc wait --timeout 300` returns before completion, inspect `hc get omp-<topic>` and `hc read --lines 30 omp-<topic>`, then re-wait instead of spawning a duplicate worker.
-- **Reuse the live worker for cross-review**: keep `omp-<topic>` alive after Group 1 so it already has full contract/domain context for Group 3 read-only review.
+- **Reviewer freshness vs context reuse**: reusing the live `omp-<topic>` worker saves context for small L1/L2 tasks, but for complex Group 1 state/cache logic prefer spawning a fresh read-only reviewer session (or explicitly instruct the reviewer to re-audit Group 1 edge cases first) to avoid author blind spots.
 - **Mandatory cleanup**: once review rounds finish, terminate the child cleanly with `hc kill omp-<topic>` before closing out the worktree.
 
 ## 3. Contract & anti-rework checklist
@@ -49,8 +51,9 @@ Apply these checks when authoring `design.md` and implementing Group 1 / Group 2
 1. **Export discipline (`knip:check:exports`)**: in `design.md`, separate **public consumer exports** from **module-internal helpers**. Do not `export` constants or helpers consumed only inside the same file or only in `*.test.ts`—`vp run check:changed` (`knip 2/2`) fails on unused production exports.
 2. **Semantic color tokens (`shadcn/no-raw-colors`)**: in `apps/web`, never use raw Tailwind palettes (`bg-indigo-*`, `text-violet-*`, `text-teal-*`) or undeclared surface names (`bg-info-surface`). Use declared tokens from `apps/web/src/index.css` (`bg-info/12`, `bg-warning/15`, `bg-error/15`, `bg-guest-surface`, `bg-update/15`, `text-update-foreground`, `text-success-foreground`). Never use native HTML `title` attributes as tooltips (`t3code/no-native-title-tooltip`).
 3. **Single-source-of-truth projections**: filters, scopes, and groupings must transform the upstream list projection (not only JSX render conditionals) so keyboard jumps, Shift-range selection, drag/sweep actions, and empty states cannot target hidden rows.
-4. **Minimal upstream hooks & entry-point parity**: place new logic and shared UI slots under `apps/web/src/fork/<area>/` (or `fork/`) so upstream files keep small `// fork:` hooks. Check Settings panels, command palette, and search rows so no existing toggle becomes a dead no-op.
-5. **Visual QA & motion clones**: verify both light and dark themes in `ego-browser`, check popover anchoring so controls do not cover the content being previewed, and scope browser test assertions to live `data-testid` rows (`Sidebar.motion.ts` exit clones strip `data-testid` while retaining `data-slot`).
+4. **Minimal upstream hooks & entry-point parity**: place new logic and shared UI slots under `apps/web/src/fork/<area>/` (or `fork/`) so upstream files keep small `// fork:` hooks. Check Settings panels, command palette, mobile exhaustive maps, and search rows so no existing toggle or union becomes stale.
+5. **Base UI overlay stacking**: never nest a second Base UI `<Popover>` inside an existing popover container (such as `ThreadDetailsCard`)—it paints behind the parent popover or triggers parent focus-out dimming. Use native `<Menu>` + `<MenuCheckboxItem variant="switch" closeOnClick={false}>` and exempt its container attribute in the parent's `onOpenChange` guard.
+6. **Visual QA & motion clones**: verify both light and dark themes in `ego-browser`, check popover anchoring so controls do not cover the content being previewed, and scope browser test assertions to live `data-testid` rows (`Sidebar.motion.ts` exit clones strip `data-testid` while retaining `data-slot`).
 
 ## 4. Prompt templates
 
@@ -82,11 +85,12 @@ Task 3.1 Cross-Review (STRICTLY READ-ONLY — do NOT edit any files, do NOT comm
 
 Follow .agents/skills/openspec-verify-change/SKILL.md for change '<CHANGE>' in <WORKTREE>:
 1. Read openspec/changes/<CHANGE>/{proposal.md,specs/**,design.md,tasks.md}.
-2. Inspect git status and git diff <PLAN_SHA> plus all new files in apps/web/src/fork/<area>/.
-3. Audit:
-   - Every Requirement/Scenario in specs/ and contract in design.md.
-   - Hidden-row interactions (shortcuts, selection ranges, sweeps, search, empty states) and entry-point parity (Settings, command palette).
-   - Edge cases, accessibility/focus restoration, memo/render isolation, React Compiler, shadcn/no-restyle, i18n, and minimal // fork: upstream footprint.
+2. Inspect git status and git diff <PLAN_SHA> plus all new files added by this change.
+3. Audit four universal dimensions (re-checking Group 1 edge cases explicitly, not only Group 2):
+   - Real provider & data boundaries: model switches (including A -> B -> A), unpriced/zero/missing fields, provider-specific option shapes (`omp`/`pi`/`codex`/`claude`), and non-fabrication invariants.
+   - State lifecycle & isolation: subscription cleanup on close/collapse, single-source-of-truth projections (shortcuts/ranges/sweeps/empty states), reverse toggles, and cross-provider directory/env isolation.
+   - Cross-surface & UX parity: Settings/palette/search/Web/Mobile exhaustive types, accessibility/focus restoration, React Compiler & render isolation, `shadcn/no-restyle`, and 10-locale i18n.
+   - Minimal `// fork:` upstream footprint and zero unused exports.
 4. Classify findings as CRITICAL / WARNING / SUGGESTION with exact file:line citations (or VERDICT: PASS).
 5. Reply to parent terminal <PARENT_ID> via:
 hc send <PARENT_ID> "<verdict + findings>"

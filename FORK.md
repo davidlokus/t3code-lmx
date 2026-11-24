@@ -60,9 +60,11 @@
   - `vp test run packages/shared/src/forkIdentity.guard.test.ts`
   - 改动文案或翻译时补跑 `vp run i18n:check`
 - 桌面打包或启动路径改动，必须完整跑通（**禁止设 `T3CODE_DESKTOP_UNTRUSTED_BUNDLE=true`**）：
+  - 推荐使用一键脚本：`bash fork/scripts/install-local-mac.sh <version>`（自动串联构建 DMG → `verify-mac-dmg.sh` → 优雅退出旧版并原子替换 `/Applications/T3 Lab (Extend).app` → `smoke-desktop-app.ts` → 启动）；或按顺序手动执行：
   1. `vp run dist:desktop:dmg:arm64`
   2. `bash fork/scripts/verify-mac-dmg.sh release/T3-Lab-Extend-*.dmg`
   3. `node scripts/smoke-desktop-app.ts --executable "/Applications/T3 Lab (Extend).app/Contents/MacOS/T3 Lab (Extend)"`
+- 强用户感知的 UI / Provider 改动，优先在功能 worktree 内通过 `install-local-mac.sh` 完成本地真机试装验收（Dogfood Gate），确认无字段/交互缺口后再归档 OpenSpec 并提 PR 合并。
 
 ## 自动化发版流程（Tag ≠ Release）
 
@@ -129,3 +131,4 @@
 | `chore/cross-agent-handoff`     | `.agents/skills/t3lab-dev/{SKILL.md,references/handoff.md}`、`openspec/config.yaml`、`forkIdentity.guard.test.ts`、`FORK.md`                                                                                                                                                                                                | 固化 `OpenSpec + hc + agy × omp` 跨 Agent 分工、只读交叉 Review 与防返工检查清单，并纳入守卫测试                                                                                                          |
 | `feat/thread-hud-panel`         | `apps/web/src/fork/hud/*`、`ThreadDetailsCard.tsx`、`ThreadDetailsPanel.tsx`、`ChatView.tsx`、`i18n/translations/*.json`、`openspec/`                                                                                                                                                                                       | 右侧 T3 Lab HUD 实时仪表盘（B1 状态头与 `🎛` 持久化选项、B3 上下文 4 桶 `≈` 透视/单模型缓存隔离/暖冷倒计时/原地 `/compact`、B4 诚实会话 KPI、B5 配额直显倒计时、B6 活动卡片、B7 可见性门控可折叠系统遥测） |
 | `feat/omp-hud-usage`            | `packages/provider-omp/src/server/usage*`、`packages/provider-pi/src/server/adapter.ts`、`packages/contracts/src/{orchestrationV2,usage}.ts`、`packages/client-runtime/src/state/contextWindow.ts`、`builtInDrivers.ts`、`apps/{web,mobile}` usage 映射、`apps/web/src/fork/hud/*`、`i18n/translations/*.json`、`openspec/` | 补齐 `omp`/`pi` 实时 `cost` 与 `reasoningTokens` 透传、接入 `~/.omp/agent/sessions` 全局 `/usage` 扫描，并修复 HUD 思考强度（`thinking` 字符串）、运行中实时速度、TTFT 推导与内置工具名多语言             |
+| `chore/refine-agent-workflow`   | `fork/scripts/install-local-mac.sh`、`.agents/skills/t3lab-dev/{SKILL.md,references/{handoff,fork-gates}.md}`、`openspec/config.yaml`、`LESSONS.md`、`FORK.md`、`forkIdentity.guard.test.ts`                                                                                                                                | 沉淀 PR #9/#11/#12 复盘优化（Provider 真值抽样、Pre-Review 门禁、`hc run --bg` 修正、快循环→重门禁、worktree 一键本地试装脚本与 `LESSONS.md` 教训闭环）                                                   |

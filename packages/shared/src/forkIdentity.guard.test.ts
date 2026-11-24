@@ -129,9 +129,15 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         "fork/scripts/release-preflight.mjs",
         "fork/scripts/sync-upstream.mjs",
         "fork/scripts/verify-mac-dmg.sh",
+        "fork/scripts/install-local-mac.sh",
       ]) {
         assert.isTrue(yield* repoFileExists(required), `missing required fork file: ${required}`);
       }
+
+      const installScript = yield* readRepoFile("fork/scripts/install-local-mac.sh");
+      assert.include(installScript, "verify-mac-dmg.sh");
+      assert.include(installScript, "smoke-desktop-app.ts");
+      assert.include(installScript, "T3CODE_DESKTOP_UNTRUSTED_BUNDLE");
     }),
   );
 
@@ -153,6 +159,11 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
           `missing required OpenSpec fork file: ${required}`,
         );
       }
+
+      const handoffDoc = yield* readRepoFile(".agents/skills/t3lab-dev/references/handoff.md");
+      assert.include(handoffDoc, "hc run --bg", "handoff runbook must use hc run --bg");
+      assert.notInclude(handoffDoc, "hc spawn", "handoff runbook must not use removed hc spawn");
+      assert.include(handoffDoc, "Pre-Review Gate");
 
       const viteConfig = yield* readRepoFile("vite.config.ts");
       assert.include(
