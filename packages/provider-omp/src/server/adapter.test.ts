@@ -849,4 +849,121 @@ describe("OmpAdapterV2", () => {
       yield* fake.takeRequest("abort");
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
+
+  it.effect(
+    "forwards positive USD cost and reasoningTokens from omp usage and omits zero cost",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeOmp({
+          get_session_stats: {
+            sessionFile: "/fake/.omp/agent/sessions/session-cost.jsonl",
+            tokens: { input: 28528, output: 210, reasoning: 9, cacheRead: 1200, cacheWrite: 0 },
+            cost: 0.073945,
+            contextUsage: { tokens: 29938, contextWindow: 1_048_576 },
+          },
+        });
+        const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+        yield* startTurn(runtime, providerThread, "full-access");
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({
+          type: "message_update",
+          message: {
+            role: "assistant",
+            usage: {
+              input: 28528,
+              output: 210,
+              cacheRead: 1200,
+              cacheWrite: 0,
+              reasoningTokens: 9,
+              totalTokens: 29938,
+              cost: { total: 0.073945 },
+            },
+          },
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Done." },
+        });
+        const liveUpdate = yield* takeEvent(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.status === "running" &&
+            event.providerTurn.tokenUsage !== undefined,
+        );
+        if (liveUpdate.type !== "provider_turn.updated") return assert.fail("expected live update");
+        assert.deepEqual(liveUpdate.providerTurn.tokenUsage?.cost, {
+          amount: 0.073945,
+          currency: "USD",
+        });
+        assert.equal(liveUpdate.providerTurn.tokenUsage?.reasoningOutputTokens, 9);
+
+        yield* fake.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            provider: "openai-codex",
+            model: "gpt-6.1-terra",
+            usage: {
+              input: 28528,
+              output: 210,
+              cacheRead: 1200,
+              cacheWrite: 0,
+              reasoningTokens: 9,
+              totalTokens: 29938,
+              cost: { total: 0.073945 },
+            },
+          },
+        });
+        yield* fake.emit({ type: "agent_end", yielded: true, messages: [] });
+        const completed = yield* takeEvent(
+          (event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+        );
+        if (completed.type !== "provider_turn.updated")
+          return assert.fail("expected completed turn");
+        assert.deepEqual(completed.providerTurn.tokenUsage?.cost, {
+          amount: 0.073945,
+          currency: "USD",
+        });
+        assert.equal(completed.providerTurn.tokenUsage?.reasoningOutputTokens, 9);
+
+        // Unpriced zero-cost sessions omit `cost` so clients do not render misleading $0.00.
+        const zeroFake = yield* makeFakeOmp({
+          get_session_stats: {
+            sessionFile: "/fake/.omp/agent/sessions/session-zero.jsonl",
+            tokens: { input: 3026, output: 1662, reasoning: 0, cacheRead: 19328, cacheWrite: 0 },
+            cost: 0,
+            contextUsage: { tokens: 24016, contextWindow: 1_000_000 },
+          },
+        });
+        const zero = yield* openRuntime(zeroFake, "full-access");
+        yield* startTurn(zero.runtime, zero.providerThread, "full-access");
+        yield* zeroFake.takeRequest("prompt");
+        yield* zeroFake.emit({ type: "agent_start" });
+        yield* zeroFake.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            provider: "zai",
+            model: "glm-5.4",
+            usage: {
+              input: 3026,
+              output: 1662,
+              cacheRead: 19328,
+              cacheWrite: 0,
+              totalTokens: 24016,
+              cost: { total: 0 },
+            },
+          },
+        });
+        yield* zeroFake.emit({ type: "agent_end", yielded: true, messages: [] });
+        const zeroCompleted = yield* zero.takeEvent(
+          (event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+        );
+        if (zeroCompleted.type !== "provider_turn.updated")
+          return assert.fail("expected zero-cost completed turn");
+        assert.isUndefined(zeroCompleted.providerTurn.tokenUsage?.cost);
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
 });

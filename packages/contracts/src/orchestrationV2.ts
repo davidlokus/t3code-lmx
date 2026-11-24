@@ -265,6 +265,13 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
   promptCacheTtlMs: Schema.optional(PositiveInt),
   autoCompactThreshold: Schema.optional(PositiveInt),
   promptCacheExpiresAt: Schema.optional(Schema.String),
+  // fork: optional session/turn cost reported by provider (e.g. Pi/omp USD cost)
+  cost: Schema.optional(
+    Schema.Struct({
+      amount: Schema.Number.check(Schema.isFinite()),
+      currency: TrimmedNonEmptyString.check(Schema.isMaxLength(32)),
+    }),
+  ),
   updatedAt: Schema.String,
 });
 export type OrchestrationV2ProviderTurnTokenUsage =

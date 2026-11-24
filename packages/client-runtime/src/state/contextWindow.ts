@@ -183,7 +183,8 @@ export function deriveLatestContextWindowSnapshot(
       durationMs: null,
       compactsAutomatically: true,
       autoCompactThreshold: liveUsage.autoCompactThreshold ?? null,
-      cost: null,
+      // fork: preserve provider-reported cost attached to live turn token usage
+      cost: liveUsage.cost ?? null,
       updatedAt: liveUsage.updatedAt,
     };
   }

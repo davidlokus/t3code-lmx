@@ -827,6 +827,78 @@ describe("HUD session KPIs", () => {
       ).toMatchObject({ cost: null, billingMode: "subscription" });
     }
   });
+
+  it("reads string thinking effort (omp/pi), live running turn speed, and positive TTFT", () => {
+    const runningTurn = turn(1, {
+      status: "running",
+      startedAt: at(-10_000),
+      completedAt: null,
+      tokenUsage: {
+        usedTokens: 24_016,
+        maxTokens: 1_000_000,
+        inputTokens: 22_354,
+        cachedInputTokens: 19_328,
+        outputTokens: 1_660,
+        updatedAt: iso(-1_000),
+      },
+    });
+    const result = session({
+      projection: projection({
+        providerTurns: [runningTurn],
+        turnItems: [
+          {
+            ...userItem(1, "inspect repo"),
+            providerTurnId: runningTurn.id,
+            startedAt: at(-10_000),
+          },
+          {
+            ...itemBase(2),
+            type: "reasoning" as const,
+            streaming: false,
+            providerTurnId: runningTurn.id,
+            startedAt: at(-8_400),
+          },
+          {
+            ...itemBase(3),
+            type: "assistant_message" as const,
+            messageId: MessageId.make("message-3"),
+            streaming: true,
+            providerTurnId: runningTurn.id,
+            startedAt: at(-7_000),
+          },
+        ],
+        thread: {
+          ...BASE.thread,
+          activeProviderThreadId: ACTIVE_THREAD,
+          modelSelection: {
+            ...BASE.thread.modelSelection,
+            options: [{ id: "thinking", value: "high" }],
+          },
+        },
+      }),
+    });
+    expect(result).toMatchObject({
+      thinkingEffort: "high",
+      liveTurnOutputTokens: 1_660,
+      liveTurnStartedAtMs: NOW - 10_000,
+      tokensPerSecond: 166,
+      ttftMs: 1_600,
+    });
+
+    // Explicit thinking: "off" suppresses the effort tag instead of showing "off".
+    const thinkingOff = session({
+      projection: projection({
+        thread: {
+          ...BASE.thread,
+          modelSelection: {
+            ...BASE.thread.modelSelection,
+            options: [{ id: "thinking", value: "off" }],
+          },
+        },
+      }),
+    });
+    expect(thinkingOff.thinkingEffort).toBeNull();
+  });
 });
 
 function subagent(id: string, fields: Partial<OrchestrationV2Subagent>): OrchestrationV2Subagent {
