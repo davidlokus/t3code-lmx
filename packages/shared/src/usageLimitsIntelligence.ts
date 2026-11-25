@@ -3,6 +3,7 @@ import type {
   ServerProviderUsageBalance,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
+  UsageLimitSourceKind,
   UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 
@@ -47,7 +48,7 @@ export interface NormalizedLimitWindow extends ServerProviderUsageWindow {
 
 type AccountInput = Omit<LimitAccount, "driver"> & {
   readonly driver: LimitAccount["driver"] | null;
-  readonly sourceKind: "native" | "cliproxy" | "http";
+  readonly sourceKind: "native" | UsageLimitSourceKind;
   readonly providerInstanceId?: ProviderInstanceId;
 };
 
@@ -564,7 +565,7 @@ function collectAccountInputs(
     if (existing) existing.push(input);
     else grouped.set(key, [input]);
   };
-  const httpAccounts: AccountInput[] = [];
+  const quotaAccounts: AccountInput[] = [];
 
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
@@ -614,48 +615,55 @@ function collectAccountInputs(
             account.usageLimits,
           ) ??
           JSON.stringify([
-            "cliproxy",
-            hubKey(environmentId, source),
+            source.kind,
+            source.kind === "cliproxy" ? hubKey(environmentId, source) : [environmentId, source.id],
             account.id,
             account.workspaceId ?? null,
           ]);
         addToGroup(key, {
           key,
           driver: account.driver,
-          sourceKind: "cliproxy",
-          displayName: account.email ? null : account.id.replace(/\.json$/i, ""),
+          sourceKind: source.kind,
+          displayName:
+            source.kind === "cliproxy" && !account.email
+              ? account.id.replace(/\.json$/i, "")
+              : null,
           email: account.email,
           plan: account.plan,
           accentColor: undefined,
           environments: [],
           sourceLabel,
           redeem:
-            creditId && !account.usageLimits.unavailable
+            source.kind === "cliproxy" && creditId && !account.usageLimits.unavailable
               ? { environmentId, input: { sourceId: source.id, accountId: account.id, creditId } }
               : null,
           limits: account.usageLimits,
         });
       }
-      if (source.kind === "http" && source.quotaAccounts?.length) {
-        for (const account of source.quotaAccounts) {
-          const key = JSON.stringify(["http", environmentId, source.id, account.id]);
-          httpAccounts.push({
-            key,
-            sourceKind: "http",
-            driver: null,
-            ...(account.providerInstanceId === undefined
-              ? {}
-              : { providerInstanceId: account.providerInstanceId }),
-            displayName: account.label,
-            email: undefined,
-            plan: undefined,
-            accentColor: undefined,
-            environments: [],
-            sourceLabel,
-            redeem: null,
-            limits: { checkedAt: source.checkedAt, windows: account.windows },
-          });
-        }
+      for (const account of source.quotaAccounts ?? []) {
+        const { providerInstanceId } = account;
+        const key = JSON.stringify([source.kind, environmentId, source.id, account.id]);
+        quotaAccounts.push({
+          key,
+          sourceKind: source.kind,
+          driver: null,
+          ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+          displayName: account.label,
+          email: undefined,
+          plan: undefined,
+          accentColor: undefined,
+          environments: [],
+          sourceLabel,
+          redeem: null,
+          limits: {
+            checkedAt: source.checkedAt,
+            windows: account.windows,
+            planTier: account.planTier,
+            subscriptionExpiresAt: account.subscriptionExpiresAt,
+            balances: account.balances,
+            serviceNotice: account.serviceNotice,
+          },
+        });
       }
     }
   }
@@ -665,10 +673,10 @@ function collectAccountInputs(
     const merged = mergeIdentityGroup(key, group, overrides);
     if (merged) results.push(merged);
   }
-  const seenHttp = new Set<string>();
-  for (const account of httpAccounts) {
-    if (seenHttp.has(account.key)) continue;
-    seenHttp.add(account.key);
+  const seenQuotaAccounts = new Set<string>();
+  for (const account of quotaAccounts) {
+    if (seenQuotaAccounts.has(account.key)) continue;
+    seenQuotaAccounts.add(account.key);
     results.push(account);
   }
   return results;

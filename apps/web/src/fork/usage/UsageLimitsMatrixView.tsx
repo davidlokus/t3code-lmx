@@ -258,6 +258,18 @@ export function UsageLimitsMatrixView({
                       <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
                         <T>HTTP source</T>
                       </span>
+                    ) : account.sourceKind === "omp" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>OMP cache</T>
+                      </span>
+                    ) : account.sourceKind === "kimi" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>Kimi Code</T>
+                      </span>
+                    ) : account.sourceKind === "zai" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>Z.ai</T>
+                      </span>
                     ) : null}
                     {credits > 0 ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-foreground tabular-nums">

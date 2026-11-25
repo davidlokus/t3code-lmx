@@ -1860,6 +1860,22 @@ describe("sameUsageLimitCommandCoverage", () => {
       sameUsageLimitCommandCoverage(failed, [{ ...base, accounts: [], error: "still down" }]),
     ).toBe(true);
   });
+  it("does not advertise slash-command coverage from failed quota-only sources", () => {
+    const failedKimi = [
+      {
+        ...base,
+        id: UsageLimitSourceId.make("kimi"),
+        kind: "kimi" as const,
+        accounts: [],
+        error: "Could not read Kimi Code usage.",
+      },
+    ];
+    expect(sameUsageLimitCommandCoverage([], failedKimi)).toBe(true);
+    expect(
+      withUsageLimitsCommands([provider({ driver: ProviderDriverKind.make("pi") })], failedKimi)[0]
+        ?.slashCommands,
+    ).toEqual([]);
+  });
 });
 
 describe("external usage settings", () => {

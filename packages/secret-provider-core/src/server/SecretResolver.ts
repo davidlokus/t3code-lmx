@@ -25,6 +25,8 @@ export class SecretResolver extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<string | undefined>>;
     /** Forgets the given references, or every reference, so the next read asks the provider again. */
     readonly invalidate: (references?: ReadonlyArray<SecretReference>) => Effect.Effect<void>;
+    /** Monotonic cache revision for one reference; bumps when its cached value/binding changes or invalidates. */
+    readonly revision?: (reference: SecretReference) => Effect.Effect<string>;
     /** The name the user gave a secret provider, or its id when it has none or is gone. */
     readonly label: (provider: SecretReference["provider"]) => Effect.Effect<string>;
   }
@@ -59,6 +61,11 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
     ]),
   );
   const cache = new Map<string, CachedSecret>();
+  const referenceRevisions = new Map<string, number>();
+  let globalInvalidationRevision = 0;
+  const bumpReferenceRevision = (key: string) => {
+    referenceRevisions.set(key, (referenceRevisions.get(key) ?? 0) + 1);
+  };
   const semaphore = yield* Semaphore.make(1);
 
   // Only a provider this build can read is cached; anything else fails fast and is checked again
@@ -132,9 +139,18 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
             const value = values[index];
             const readable = value !== undefined && value.trim() !== "";
             for (const reference of sameReference) {
-              answered.set(cacheKey(reference), value);
+              const key = cacheKey(reference);
+              answered.set(key, value);
               if (!fresh || readable || !isCached(reference, plan)) {
-                cache.set(cacheKey(reference), { config: plan.configKey, value });
+                const previous = cache.get(key);
+                cache.set(key, { config: plan.configKey, value });
+                if (
+                  previous === undefined ||
+                  previous.config !== plan.configKey ||
+                  previous.value !== value
+                ) {
+                  bumpReferenceRevision(key);
+                }
               }
             }
           });
@@ -149,9 +165,22 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
   const invalidate: SecretResolver["Service"]["invalidate"] = (references) =>
     semaphore.withPermits(1)(
       Effect.sync(() => {
-        if (references === undefined) cache.clear();
-        else for (const reference of references) cache.delete(cacheKey(reference));
+        if (references === undefined) {
+          cache.clear();
+          globalInvalidationRevision += 1;
+        } else {
+          for (const reference of references) {
+            const key = cacheKey(reference);
+            cache.delete(key);
+            bumpReferenceRevision(key);
+          }
+        }
       }),
+    );
+
+  const revision = (reference: SecretReference) =>
+    Effect.sync(
+      () => `${globalInvalidationRevision}:${referenceRevisions.get(cacheKey(reference)) ?? 0}`,
     );
 
   const label: SecretResolver["Service"]["label"] = (provider) =>
@@ -163,7 +192,7 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       ),
     );
 
-  return SecretResolver.of({ read, invalidate, label });
+  return SecretResolver.of({ read, invalidate, revision, label });
 });
 
 export const layer = (options: Parameters<typeof make>[0]) =>

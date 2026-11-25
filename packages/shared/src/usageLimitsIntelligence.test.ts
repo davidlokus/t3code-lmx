@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  HttpQuotaResponse,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -12,9 +13,16 @@ import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
+import {
+  collectHttpQuotaSources,
+  collectLimitAccounts,
+  collectProviderUsageLimits,
+} from "./usageLimits.ts";
+import { collectLimitNotices } from "./usageLimitsCopy.ts";
 import { collectLimitsIntelligence, computeWindowBurnPace } from "./usageLimitsIntelligence.ts";
 
 const decodeUsageLimits = Schema.decodeSync(ServerProviderUsageLimits);
+const decodeHttpQuotaResponse = Schema.decodeSync(HttpQuotaResponse);
 const checkedAt = "2026-09-03T12:00:00.000Z";
 const now = Date.parse(checkedAt);
 const minute = 60_000;
@@ -253,6 +261,109 @@ describe("collectLimitsIntelligence", () => {
       ["critical", "window-exhausted", canonicalKey],
       ["warning", "window-low", httpKey],
     ]);
+  });
+
+  it.each(["http", "omp", "kimi", "zai"] as const)(
+    "projects rich %s quota accounts through pools, notices, and the intelligence views",
+    (kind) => {
+      const richWindow = {
+        ...window("session", 85, at(150 * minute)),
+        windowDurationMins: 300,
+        usedAmount: 170,
+        limitAmount: 200,
+        remainingAmount: 30,
+        unit: "credits",
+        category: "plan",
+        scopeLabel: "Coding",
+      } as const;
+      const [account] = decodeHttpQuotaResponse({
+        version: 1,
+        accounts: [
+          {
+            id: "work",
+            label: "Work",
+            windows: [richWindow],
+            planTier: "Advanced",
+            subscriptionExpiresAt: "2026-09-08",
+            balances: [
+              { id: "booster", label: "Booster", remaining: 5, unit: "USD", expiresAt: at(day) },
+            ],
+            serviceNotice: { message: "Maintenance", severity: "info" },
+          },
+        ],
+      }).accounts;
+      if (!account) throw new Error("Missing decoded quota account");
+      const quota = source("quota", { kind, quotaAccounts: [account] });
+      const empty = source("empty", { kind, quotaAccounts: [] });
+      const presentations = new Map([[environment, presentation("Host", [], [quota, empty])]]);
+      const key = JSON.stringify([kind, "host", "quota", "work"]);
+      const snapshot = collectLimitsIntelligence({ presentations, now });
+
+      expect(collectHttpQuotaSources(presentations)).toMatchObject([{ quotaAccounts: [account] }]);
+      expect(collectLimitNotices(presentations)).toEqual(["empty: No accounts reported."]);
+      expect(snapshot.accounts).toMatchObject([
+        {
+          key,
+          sourceKind: kind,
+          plan: "Advanced",
+          redeem: null,
+          windows: [{ ...richWindow, pace: { status: "will-exhaust" } }],
+        },
+      ]);
+      expect(snapshot.resets).toMatchObject([{ account: { key }, group: "next24h" }]);
+      expect(snapshot.expiries).toMatchObject([
+        { kind: "balance", balance: { remaining: 5, unit: "USD" } },
+        { kind: "subscription", expiresAtMs: Date.parse("2026-09-08") },
+      ]);
+      expect(snapshot.alerts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "service-notice", message: "Maintenance" }),
+          expect.objectContaining({
+            kind: "burn-exhaustion",
+            account: expect.objectContaining({ key }),
+          }),
+        ]),
+      );
+    },
+  );
+
+  it("merges OMP accounts by login without making them redemption routes", () => {
+    const email = "member@example.com";
+    const workspaceId = "team";
+    const native = provider(
+      "native",
+      { checkedAt, windows: [window("session", 30)] },
+      {
+        auth: { status: "authenticated", email, workspaceId },
+      },
+    );
+    const cachedLimits = {
+      checkedAt: at(minute),
+      windows: [window("session", 60)],
+      resetCredits: { availableCount: 1, nextCreditId: "cached-credit" },
+    };
+    const omp = source("cache", {
+      kind: "omp",
+      accounts: [
+        { id: "cached", driver: native.driver, email, workspaceId, usageLimits: cachedLimits },
+      ],
+    });
+    const cacheOnly = new Map([[environment, presentation("Host", [], [omp])]]);
+    expect(collectLimitsIntelligence({ presentations: cacheOnly, now }).accounts).toMatchObject([
+      { sourceKind: "omp", redeem: null },
+    ]);
+    expect(collectLimitAccounts(cacheOnly)).toMatchObject([{ redeem: null }]);
+
+    const merged = new Map([[environment, presentation("Host", [native], [omp])]]);
+    expect(collectLimitsIntelligence({ presentations: merged, now }).accounts).toMatchObject([
+      { sourceKind: "native", windows: [{ usedPercent: 60 }] },
+    ]);
+    expect(collectLimitAccounts(merged)).toMatchObject([
+      { limits: { windows: [{ usedPercent: 60 }] } },
+    ]);
+    expect(
+      collectProviderUsageLimits(native.instanceId, [native], [omp], now)?.accounts,
+    ).toMatchObject([{ resetCreditInput: { instanceId: native.instanceId } }]);
   });
 
   it("keeps canonical manual-override keys stable across environment filters, login swaps, and colon HTTP ids", () => {

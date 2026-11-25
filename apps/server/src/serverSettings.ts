@@ -144,6 +144,7 @@ const normalizeServerSettings = (
 export interface SettingsClient {
   readonly secretReferences: boolean;
   readonly httpUsageLimitSources?: boolean;
+  readonly extendedUsageLimitSources?: boolean;
 }
 
 export function redactServerSettingsForClient(
@@ -164,12 +165,14 @@ export function redactServerSettingsForClient(
   return {
     ...shaped,
     secretProviders: withoutUnknownSecretProviderConfigs(shaped),
-    // Older clients decode only "cliproxy" sources and reject the whole settings payload otherwise.
-    usageLimitSources: client.httpUsageLimitSources
+    // Older clients decode only the source kinds they advertise and reject the whole settings payload otherwise.
+    usageLimitSources: client.extendedUsageLimitSources
       ? shaped.usageLimitSources
       : Object.fromEntries(
-          Object.entries(shaped.usageLimitSources).filter(
-            ([, source]) => source.kind === "cliproxy",
+          Object.entries(shaped.usageLimitSources).filter(([, source]) =>
+            client.httpUsageLimitSources
+              ? source.kind === "cliproxy" || source.kind === "http"
+              : source.kind === "cliproxy",
           ),
         ),
   };

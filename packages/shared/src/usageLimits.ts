@@ -289,6 +289,7 @@ const hubRowKey = (
 
 // Source ids are environment-local, so only a remote endpoint names the same hub across environments.
 function hubIdentity(environmentId: EnvironmentId, source: UsageLimitSourceSnapshot): string {
+  if (source.kind !== "cliproxy") return `${environmentId}:${source.id}`;
   // The server supplies canonical endpoints; native URL polyfills can misparse IPv6 hosts.
   const endpoint = source.endpoint;
   const host = endpoint?.match(/^https?:\/\/(\[[\da-f:.]+\]|[^:/?#@]+)(?::\d+)?(?:\/|$)/)?.[1];
@@ -323,7 +324,7 @@ export interface LimitAccount {
 export function collectHttpQuotaSources(presentations: Parameters<typeof collectLimitAccounts>[0]) {
   return [...presentations].flatMap(([environmentId, presentation]) =>
     (presentation.serverConfig?.usageLimitSources ?? []).flatMap((source) =>
-      source.kind === "http" && source.quotaAccounts?.length
+      source.quotaAccounts?.length
         ? [
             {
               ...source,
@@ -446,22 +447,24 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         merge(hubRowKey(resolveKey, environmentId, source, account), {
           key,
           driver: account.driver,
-          displayName: account.email ? null : hubAccountName(account),
+          displayName:
+            source.kind === "cliproxy" && !account.email ? hubAccountName(account) : null,
           email: account.email,
           plan: account.plan,
           accentColor: undefined,
           environments: [],
           sourceLabel,
-          redeem: account.usageLimits.resetCredits?.nextCreditId
-            ? {
-                environmentId,
-                input: {
-                  sourceId: source.id,
-                  accountId: account.id,
-                  creditId: account.usageLimits.resetCredits.nextCreditId,
-                },
-              }
-            : null,
+          redeem:
+            source.kind === "cliproxy" && account.usageLimits.resetCredits?.nextCreditId
+              ? {
+                  environmentId,
+                  input: {
+                    sourceId: source.id,
+                    accountId: account.id,
+                    creditId: account.usageLimits.resetCredits.nextCreditId,
+                  },
+                }
+              : null,
           limits: account.usageLimits,
         });
       }
@@ -860,6 +863,10 @@ export function isUsageLimitsCommand(prompt: string): boolean {
   return prompt.trim().toLowerCase() === "/usage-limits";
 }
 
+function mayReportNativeAccounts(source: UsageLimitSourceSnapshot): boolean {
+  return source.kind === "cliproxy" || source.kind === "omp";
+}
+
 export function hasProviderUsageLimits(
   driver: ServerProvider["driver"],
   providers: readonly ServerProvider[],
@@ -870,7 +877,9 @@ export function hasProviderUsageLimits(
     sources.some(
       (source) =>
         source.accounts.some((account) => account.driver === driver) ||
-        (source.error !== undefined && source.accounts.length === 0),
+        (mayReportNativeAccounts(source) &&
+          source.error !== undefined &&
+          source.accounts.length === 0),
     )
   );
 }
@@ -882,7 +891,9 @@ export function sameUsageLimitCommandCoverage(
   const coverage = (sources: UsageLimitSourceSnapshots) =>
     new Set(
       sources.flatMap((source) =>
-        source.error !== undefined && source.accounts.length === 0
+        mayReportNativeAccounts(source) &&
+        source.error !== undefined &&
+        source.accounts.length === 0
           ? ["*"]
           : source.accounts.map((account) => String(account.driver)),
       ),
@@ -902,7 +913,8 @@ export function withUsageLimitsCommands(
     ...sources.flatMap((source) => source.accounts.map((account) => account.driver)),
   ]);
   const unreadableSource = sources.some(
-    (source) => source.error !== undefined && source.accounts.length === 0,
+    (source) =>
+      mayReportNativeAccounts(source) && source.error !== undefined && source.accounts.length === 0,
   );
   return providers.map((provider) => {
     if (!unreadableSource && !supportedDrivers.has(provider.driver)) return provider;
@@ -931,7 +943,9 @@ export function instanceHubs(
   sources: UsageLimitSourceSnapshots,
 ): UsageLimitSourceSnapshots {
   const endpoint = provider.auth.endpoint;
-  return endpoint === undefined ? [] : sources.filter((source) => source.origin === endpoint);
+  return endpoint === undefined
+    ? []
+    : sources.filter((source) => source.kind === "cliproxy" && source.origin === endpoint);
 }
 
 // Antigravity meters Gemini Argon, Gemini Carbon, other Gemini, and Claude/GPT models apart.
@@ -1059,7 +1073,8 @@ export function collectProviderUsageLimits(
     const hubCredits = shownHubs
       .flatMap((source) => source.accounts.map((account) => ({ source, account })))
       .filter(
-        ({ account }) =>
+        ({ source, account }) =>
+          source.kind === "cliproxy" &&
           key !== null &&
           resolveKey(account) === key &&
           account.usageLimits.resetCredits &&
@@ -1106,9 +1121,13 @@ export function collectProviderUsageLimits(
       accounts.push({
         id: `${source.id}:${account.id}`,
         driver: account.driver,
-        label: `${source.label} · ${hubAccountName(account)}`,
-        sourceLabel: "CLI Proxy",
-        ...(account.usageLimits.resetCredits?.nextCreditId
+        label: `${source.label} · ${
+          source.kind === "cliproxy"
+            ? hubAccountName(account)
+            : (PROVIDER_DISPLAY_NAMES[account.driver] ?? account.driver)
+        }`,
+        sourceLabel: source.kind === "cliproxy" ? "CLI Proxy" : source.label,
+        ...(source.kind === "cliproxy" && account.usageLimits.resetCredits?.nextCreditId
           ? {
               resetCreditInput: {
                 sourceId: source.id,

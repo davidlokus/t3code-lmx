@@ -7578,20 +7578,30 @@
   "dc87902396b8ade4": "Letters, digits, '-', or '_'.",
   "251dfec07b7c3612": "This driver has no required configuration. You can add the instance now.",
   "08fe32f007e788f1": "Configure manually",
+  "17ccef4ee78377e1": "CLIProxyAPI hub",
+  "dbd877abdc2c7c81": "HTTP quota source",
+  "d506ce8b0300061c": "OMP local cache",
+  "1b4eb0f933274892": "Kimi Code",
+  "0765824fc86ac61e": "Z.ai / BigModel",
+  "4ca61d42a50cb12f": "Global (api.kimi.ai)",
+  "991aa1a77c649a96": "China (api.kimi.com)",
+  "7860eb75df697e4a": "China (open.bigmodel.cn)",
+  "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Bearer token (optional)",
   "84eb2878dc17d3eb": "Management key",
+  "cad38c8893ab98e4": "API key",
   "7ac196c1e8175928": "Defaults to the hub's host name",
-  "0c026221dcd2820b": "Add an HTTP quota source",
+  "c3bb1b02f759513c": "Defaults to OMP local cache",
+  "758fd105d61f060c": "Defaults to Kimi Code",
+  "a1c1d25aa3c703e4": "Defaults to Z.ai",
+  "4809220aa17c66b5": "Defaults to the endpoint host name",
+  "05d145b2961446c2": "Source type",
+  "9440f5a5a9b8d8f9": "Region",
   "e3548407052e9e12": "Add a CLIProxyAPI hub",
-  "d185c750156b2121": [
-    "Read quotas from an endpoint on ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
+  "0c026221dcd2820b": "Add an HTTP quota source",
+  "1007886c2c1a36de": "Add OMP local cache",
+  "b0c43dd75ca0d6b7": "Add Kimi Code quota",
+  "2faf1206960bad9c": "Add Z.ai / BigModel quota",
   "432e85a50e2e7964": [
     "Show the quota of every account the hub pools, next to the providers on",
     " ",
@@ -7602,13 +7612,50 @@
     },
     ". The key stays on that server."
   ],
+  "d185c750156b2121": [
+    "Read quotas from an endpoint on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "029ce2453100e651": [
+    "Read cached quota reports read-only from agent.db on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Never reads OAuth credentials or refreshes tokens."
+  ],
+  "4cbe9f07f5f23631": [
+    "Read Kimi Code plan quotas and Booster balance on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". The API key stays on that server."
+  ],
+  "e89b5c7acd38f7a9": [
+    "Read GLM Coding Plan quotas and renewal date on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". The API key stays on that server."
+  ],
+  "915324a100de587d": "Source type",
+  "b56c8c003c79841d": "Region",
+  "bf2c160f8212e4f5": "Database path (optional)",
   "2324770ba91371ac": "Endpoint URL",
   "556a695b117565ac": "Hub URL",
-  "e4e5b75bba51396c": "Bearer token (optional)",
-  "e62cedcbcdbafc75": "Management key",
   "f1b3d0634ec035cb": "Label (optional)",
-  "b35256ca61016104": "Add source",
   "52814dd6f7d0a15c": "Add hub",
+  "b35256ca61016104": "Add source",
   "27b770d3402abfa2": "Advanced",
   "584595dfcadab699": "Artwork",
   "7df1a31c9019f5ff": "Nightly artwork",
@@ -7986,7 +8033,6 @@
   "c8361c16c47d5fb5": "Search transcription models",
   "d72eccdd92d4f989": "Couldn’t save this change. Check your connection and try again.",
   "ef5fef499da688e8": "Replace API key",
-  "cad38c8893ab98e4": "API key",
   "42ec8bbd6819af00": "{company} API key",
   "03d751a890780a70": "{company} API key reference",
   "2db595fcf95d3ff6": "Enter API key",
@@ -11628,9 +11674,7 @@
     }
   ],
   "39f64d971ba424b5": "No usage sources configured.",
-  "dbd877abdc2c7c81": "HTTP quota source",
   "4cf6a373a7535324": "{name} · Disabled",
-  "c792e744936dbe1b": "Add HTTP source",
   "4032a03ee5301037": "The saved connection and its credentials are removed from this environment.",
   "0424112d5a0ecd71": "Auto",
   "3f0e1b77e45d53a9": "Tap to toggle, hold to talk",
@@ -13102,6 +13146,9 @@
   "66f86e32e382911d": "Under pace",
   "844bcaadbf7e217f": "On pace",
   "c2e3c47bd3aaa4f6": "HTTP source",
+  "6e26d9e1ed75423a": "OMP cache",
+  "e23aca0e0c5d8a2f": "Kimi Code",
+  "dcd6ef5faf4761b9": "Z.ai",
   "b14eb83f4f7aa041": "Edit details",
   "8a59ab765ff886ef": "Track renewal",
   "97f160e15a8dca18": "Next 24 hours",

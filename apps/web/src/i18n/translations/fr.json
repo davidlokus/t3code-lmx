@@ -7572,20 +7572,30 @@
   "dc87902396b8ade4": "Lettres, chiffres, '-' ou '_'.",
   "251dfec07b7c3612": "Ce driver n’a aucune configuration requise. Vous pouvez ajouter l’instance maintenant.",
   "08fe32f007e788f1": "Configurer manuellement",
+  "17ccef4ee78377e1": "Hub CLIProxyAPI",
+  "dbd877abdc2c7c81": "Source de quotas HTTP",
+  "d506ce8b0300061c": "Cache local OMP",
+  "1b4eb0f933274892": "Kimi Code",
+  "0765824fc86ac61e": "Z.ai / BigModel",
+  "4ca61d42a50cb12f": "Mondial (api.kimi.ai)",
+  "991aa1a77c649a96": "Chine (api.kimi.com)",
+  "7860eb75df697e4a": "Chine (open.bigmodel.cn)",
+  "c2d9abbaa482f204": "Mondial (api.z.ai)",
   "65300794c1edb929": "Jeton Bearer (facultatif)",
   "84eb2878dc17d3eb": "Clé de gestion",
+  "cad38c8893ab98e4": "Clé API",
   "7ac196c1e8175928": "Par défaut, le nom d’hôte du hub",
-  "0c026221dcd2820b": "Ajouter une source de quotas HTTP",
+  "c3bb1b02f759513c": "Par défaut, cache local OMP",
+  "758fd105d61f060c": "Par défaut, Kimi Code",
+  "a1c1d25aa3c703e4": "Par défaut, Z.ai",
+  "4809220aa17c66b5": "Par défaut, le nom d'hôte du point de terminaison",
+  "05d145b2961446c2": "Type de source",
+  "9440f5a5a9b8d8f9": "Région",
   "e3548407052e9e12": "Ajouter un hub CLIProxyAPI",
-  "d185c750156b2121": [
-    "Consultez les quotas depuis un point de terminaison sur ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
+  "0c026221dcd2820b": "Ajouter une source de quotas HTTP",
+  "1007886c2c1a36de": "Ajouter le cache local OMP",
+  "b0c43dd75ca0d6b7": "Ajouter un quota Kimi Code",
+  "2faf1206960bad9c": "Ajouter un quota Z.ai / BigModel",
   "432e85a50e2e7964": [
     "Affichez le quota de chaque compte regroupé par le hub, à côté des fournisseurs sur",
     " ",
@@ -7596,13 +7606,50 @@
     },
     ". La clé reste sur ce serveur."
   ],
+  "d185c750156b2121": [
+    "Consultez les quotas depuis un point de terminaison sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "029ce2453100e651": [
+    "Lire les rapports de quota en cache en lecture seule depuis agent.db sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Ne lit jamais les identifiants OAuth et ne renouvelle pas les jetons."
+  ],
+  "4cbe9f07f5f23631": [
+    "Lire les quotas Kimi Code et le solde Booster sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La clé API reste sur ce serveur."
+  ],
+  "e89b5c7acd38f7a9": [
+    "Lire les quotas GLM Coding Plan et la date de renouvellement sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La clé API reste sur ce serveur."
+  ],
+  "915324a100de587d": "Type de source",
+  "b56c8c003c79841d": "Région",
+  "bf2c160f8212e4f5": "Chemin de la base de données (facultatif)",
   "2324770ba91371ac": "URL du point de terminaison",
   "556a695b117565ac": "URL du hub",
-  "e4e5b75bba51396c": "Jeton Bearer (facultatif)",
-  "e62cedcbcdbafc75": "Clé de gestion",
   "f1b3d0634ec035cb": "Libellé (facultatif)",
-  "b35256ca61016104": "Ajouter une source",
   "52814dd6f7d0a15c": "Ajouter le hub",
+  "b35256ca61016104": "Ajouter une source",
   "27b770d3402abfa2": "Avancé",
   "584595dfcadab699": "Illustration",
   "7df1a31c9019f5ff": "Illustration Nightly",
@@ -7979,7 +8026,6 @@
   "c8361c16c47d5fb5": "Rechercher des modèles de transcription",
   "d72eccdd92d4f989": "Impossible d’enregistrer cette modification. Vérifiez votre connexion et réessayez.",
   "ef5fef499da688e8": "Remplacer la clé API",
-  "cad38c8893ab98e4": "Clé API",
   "42ec8bbd6819af00": "Clé API {company}",
   "03d751a890780a70": "Référence de la clé API {company}",
   "2db595fcf95d3ff6": "Saisissez la clé API",
@@ -11618,9 +11664,7 @@
     }
   ],
   "39f64d971ba424b5": "Aucune source de suivi de l’utilisation configurée.",
-  "dbd877abdc2c7c81": "Source de quotas HTTP",
   "4cf6a373a7535324": "{name} · Désactivé",
-  "c792e744936dbe1b": "Ajouter une source HTTP",
   "4032a03ee5301037": "La connexion enregistrée et ses identifiants sont supprimés de cet environnement.",
   "0424112d5a0ecd71": "Auto",
   "3f0e1b77e45d53a9": "Appuyer pour basculer, maintenir pour parler",
@@ -13092,6 +13136,9 @@
   "66f86e32e382911d": "Sous le rythme",
   "844bcaadbf7e217f": "Dans le rythme",
   "c2e3c47bd3aaa4f6": "Source HTTP",
+  "6e26d9e1ed75423a": "Cache OMP",
+  "e23aca0e0c5d8a2f": "Kimi Code",
+  "dcd6ef5faf4761b9": "Z.ai",
   "b14eb83f4f7aa041": "Modifier les détails",
   "8a59ab765ff886ef": "Suivre l'échéance",
   "97f160e15a8dca18": "Prochaines 24 heures",

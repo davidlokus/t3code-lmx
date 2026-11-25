@@ -52,6 +52,16 @@ const decodePreHttpUsageLimitSources = Schema.decodeUnknownSync(
     Schema.Struct({ ...UsageLimitSourceConfig.fields, kind: Schema.Literal("cliproxy") }),
   ),
 );
+// Clients from before extended sources decode only "cliproxy" and "http".
+const decodeHttpOnlyUsageLimitSources = Schema.decodeUnknownSync(
+  Schema.Record(
+    UsageLimitSourceId,
+    Schema.Struct({
+      ...UsageLimitSourceConfig.fields,
+      kind: Schema.Literals(["cliproxy", "http"]),
+    }),
+  ),
+);
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
@@ -1792,6 +1802,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         const openCode = ProviderInstanceId.make("opencode");
         const hub = UsageLimitSourceId.make("hub");
         const quota = UsageLimitSourceId.make("quota");
+        const kimi = UsageLimitSourceId.make("kimi");
         const router = ProviderInstanceId.make("openrouter");
         const withUsage = yield* serverSettings.updateSettings({
           cloudSpeechCredentials: { openai: usageReference, xai: "literal-fixture" },
@@ -1814,6 +1825,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
               kind: "http",
               url: "https://quota.test/v1",
               managementKey: "",
+              enabled: true,
+            },
+            [kimi]: {
+              kind: "kimi",
+              region: "cn",
+              url: "https://api.kimi.com/coding/v1/usages",
+              managementKey: usageReference,
               enabled: true,
             },
           },
@@ -1867,12 +1885,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           ),
           [hub],
         );
+        const httpOnly = ServerSettingsModule.redactServerSettingsForClient(withUsage, {
+          secretReferences: true,
+          httpUsageLimitSources: true,
+        });
+        assert.deepEqual(
+          Object.keys(
+            decodeHttpOnlyUsageLimitSources(encodeServerSettings(httpOnly).usageLimitSources),
+          ),
+          [hub, quota],
+        );
         assert.equal(
           ServerSettingsModule.redactServerSettingsForClient(withUsage, {
-            secretReferences: false,
+            secretReferences: true,
             httpUsageLimitSources: true,
-          }).usageLimitSources[quota]?.kind,
-          "http",
+            extendedUsageLimitSources: true,
+          }).usageLimitSources[kimi]?.kind,
+          "kimi",
         );
         assert.equal(legacy.textGenerators[router]?.apiKey, SECRET_REDACTED);
         assert.equal(legacy.easDeviceHosts[0]?.accessToken, SECRET_REDACTED);
@@ -1897,6 +1926,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         });
         assert.deepEqual(echoed.usageLimitSources[hub]?.managementKey, usageReference);
         assert.equal(echoed.usageLimitSources[quota]?.kind, "http");
+        assert.equal(echoed.usageLimitSources[kimi]?.kind, "kimi");
+        assert.deepEqual(echoed.usageLimitSources[kimi]?.managementKey, usageReference);
         assert.deepEqual(echoed.textGenerators[router]?.apiKey, usageReference);
         assert.deepEqual(echoed.cloudSpeechCredentials, {
           openai: usageReference,

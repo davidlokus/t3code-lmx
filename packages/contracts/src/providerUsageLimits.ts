@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import {
   ForwardCompatibleArray,
@@ -125,24 +126,23 @@ export const HttpQuotaAccount = Schema.Struct({
   label: TrimmedNonEmptyString,
   providerInstanceId: Schema.optional(ProviderInstanceId),
   windows: Schema.Array(
-    Schema.Struct({
-      id: ServerProviderUsageWindow.fields.id,
-      kind: ServerProviderUsageWindow.fields.kind,
-      label: ServerProviderUsageWindow.fields.label,
-      usedPercent: ServerProviderUsageWindow.fields.usedPercent,
-      resetsAt: ServerProviderUsageWindow.fields.resetsAt,
-    }),
+    ServerProviderUsageWindow.mapFields(Struct.omit(["modelIds", "providerIds"])),
   ),
+  ...usageLimitAccountMetadata,
 });
+export type HttpQuotaAccount = typeof HttpQuotaAccount.Type;
 
 export const HttpQuotaResponse = Schema.Struct({
   version: Schema.Literal(1),
   accounts: Schema.Array(HttpQuotaAccount),
 });
 
+export const UsageLimitSourceKind = Schema.Literals(["cliproxy", "http", "omp", "kimi", "zai"]);
+export type UsageLimitSourceKind = typeof UsageLimitSourceKind.Type;
+
 export const UsageLimitSourceSnapshot = Schema.Struct({
   id: UsageLimitSourceId,
-  kind: Schema.Literals(["cliproxy", "http"]),
+  kind: UsageLimitSourceKind,
   label: TrimmedNonEmptyString,
   /** Origin of the hub, which also serves the agents sent through it. */
   origin: Schema.optional(TrimmedNonEmptyString),

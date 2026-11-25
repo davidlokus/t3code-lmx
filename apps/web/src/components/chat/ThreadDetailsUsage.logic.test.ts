@@ -151,28 +151,31 @@ describe("resolveThreadDetailsLimits", () => {
 });
 
 describe("resolveThreadHttpQuotas", () => {
-  it("shows only the quota accounts bound to the thread's provider instance", () => {
-    const window = { id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 } as const;
-    const source: UsageLimitSourceSnapshot = {
-      id: UsageLimitSourceId.make("quota"),
-      kind: "http",
-      label: "Quota server",
-      checkedAt,
-      accounts: [],
-      quotaAccounts: [
-        { id: "bound", label: "Work plan", providerInstanceId: instanceId, windows: [window] },
-        { id: "unbound", label: "Unbound", windows: [window] },
-        {
-          id: "other",
-          label: "Other plan",
-          providerInstanceId: ProviderInstanceId.make("other"),
-          windows: [window],
-        },
-      ],
-    };
-    expect(
-      resolveThreadHttpQuotas(instanceId, [source]).map((quota) => quota.accountLabel),
-    ).toEqual(["Work plan"]);
-    expect(resolveThreadHttpQuotas(null, [source])).toEqual([]);
-  });
+  it.each(["http", "omp", "kimi", "zai"] as const)(
+    "shows only %s quota accounts bound to the thread's provider instance",
+    (kind) => {
+      const window = { id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 } as const;
+      const source: UsageLimitSourceSnapshot = {
+        id: UsageLimitSourceId.make("quota"),
+        kind,
+        label: "Quota server",
+        checkedAt,
+        accounts: [],
+        quotaAccounts: [
+          { id: "bound", label: "Work plan", providerInstanceId: instanceId, windows: [window] },
+          { id: "unbound", label: "Unbound", windows: [window] },
+          {
+            id: "other",
+            label: "Other plan",
+            providerInstanceId: ProviderInstanceId.make("other"),
+            windows: [window],
+          },
+        ],
+      };
+      expect(
+        resolveThreadHttpQuotas(instanceId, [source]).map((quota) => quota.accountLabel),
+      ).toEqual(["Work plan"]);
+      expect(resolveThreadHttpQuotas(null, [source])).toEqual([]);
+    },
+  );
 });
