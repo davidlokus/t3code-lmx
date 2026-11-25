@@ -61,14 +61,22 @@ describe("Muse usage limit failures", () => {
 
 describe("Muse account usage", () => {
   it("reports the session and weekly windows, capped at 100, with the tier as plan", () => {
-    expect(museUsageToLimits({ ...usage, window: { ...usage.window, usedPercent: 103 } })).toEqual({
+    expect(
+      museUsageToLimits({
+        ...usage,
+        tier: " tier-1 ",
+        window: { ...usage.window, usedPercent: 103 },
+      }),
+    ).toEqual({
       checkedAt: "2026-10-08T08:22:42.610Z",
       authLabel: "tier-1",
+      planTier: "tier-1",
       windows: [
         {
           id: "session",
           kind: "session",
           label: "Session",
+          category: "plan",
           usedPercent: 100,
           resetsAt: "2026-10-08T13:19:17.000Z",
           windowDurationMins: 300,
@@ -77,12 +85,15 @@ describe("Muse account usage", () => {
           id: "weekly",
           kind: "weekly",
           label: "Weekly",
+          category: "plan",
           usedPercent: 5,
           resetsAt: "2026-10-12T00:00:00.000Z",
           windowDurationMins: 10080,
         },
       ],
     });
-    expect(museUsageToLimits({ ...usage, tier: " " })).not.toHaveProperty("authLabel");
+    const blankTier = museUsageToLimits({ ...usage, tier: " " });
+    expect(blankTier).not.toHaveProperty("authLabel");
+    expect(blankTier).not.toHaveProperty("planTier");
   });
 });

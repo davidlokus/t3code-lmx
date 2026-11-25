@@ -41,6 +41,8 @@ const UsageResponse = Schema.Struct({
   usage: Schema.Struct({ rolling: UsageWindow, weekly: UsageWindow, monthly: UsageWindow }),
 });
 
+const GO_PLAN = "OpenCode Go";
+
 // Select before decoding so an OAuth or self-hosted connection cannot fall
 // through to another stored account. NULL-active rows predate the selection flag.
 class OpenCodeCredentialReadError extends Schema.TaggedError<OpenCodeCredentialReadError>()(
@@ -156,6 +158,8 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
         id: "go_rolling",
         kind: "session",
         label: "Go · Session",
+        category: "plan",
+        scopeLabel: GO_PLAN,
         windowDurationMins: 5 * 60,
         usedPercent: clampPercent(body.usage.rolling.percent),
         resetsAt: DateTime.formatIso(body.usage.rolling.resetsAt),
@@ -164,6 +168,8 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
         id: "go_weekly",
         kind: "weekly",
         label: "Go · Weekly",
+        category: "plan",
+        scopeLabel: GO_PLAN,
         windowDurationMins: 7 * 24 * 60,
         usedPercent: clampPercent(body.usage.weekly.percent),
         resetsAt: DateTime.formatIso(body.usage.weekly.resetsAt),
@@ -172,6 +178,8 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
         id: "go_monthly",
         kind: "monthly",
         label: "Go · Monthly",
+        category: "plan",
+        scopeLabel: GO_PLAN,
         usedPercent: clampPercent(body.usage.monthly.percent),
         resetsAt: DateTime.formatIso(body.usage.monthly.resetsAt),
       },
@@ -182,7 +190,7 @@ export const readOpenCodeGoUsageLimits = Effect.fn("readOpenCodeGoUsageLimits")(
       .digest(Digest.sha256, new TextEncoder().encode(`opencode-go\0${apiKey}`))
       .pipe(Effect.map(Hex.encode), Effect.orDie);
     return {
-      ...makeUsageLimits({ checkedAt, windows }),
+      ...makeUsageLimits({ checkedAt, windows, planTier: GO_PLAN }),
       credentialFingerprint,
     };
   }).pipe(
