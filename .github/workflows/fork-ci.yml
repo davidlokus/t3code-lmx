@@ -15,11 +15,59 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: Fork checks
+  plan:
+    name: Plan CI mode
     if: github.repository == 'davidlokus/t3code-lmx'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      - name: Checkout git history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Decide fast vs sharded mode
+        id: mode
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "mode=sharded" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags origin lmx-lab:refs/remotes/origin/lmx-lab
+            BASE="$(git merge-base origin/lmx-lab HEAD)"
+          else
+            if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
+              BASE="$BEFORE_SHA"
+            else
+              echo "mode=sharded" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          CHANGED="$(git diff --name-only "$BASE" HEAD)"
+          COUNT="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "Changed files since ${BASE:0:10}: $COUNT"
+          if (( COUNT > 80 )) || printf '%s\n' "$CHANGED" | grep -Eq '^(vite\.config\.ts|package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml)$'; then
+            echo "mode=sharded" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=fast" >> "$GITHUB_OUTPUT"
+          fi
+
+  fast:
+    name: Fast checks
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'fast'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CHECK_CHANGED_TIMEOUT: "1200"
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -78,13 +126,234 @@ jobs:
         if: github.event_name == 'push'
         env:
           BEFORE_SHA: ${{ github.event.before }}
+        run: vp run check:changed "$BEFORE_SHA"
+
+  static:
+    name: Static & Typecheck
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Cache Electron download
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Run Fork invariant guard
+        run: vp test run packages/shared/src/forkIdentity.guard.test.ts
+
+      - name: Check unused code
+        run: vp run knip:check
+
+      - name: Check generated GraphQL operations
         run: |
-          if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
-            vp run check:changed "$BEFORE_SHA"
-          else
-            vp check
+          vp run --filter @t3tools/source-control-github generate --check
+          vp run --filter t3 generate --check
+          vp run --filter @t3tools/issue-tracker-linear generate --check
+
+      - name: Check i18n catalogs
+        run: vp run i18n:check
+
+      - name: Check formatting and lint
+        run: vp check
+
+      - name: Typecheck workspace
+        run: vp run typecheck
+
+      - name: Test CI scripts
+        run: node --test .github/scripts/check-nightly-release.test.cjs .github/scripts/vercel-deployment-output.test.cjs .github/scripts/mobile-preview-comment.test.cjs .github/scripts/mobile-ios-preview-record.test.cjs .github/scripts/test-delta.test.cjs .github/scripts/workflow-credentials.test.cjs
+
+  test_packages:
+    name: Test Packages
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: false
+
+      - name: Cache Electron download
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install native desktop test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Run non-web, non-server package tests
+        run: |
+          set -o pipefail
+          vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' test 2>&1 | python3 -u -c '
+          import sys
+          for line in sys.stdin:
+              sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
+          '
+
+  test_web:
+    name: Test Web ${{ matrix.shard }}/3
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: false
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium dependencies
+        run: |
+          if [ "${{ steps.chromium_cache.outputs.cache-hit }}" != "true" ]; then
+            node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+          fi
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          if [ -n "$browser" ] && ldd "$browser" | grep -q '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
           fi
 
-      - name: Check checkout on demand
-        if: github.event_name == 'workflow_dispatch'
-        run: vp check
+      - name: Test Web shard
+        run: vp run --filter @t3tools/web test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  test_server:
+    name: Test Server ${{ matrix.shard }}/8
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: false
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/server/node_modules/playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium dependencies
+        run: |
+          if [ "${{ steps.chromium_cache.outputs.cache-hit }}" != "true" ]; then
+            node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+          fi
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          if [ -n "$browser" ] && ldd "$browser" | grep -q '=> not found'; then
+            node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+          fi
+
+      - name: Test Server shard
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  check:
+    name: Fork checks
+    if: always() && github.repository == 'davidlokus/t3code-lmx'
+    needs: [plan, fast, static, test_packages, test_web, test_server]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify required Fork CI jobs
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          FAST_RESULT: ${{ needs.fast.result }}
+          STATIC_RESULT: ${{ needs.static.result }}
+          PACKAGES_RESULT: ${{ needs.test_packages.result }}
+          WEB_RESULT: ${{ needs.test_web.result }}
+          SERVER_RESULT: ${{ needs.test_server.result }}
+        run: |
+          echo "plan=$PLAN_RESULT mode=$MODE fast=$FAST_RESULT static=$STATIC_RESULT test_packages=$PACKAGES_RESULT test_web=$WEB_RESULT test_server=$SERVER_RESULT"
+          if [[ "$PLAN_RESULT" != "success" ]]; then
+            echo "Plan job failed ($PLAN_RESULT)" >&2
+            exit 1
+          fi
+          if [[ "$MODE" == "fast" ]]; then
+            [[ "$FAST_RESULT" == "success" ]] || { echo "Fast checks did not succeed ($FAST_RESULT)" >&2; exit 1; }
+          elif [[ "$MODE" == "sharded" ]]; then
+            for pair in "static:$STATIC_RESULT" "test_packages:$PACKAGES_RESULT" "test_web:$WEB_RESULT" "test_server:$SERVER_RESULT"; do
+              name="${pair%%:*}"
+              res="${pair#*:}"
+              if [[ "$res" != "success" ]]; then
+                echo "Sharded job $name did not succeed ($res)" >&2
+                exit 1
+              fi
+            done
+          else
+            echo "Unknown CI mode: $MODE" >&2
+            exit 1
+          fi

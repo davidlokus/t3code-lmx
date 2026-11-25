@@ -41,6 +41,8 @@ describe("buildPeriodColumns", () => {
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
+      // fork: omp is registered between pi and muse in PROVIDER_ORDER.
+      { provider: "omp", value: 0 },
       { provider: "muse", value: 7 },
     ]);
   });

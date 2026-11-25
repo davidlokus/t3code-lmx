@@ -44,14 +44,29 @@ export function assertPiSettledTokenUsage(
       field(entry.frame, "type") === "response" &&
       field(entry.frame, "command") === "get_session_stats"
     ) {
-      const contextUsage = field(field(entry.frame, "data"), "contextUsage");
+      const statsData = field(entry.frame, "data");
+      const contextUsage = field(statsData, "contextUsage");
       const count = (key: string) => Number(field(messageUsage, key));
+      // fork: PiAdapterV2 forwards positive session cost and reasoning tokens from the transcript.
+      const reasoning = field(messageUsage, "reasoningTokens") ?? field(messageUsage, "reasoning");
+      const statsCost = field(statsData, "cost");
+      const messageCost = field(field(messageUsage, "cost"), "total");
+      const costAmount =
+        typeof statsCost === "number" && Number.isFinite(statsCost) && statsCost > 0
+          ? statsCost
+          : typeof messageCost === "number" && Number.isFinite(messageCost) && messageCost > 0
+            ? messageCost
+            : undefined;
       expected.push({
         usedTokens: field(contextUsage, "tokens"),
         maxTokens: field(contextUsage, "contextWindow"),
         inputTokens: count("input") + count("cacheRead") + count("cacheWrite"),
         cachedInputTokens: count("cacheRead"),
         outputTokens: count("output"),
+        ...(typeof reasoning === "number" && Number.isInteger(reasoning) && reasoning >= 0
+          ? { reasoningOutputTokens: reasoning }
+          : {}),
+        ...(costAmount !== undefined ? { cost: { amount: costAmount, currency: "USD" } } : {}),
       });
     }
   }
