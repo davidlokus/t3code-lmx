@@ -7,8 +7,13 @@ import {
   type LimitPoolWindow,
   type LimitPresentations,
 } from "@t3tools/shared/usageLimits";
-import { cursorUsageWindowDetails, formatResetsIn } from "@t3tools/shared/usageLimitsCopy";
-import { ArrowUpRightIcon } from "lucide-react";
+import {
+  cursorUsageWindowDetails,
+  formatDuration,
+  formatResetsIn,
+} from "@t3tools/shared/usageLimitsCopy";
+import { computeWindowBurnPace } from "@t3tools/shared/usageLimitsIntelligence";
+import { ArrowUpRightIcon, FlameIcon } from "lucide-react";
 import { T, useGT, useMessages } from "gt-react";
 import { useState } from "react";
 
@@ -20,6 +25,11 @@ import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
 import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
+import {
+  type UsageQuotaDisplayMode,
+  type UsageResetTimeMode,
+  useUsageOptionsStore,
+} from "./usageOptionsStore";
 
 function toneTextClass(tone: UsageRiskTone): string {
   switch (tone) {
@@ -60,11 +70,15 @@ function QuotaStripChip({
   pool,
   window,
   nowMs,
+  quotaDisplayMode,
+  resetTimeMode,
   onOpenLimits,
 }: {
   readonly pool: LimitPool;
   readonly window: LimitPoolWindow;
   readonly nowMs: number;
+  readonly quotaDisplayMode: UsageQuotaDisplayMode;
+  readonly resetTimeMode: UsageResetTimeMode;
   readonly onOpenLimits: () => void;
 }) {
   const gt = useGT();
@@ -76,14 +90,30 @@ function QuotaStripChip({
   const windowLabel =
     cursorDetails?.label === null ? providerLabel : (cursorDetails?.label ?? window.label);
   const tone = quotaRiskTone(window.remainingPercent);
-  const clamped = Math.max(0, Math.min(100, window.remainingPercent));
-  const tick = poolTickPercent(window, nowMs);
+  const displayedPercent =
+    quotaDisplayMode === "used" ? window.usedPercent : window.remainingPercent;
+  const clamped = Math.max(0, Math.min(100, displayedPercent));
+  const rawTick = poolTickPercent(window, nowMs);
+  const tick = rawTick === null ? null : quotaDisplayMode === "used" ? 100 - rawTick : rawTick;
   const nextReset = window.resets[0];
   const resetWindow = nextReset?.member.window ?? window.members[0]?.window;
   const countdown = resetWindow ? formatResetsIn(resetWindow, nowMs, m, "refill") : null;
   const resetTime = resetWindow?.resetsAt
-    ? formatUpcomingTimestamp(resetWindow.resetsAt, timestampFormat, nowMs, undefined, m)
+    ? formatUpcomingTimestamp(resetWindow.resetsAt, timestampFormat, nowMs, undefined, m) || null
     : null;
+  const primaryReset =
+    resetTimeMode === "exact" ? (resetTime ?? countdown) : (countdown ?? resetTime);
+  const soonestExhaustionMs = window.members.reduce<number | null>((soonest, member) => {
+    const pace = computeWindowBurnPace(member.window, nowMs);
+    if (pace?.status !== "will-exhaust" || pace.projectedExhaustionMs === null) return soonest;
+    return soonest === null
+      ? pace.projectedExhaustionMs
+      : Math.min(soonest, pace.projectedExhaustionMs);
+  }, null);
+  const exhaustEta =
+    soonestExhaustionMs !== null
+      ? formatDuration(Math.max(0, soonestExhaustionMs - nowMs), m)
+      : null;
 
   return (
     <Tooltip>
@@ -113,8 +143,17 @@ function QuotaStripChip({
               </span>
             ) : null}
           </span>
-          <span className={cn("shrink-0 font-semibold tabular-nums", toneTextClass(tone))}>
-            {window.remainingPercent}%
+          <span className="flex shrink-0 items-center gap-1">
+            {exhaustEta ? (
+              <FlameIcon
+                data-testid="usage-quota-strip-burn-icon"
+                className="size-3 text-warning-foreground"
+                aria-hidden
+              />
+            ) : null}
+            <span className={cn("font-semibold tabular-nums", toneTextClass(tone))}>
+              {displayedPercent}%
+            </span>
           </span>
         </div>
         <div className="relative h-1.5 w-full rounded-full bg-muted">
@@ -134,7 +173,7 @@ function QuotaStripChip({
         </div>
         <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground tabular-nums">
           <span className="truncate">
-            {countdown ?? gt("{count} accounts", { count: window.members.length })}
+            {primaryReset ?? gt("{count} accounts", { count: window.members.length })}
           </span>
           {window.members.length > 1 ? (
             <span className="shrink-0">
@@ -146,13 +185,29 @@ function QuotaStripChip({
       <TooltipPopup side="bottom">
         <div className="flex flex-col gap-0.5 text-xs">
           <span className="font-medium text-foreground">
-            {providerLabel} · {windowLabel}: {gt("{left}% left", { left: window.remainingPercent })}
+            {providerLabel} · {windowLabel}:{" "}
+            {quotaDisplayMode === "used"
+              ? gt("{used}% used", { used: window.usedPercent })
+              : gt("{left}% left", { left: window.remainingPercent })}
           </span>
-          {resetTime ? (
+          {exhaustEta ? (
+            <span className="text-warning-foreground">
+              {window.members.length > 1
+                ? gt("Fast burn · an account is projected to exhaust in {eta}", { eta: exhaustEta })
+                : gt("Fast burn · projected to exhaust in {eta}", { eta: exhaustEta })}
+            </span>
+          ) : null}
+          {resetTime || countdown ? (
             <span className="text-muted-foreground">
-              {countdown
-                ? gt("Resets {time} ({countdown})", { time: resetTime, countdown })
-                : gt("Resets {time}", { time: resetTime })}
+              {resetTimeMode === "exact"
+                ? resetTime
+                  ? gt("Resets {time}", { time: resetTime })
+                  : countdown
+                : resetTime && countdown
+                  ? gt("Resets {time} ({countdown})", { time: resetTime, countdown })
+                  : resetTime
+                    ? gt("Resets {time}", { time: resetTime })
+                    : countdown}
             </span>
           ) : null}
           <span className="text-muted-foreground">
@@ -173,6 +228,8 @@ export function UsageQuotaStrip({
   readonly onOpenLimits: () => void;
 }) {
   const gt = useGT();
+  const quotaDisplayMode = useUsageOptionsStore((state) => state.quotaDisplayMode);
+  const resetTimeMode = useUsageOptionsStore((state) => state.resetTimeMode);
   const [mountNowMs] = useState(() => Date.now());
   const nowMinute = useNowMinute();
   const parsedMinute = Date.parse(`${nowMinute}:00Z`);
@@ -211,6 +268,8 @@ export function UsageQuotaStrip({
             pool={pool}
             window={window}
             nowMs={nowMs}
+            quotaDisplayMode={quotaDisplayMode}
+            resetTimeMode={resetTimeMode}
             onOpenLimits={onOpenLimits}
           />
         ))}

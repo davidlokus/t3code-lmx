@@ -20,6 +20,13 @@ export const ServerProviderUsageWindow = Schema.Struct({
   usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   resetsAt: Schema.optional(IsoDateTime),
   windowDurationMins: Schema.optional(NonNegativeInt),
+  // fork: A window may expose absolute quota amounts as well as percentages.
+  usedAmount: Schema.optional(Schema.Finite),
+  limitAmount: Schema.optional(Schema.Finite),
+  remainingAmount: Schema.optional(Schema.Finite),
+  unit: Schema.optional(TrimmedNonEmptyString),
+  category: Schema.optional(Schema.Literals(["plan", "balance", "overage", "bonus"])),
+  scopeLabel: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
@@ -43,6 +50,31 @@ export const ServerProviderResetCredits = Schema.Struct({
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
+// fork: Balances can expire independently of quota windows and the subscription.
+export const ServerProviderUsageBalance = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  remaining: Schema.Finite,
+  limit: Schema.optional(Schema.Finite),
+  used: Schema.optional(Schema.Finite),
+  unit: TrimmedNonEmptyString,
+  expiresAt: Schema.optional(IsoDateTime),
+  kind: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderUsageBalance = typeof ServerProviderUsageBalance.Type;
+
+const usageLimitAccountMetadata = {
+  subscriptionExpiresAt: Schema.optional(IsoDateTime),
+  planTier: Schema.optional(TrimmedNonEmptyString),
+  balances: Schema.optional(Schema.Array(ServerProviderUsageBalance)),
+  serviceNotice: Schema.optional(
+    Schema.Struct({
+      message: TrimmedNonEmptyString,
+      severity: Schema.optional(Schema.Literals(["critical", "warning", "info"])),
+    }),
+  ),
+};
+
 /** Clear bars for unavailable accounts; retain last good bars after a failed probe. */
 export const ServerProviderUsageLimits = Schema.Struct({
   checkedAt: IsoDateTime,
@@ -63,12 +95,16 @@ export const ServerProviderUsageLimits = Schema.Struct({
       message: Schema.optional(TrimmedNonEmptyString),
     }),
   ),
+  // fork: Older probes may omit all subscription metadata.
+  ...usageLimitAccountMetadata,
 });
 export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 
 /** Partial updates merge windows by id; omitted windows remain unchanged. */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
+  // fork: Omitted account metadata is inherited from the previous snapshot.
+  ...usageLimitAccountMetadata,
 });
 export type ProviderUsageLimitsUpdate = typeof ProviderUsageLimitsUpdate.Type;
 
