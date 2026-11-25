@@ -30,7 +30,7 @@ import {
 import { ensureLocalApi } from "../../localApi";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { formatUpcomingOrBareUtcDate, formatUpcomingTimestamp } from "../../timestampFormat";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { providerClients } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
@@ -875,15 +875,17 @@ export function UsageLimitsPooled({
                 <h3 className="text-sm font-medium">{account.label}</h3>
                 {account.windows.map((window) => {
                   const countdown = formatResetsIn(window, now, m);
-                  const exact = window.resetsAt
-                    ? formatUpcomingTimestamp(
-                        window.resetsAt,
-                        timestampFormat,
-                        now,
-                        undefined,
-                        m,
-                      ) || null
-                    : null;
+                  // fork: Validate and preserve bare YYYY-MM-DD reset dates in UTC without throwing on invalid input.
+                  const exact =
+                    resetTimeMode === "exact" && window.resetsAt
+                      ? formatUpcomingOrBareUtcDate(
+                          window.resetsAt,
+                          timestampFormat,
+                          now,
+                          undefined,
+                          m,
+                        )
+                      : null;
                   const reset = resetTimeMode === "exact" ? (exact ?? countdown) : countdown;
                   const used = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
                   return (

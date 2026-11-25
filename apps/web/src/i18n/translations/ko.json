@@ -7544,17 +7544,27 @@
   "d506ce8b0300061c": "OMP 로컬 캐시",
   "1b4eb0f933274892": "Kimi Code",
   "0765824fc86ac61e": "Z.ai / BigModel",
+  "9a14df7925cee3fb": "OpenRouter",
+  "4e6abdb5add5cfb6": "GitHub Copilot",
+  "46633c0e6cb2fbf0": "Ollama Cloud",
+  "9b1b6ae7cdf64293": "OpenAI API",
   "4ca61d42a50cb12f": "글로벌 (api.kimi.ai)",
   "991aa1a77c649a96": "중국 (api.kimi.com)",
   "7860eb75df697e4a": "중국 (open.bigmodel.cn)",
   "c2d9abbaa482f204": "글로벌 (api.z.ai)",
   "65300794c1edb929": "Bearer 토큰(선택 사항)",
   "84eb2878dc17d3eb": "관리 키",
+  "a8904d6e4f4801e5": "GitHub 토큰",
+  "83ea7ed7618a7166": "관리자 API 키",
   "cad38c8893ab98e4": "API 키",
   "7ac196c1e8175928": "기본값은 허브의 호스트 이름",
   "c3bb1b02f759513c": "기본값: OMP 로컬 캐시",
   "758fd105d61f060c": "기본값: Kimi Code",
   "a1c1d25aa3c703e4": "기본값: Z.ai",
+  "162835fc07090edc": "기본값: OpenRouter",
+  "c767e81d003f64fc": "기본값: GitHub Copilot",
+  "803a1242c1affaa2": "기본값: Ollama Cloud",
+  "dc8fbccb6cf7dd36": "기본값: OpenAI API",
   "4809220aa17c66b5": "기본값: 엔드포인트 호스트 이름",
   "05d145b2961446c2": "소스 유형",
   "9440f5a5a9b8d8f9": "리전",
@@ -7563,6 +7573,10 @@
   "1007886c2c1a36de": "OMP 로컬 캐시 추가",
   "b0c43dd75ca0d6b7": "Kimi Code 할당량 추가",
   "2faf1206960bad9c": "Z.ai / BigModel 할당량 추가",
+  "60ff9604ff0e518b": "OpenRouter 할당량 추가",
+  "af6b3c1a4f4ec6ba": "GitHub Copilot 할당량 추가",
+  "b324f57e3c5edd17": "Ollama Cloud 할당량 추가",
+  "dfc5399c76b40d98": "OpenAI API 비용 추가",
   "432e85a50e2e7964": [
     {
       "i": 1,
@@ -7604,9 +7618,43 @@
     },
     "에서 GLM Coding Plan 할당량과 갱신 날짜를 읽습니다. API 키는 해당 서버에 저장됩니다."
   ],
+  "53a884349cf1faca": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "에서 OpenRouter 크레딧, 키 한도 및 기간별 지출을 읽습니다. API 키는 해당 서버에만 보관됩니다."
+  ],
+  "fca0cd85d66686af": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "에서 GitHub Copilot 할당량 스냅샷 및 초과 사용량을 읽습니다. 토큰은 해당 서버에만 보관됩니다."
+  ],
+  "4e87fed14f3566fe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "의 로컬 Ed25519 키로 읽기 전용 Ollama Cloud 잔액 요청에 서명합니다. 개인 키는 해당 호스트를 벗어나지 않습니다."
+  ],
+  "3187ae810ee11182": [
+    "조직 관리자 키를 사용하여 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "에서 OpenAI 조직 API 지출을 읽습니다. OPENAI_API_KEY나 Codex OAuth는 읽지 않습니다."
+  ],
   "915324a100de587d": "소스 유형",
   "b56c8c003c79841d": "리전",
   "bf2c160f8212e4f5": "데이터베이스 경로 (선택 사항)",
+  "074575109bd1da8b": "서명 키 경로(선택)",
   "2324770ba91371ac": "엔드포인트 URL",
   "556a695b117565ac": "허브 URL",
   "f1b3d0634ec035cb": "레이블(선택 사항)",
@@ -13072,6 +13120,10 @@
   "6e26d9e1ed75423a": "OMP 캐시",
   "e23aca0e0c5d8a2f": "Kimi Code",
   "dcd6ef5faf4761b9": "Z.ai",
+  "6d17c10025909493": "OpenRouter",
+  "6c854ccb39db36e8": "GitHub Copilot",
+  "f97599c51089cf8a": "Ollama Cloud",
+  "9d78a459700eeb5e": "OpenAI API",
   "b14eb83f4f7aa041": "정보 편집",
   "8a59ab765ff886ef": "갱신 기록",
   "97f160e15a8dca18": "다음 24시간",

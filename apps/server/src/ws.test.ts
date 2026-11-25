@@ -34,6 +34,7 @@ import {
   ProviderThreadId,
   RunId,
   SourceControlRepositoryError,
+  UsageLimitSourceId,
   WS_METHODS,
   WsRpcGroup,
   WsServerRefreshProvidersRpc,
@@ -942,14 +943,32 @@ const layerConfigSources = Layer.mergeAll(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
+const settingsRequest = JSON.stringify({
+  _tag: "Request",
+  id: "settings",
+  tag: WS_METHODS.serverGetSettings,
+  payload: {},
+  headers: [],
+} satisfies RpcMessage.RequestEncoded);
+
 it.live.each([
-  { subject: "desktop-bootstrap", extensions: "", framed: false },
-  { subject: "desktop-bootstrap", extensions: "", framed: true },
-  { subject: "one-time-token", extensions: "permessage-deflate", framed: false },
-  { subject: "cloud-connect", extensions: "permessage-deflate", framed: false },
+  { subject: "desktop-bootstrap", extensions: "", framed: false, externalSources: false },
+  { subject: "desktop-bootstrap", extensions: "", framed: true, externalSources: true },
+  {
+    subject: "one-time-token",
+    extensions: "permessage-deflate",
+    framed: false,
+    externalSources: false,
+  },
+  {
+    subject: "cloud-connect",
+    extensions: "permessage-deflate",
+    framed: false,
+    externalSources: true,
+  },
 ])(
-  "negotiates compression for $subject sessions (framed=$framed)",
-  ({ subject, extensions, framed }) =>
+  "negotiates compression and the settings wire shape for $subject (framed=$framed)",
+  ({ subject, extensions, framed, externalSources }) =>
     Effect.gen(function* () {
       const services = Layer.mergeAll(
         layerUnusedConfigRpcServices,
@@ -962,7 +981,7 @@ it.live.each([
               sessionId: AuthSessionId.make("compression-test"),
               subject,
               method: "bearer-access-token",
-              scopes: [],
+              scopes: [AuthOrchestrationReadScope],
             }),
         }),
         Layer.mock(SessionStore.SessionStore)({
@@ -1007,16 +1026,26 @@ it.live.each([
             }),
           ),
           Layer.provide(services),
-          Layer.provide(layerConfigSources),
+          Layer.provideMerge(layerConfigSources),
         ),
       );
       const server = Context.get(context, HttpServer.HttpServer);
+      yield* Context.get(context, ServerSettings.ServerSettingsService).updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("billing")]: {
+            kind: "openaiApi",
+            url: "openaiApi://default",
+            managementKey: "",
+            enabled: true,
+          },
+        },
+      });
       const origin = HttpServer.formatAddress(server.address).replace(/^http/, "ws");
       const socket = yield* Effect.acquireRelease(
         Effect.sync(
           () =>
             new WebSocket(
-              `${origin}/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION}${framed ? `&${SOCKET_FRAME_PARTS_QUERY_PARAM}=1` : ""}`,
+              `${origin}/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION}${framed ? `&${SOCKET_FRAME_PARTS_QUERY_PARAM}=1` : ""}${externalSources ? "&clientCapabilities=externalUsageLimitSources" : ""}`,
               {
                 origin: "t3code://app",
               },
@@ -1032,6 +1061,23 @@ it.live.each([
           }),
       );
       assert.equal(socket.extensions, extensions);
+      const message = yield* Effect.promise(() => {
+        const { promise, resolve, reject } = Promise.withResolvers<string>();
+        socket.once("error", reject);
+        socket.once("message", (data) => resolve(data.toString()));
+        socket.send(settingsRequest);
+        return promise;
+      });
+      const response: RpcMessage.ResponseExitEncoded = JSON.parse(message);
+      assert.equal(response.requestId, "settings");
+      assert.equal(response.exit._tag, "Success");
+      if (response.exit._tag === "Success") {
+        const settings = response.exit.value as ServerConfig["settings"];
+        assert.deepEqual(
+          Object.values(settings.usageLimitSources).map((source) => source.kind),
+          externalSources ? ["openaiApi"] : [],
+        );
+      }
     }).pipe(Effect.scoped),
 );
 

@@ -8,7 +8,12 @@ import type {
 } from "@t3tools/contracts";
 
 import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
-import { type LimitAccount, type LimitPresentations, providersWithLimits } from "./usageLimits.ts";
+import {
+  type LimitAccount,
+  type LimitPresentations,
+  parseUsageLimitTimestampMs,
+  providersWithLimits,
+} from "./usageLimits.ts";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -127,8 +132,7 @@ type PaceWindow = Pick<
 >;
 
 function dateMillis(value: string | undefined): number | null {
-  const ms = value === undefined ? NaN : Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
+  return parseUsageLimitTimestampMs(value);
 }
 
 function computePace(

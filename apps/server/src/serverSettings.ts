@@ -145,6 +145,8 @@ export interface SettingsClient {
   readonly secretReferences: boolean;
   readonly httpUsageLimitSources?: boolean;
   readonly extendedUsageLimitSources?: boolean;
+  // fork: Wave 3 external quota sources client capability
+  readonly externalUsageLimitSources?: boolean;
 }
 
 export function redactServerSettingsForClient(
@@ -166,14 +168,23 @@ export function redactServerSettingsForClient(
     ...shaped,
     secretProviders: withoutUnknownSecretProviderConfigs(shaped),
     // Older clients decode only the source kinds they advertise and reject the whole settings payload otherwise.
-    usageLimitSources: client.extendedUsageLimitSources
+    usageLimitSources: client.externalUsageLimitSources
       ? shaped.usageLimitSources
       : Object.fromEntries(
-          Object.entries(shaped.usageLimitSources).filter(([, source]) =>
-            client.httpUsageLimitSources
-              ? source.kind === "cliproxy" || source.kind === "http"
-              : source.kind === "cliproxy",
-          ),
+          Object.entries(shaped.usageLimitSources).filter(([, { kind }]) => {
+            switch (kind) {
+              case "cliproxy":
+                return true;
+              case "http":
+                return client.httpUsageLimitSources || client.extendedUsageLimitSources;
+              case "omp":
+              case "kimi":
+              case "zai":
+                return client.extendedUsageLimitSources;
+              default:
+                return false;
+            }
+          }),
         ),
   };
 }

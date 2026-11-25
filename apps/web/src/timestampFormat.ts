@@ -1,4 +1,5 @@
 import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { parseUsageLimitTimestampMs } from "@t3tools/shared/usageLimits";
 import { msg } from "gt-react";
 
 import { DEFAULT_LOCALE } from "./i18n/locales";
@@ -309,6 +310,35 @@ export function formatUpcomingTimestamp(
   if (dayDiff === 0) return time;
   if (dayDiff === 1) return resolve(msg("tomorrow at {time}", { time }));
   return `${formatNumericDate(date, targetDay.year === today.year, timeZone)} ${time}`;
+}
+
+const BARE_UTC_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** fork: Format a reset timestamp or calendar-valid bare YYYY-MM-DD UTC date; invalid dates return null. */
+export function formatUpcomingOrBareUtcDate(
+  value: string,
+  timestampFormat: TimestampFormat,
+  nowMs: number = Date.now(),
+  locale?: string,
+  resolve: MessageResolver = m,
+): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsedMs = parseUsageLimitTimestampMs(trimmed);
+  if (parsedMs === null) return null;
+  if (BARE_UTC_DATE_PATTERN.test(trimmed)) {
+    try {
+      return new Intl.DateTimeFormat(locale, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      }).format(new Date(parsedMs));
+    } catch {
+      return null;
+    }
+  }
+  return formatUpcomingTimestamp(trimmed, timestampFormat, nowMs, undefined, resolve) || null;
 }
 
 /** `label` is the whole phrase ("5m ago"); `value` and `suffix` split it for styled layouts. */

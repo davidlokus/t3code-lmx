@@ -4,6 +4,7 @@ import {
   UsageLimitSourceError,
   type UsageLimitSourceConsumeResetCreditInput,
   type ProviderConsumeResetCreditResult,
+  type SecretReference,
   type ProviderDriverKind,
   type ServerSettings,
   UsageLimitSourceConfig,
@@ -20,9 +21,9 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Hex from "effect/encoding/Hex";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -36,13 +37,23 @@ import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 import { windowLimitsModel } from "../provider/claudeUsageLimits.ts";
 import { makeCliproxyApi, normalizeCliproxyHubUrl } from "./cliproxyApi.ts";
+import { COPILOT_USAGE_ENDPOINT, readCopilotUsage } from "./sources/copilot.ts";
 import { kimiUsageEndpoint, readKimiUsage } from "./sources/kimi.ts";
+import {
+  readOllamaKeyGenerationSync,
+  readOllamaKeyIdentity,
+  readOllamaUsage,
+  resolveOllamaKeyPath,
+} from "./sources/ollama.ts";
+import { OPENAI_API_COSTS_ENDPOINT, readOpenAiApiUsage } from "./sources/openaiApi.ts";
+import { OPENROUTER_USAGE_ORIGIN, readOpenRouterUsage } from "./sources/openrouter.ts";
 import { readOmpUsage, resolveOmpDbPath } from "./sources/omp.ts";
 import { readZaiUsage, zaiUsageOrigin } from "./sources/zai.ts";
 
 export type ReadQuotaJson = (
   url: string,
   headers: Readonly<Record<string, string>>,
+  options?: { readonly method?: "GET" | "POST" },
 ) => Effect.Effect<{ readonly status: number; readonly body?: unknown } | undefined>;
 
 const decodeHttpQuota = Schema.decodeUnknownEffect(HttpQuotaResponse);
@@ -94,6 +105,14 @@ function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
       return "Kimi Code";
     case "zai":
       return "Z.ai / BigModel";
+    case "openrouter":
+      return "OpenRouter";
+    case "copilot":
+      return "GitHub Copilot";
+    case "ollama":
+      return "Ollama Cloud";
+    case "openaiApi":
+      return "OpenAI API";
   }
   const fallback = id.trim() || "Usage limit source";
   try {
@@ -106,7 +125,13 @@ function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
 interface SourceReading {
   // HTTP query strings, credential digests, and local paths belong to cache identity, not wire snapshots.
   readonly target: string;
+  // Optional verified scope (e.g. Copilot seat org) so partial fallbacks never borrow across scopes.
+  readonly scope?: string | undefined;
   readonly snapshot: UsageLimitSourceSnapshot;
+}
+
+function isCopilotOrgBalanceId(id: string): boolean {
+  return id.startsWith("org-credits-") || id.startsWith("org-spend-");
 }
 
 /**
@@ -119,14 +144,21 @@ function keepLastGoodReadings(
 ): readonly SourceReading[] {
   return next.map((reading) => {
     const source = reading.snapshot;
-    const before = previous.find(
+    const beforeEntry = previous.find(
       (candidate) =>
         candidate.snapshot.id === source.id &&
         candidate.snapshot.kind === source.kind &&
         candidate.target === reading.target,
-    )?.snapshot;
+    );
+    const before = beforeEntry?.snapshot;
     if (!before) return reading;
+    // A valid seat response that switched or cleared its org scope must never lend prior org data.
+    const scopeChanged =
+      reading.scope !== undefined &&
+      beforeEntry.scope !== undefined &&
+      reading.scope !== beforeEntry.scope;
     if (
+      !scopeChanged &&
       source.error &&
       source.quotaAccounts === undefined &&
       source.accounts.length === 0 &&
@@ -134,6 +166,7 @@ function keepLastGoodReadings(
     ) {
       return {
         ...reading,
+        ...(beforeEntry.scope === undefined ? {} : { scope: beforeEntry.scope }),
         snapshot: {
           ...source,
           ...(source.kind === "omp" && before.accounts.length > 0
@@ -142,6 +175,33 @@ function keepLastGoodReadings(
           ...(before.quotaAccounts?.length ? { quotaAccounts: before.quotaAccounts } : {}),
         },
       };
+    }
+    if (
+      source.kind === "copilot" &&
+      source.error &&
+      source.quotaAccounts?.length === 1 &&
+      reading.scope !== undefined &&
+      beforeEntry.scope === reading.scope
+    ) {
+      const priorOrgBalances = (before.quotaAccounts?.[0]?.balances ?? []).filter((balance) =>
+        isCopilotOrgBalanceId(balance.id),
+      );
+      if (priorOrgBalances.length > 0) {
+        const account = source.quotaAccounts[0]!;
+        const currentBalances = account.balances ?? [];
+        const existingIds = new Set(currentBalances.map((balance) => balance.id));
+        const mergedBalances = [
+          ...currentBalances,
+          ...priorOrgBalances.filter((balance) => !existingIds.has(balance.id)),
+        ];
+        return {
+          ...reading,
+          snapshot: {
+            ...source,
+            quotaAccounts: [{ ...account, balances: mergedBalances }],
+          },
+        };
+      }
     }
     if (source.kind !== "cliproxy" || source.accounts.length === 0) return reading;
     const accounts = source.accounts.map((account) => {
@@ -166,7 +226,12 @@ function keepLastGoodReadings(
 }
 
 function missingManagementKey(config: UsageLimitSourceConfig): string {
-  const label = config.kind === "cliproxy" ? "management key" : "API key";
+  const label =
+    config.kind === "cliproxy"
+      ? "management key"
+      : config.kind === "openaiApi"
+        ? "OpenAI organization Admin API key"
+        : "API key";
   return typeof config.managementKey === "string"
     ? `No ${label} configured.`
     : `Could not read the ${label} from its secret provider.`;
@@ -225,6 +290,12 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
   );
 }
 
+function managementKeyReference(config: UsageLimitSourceConfig): SecretReference | undefined {
+  return config.kind !== "ollama" && typeof config.managementKey !== "string"
+    ? config.managementKey
+    : undefined;
+}
+
 function sameUsageSourcesAndReferencedProviders(
   before: Pick<ServerSettings, "usageLimitSources" | "secretProviders">,
   after: Pick<ServerSettings, "usageLimitSources" | "secretProviders">,
@@ -236,9 +307,8 @@ function sameUsageSourcesAndReferencedProviders(
   for (const [id, afterConfig] of afterEntries) {
     const beforeConfig = before.usageLimitSources[id as UsageLimitSourceId];
     if (!beforeConfig || !sameSourceConfig(beforeConfig, afterConfig)) return false;
-    if (afterConfig.enabled && typeof afterConfig.managementKey !== "string") {
-      referencedProviders.add(afterConfig.managementKey.provider);
-    }
+    const reference = managementKeyReference(afterConfig);
+    if (afterConfig.enabled && reference) referencedProviders.add(reference.provider);
   }
   for (const providerId of referencedProviders) {
     const beforeProvider =
@@ -289,6 +359,14 @@ function resolveSourceEndpoint(config: UsageLimitSourceConfig): {
         return kimiUsageEndpoint(config.region);
       case "zai":
         return zaiUsageOrigin(config.region);
+      case "openrouter":
+        return OPENROUTER_USAGE_ORIGIN;
+      case "copilot":
+        return COPILOT_USAGE_ENDPOINT;
+      case "ollama":
+        return resolveOllamaKeyPath(config.url);
+      case "openaiApi":
+        return OPENAI_API_COSTS_ENDPOINT;
       case "http":
         return url?.href ?? config.url;
     }
@@ -296,20 +374,23 @@ function resolveSourceEndpoint(config: UsageLimitSourceConfig): {
   return { webUrl, hubOrigin: undefined, hubEndpoint: undefined, target };
 }
 
+function ollamaCacheTarget(path: string, keyIdentity: string | undefined): string {
+  return `${path}\0${keyIdentity ?? "unresolved"}`;
+}
+
 /** @public */
 export const make = Effect.gen(function* () {
   const api = yield* makeCliproxyApi;
   const digest = yield* Digest.Digest;
   const http = yield* HttpClient.HttpClient;
+  const fileSystem = yield* FileSystem.FileSystem;
   const settingsService = yield* Settings.ServerSettingsService;
   const secrets = yield* SecretResolver.SecretResolver;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
-  const readSecretRevision = (
-    managementKey: UsageLimitSourceConfig["managementKey"],
-  ): Effect.Effect<string | undefined> =>
-    typeof managementKey === "string" || secrets.revision === undefined
+  const readSecretRevision = (reference: SecretReference | undefined) =>
+    reference === undefined || secrets.revision === undefined
       ? Effect.undefined
-      : secrets.revision(managementKey);
+      : secrets.revision(reference);
   const readManagementKey = Effect.fn("UsageLimitSources.readManagementKey")(function* (
     config: UsageLimitSourceConfig,
   ) {
@@ -333,6 +414,12 @@ export const make = Effect.gen(function* () {
   ) {
     const { target } = resolveSourceEndpoint(config);
     if (config.kind === "omp") return target;
+    if (config.kind === "ollama") {
+      const keyIdentity = yield* readOllamaKeyIdentity(target).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      );
+      return ollamaCacheTarget(target, keyIdentity);
+    }
     const managementKey = yield* readManagementKey(config);
     const authIdentity = yield* resolveAuthIdentity(config, managementKey);
     return `${target}\0${authIdentity}`;
@@ -340,33 +427,30 @@ export const make = Effect.gen(function* () {
   const requestQuotaJson = Effect.fn("UsageLimitSources.requestQuotaJson")(function* (
     url: string,
     headers: Readonly<Record<string, string>>,
+    options?: Parameters<ReadQuotaJson>[2],
   ) {
     if (!hasValidHttpHeaderValues(headers)) return undefined;
-    return yield* http
-      .execute(
-        HttpClientRequest.get(url).pipe(
-          HttpClientRequest.setHeaders({ Accept: "application/json", ...headers }),
-        ),
-      )
-      .pipe(
-        Effect.flatMap((response) =>
-          response.status >= 200 && response.status < 300
-            ? readQuotaBody(response).pipe(
-                Effect.map((body) => ({ status: response.status, body })),
-              )
-            : Effect.succeed({ status: response.status, body: undefined }),
-        ),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
-        Effect.timeout("10 seconds"),
-        // Suppress raw HTTP child spans so transport exceptions cannot export secret-bearing causes.
-        Effect.withTracerEnabled(false),
-        Effect.orElseSucceed(() => undefined),
-      );
+    const request = (options?.method === "POST" ? HttpClientRequest.post : HttpClientRequest.get)(
+      url,
+      { headers: { Accept: "application/json", ...headers } },
+    );
+    return yield* http.execute(request).pipe(
+      Effect.flatMap((response) =>
+        response.status >= 200 && response.status < 300
+          ? readQuotaBody(response).pipe(Effect.map((body) => ({ status: response.status, body })))
+          : Effect.succeed({ status: response.status, body: undefined }),
+      ),
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+      Effect.timeout("10 seconds"),
+      // Suppress raw HTTP child spans so transport exceptions cannot export secret-bearing causes.
+      Effect.withTracerEnabled(false),
+      Effect.orElseSucceed(() => undefined),
+    );
   });
-  const stateRef = yield* Ref.make<{
+  let state: {
     readonly readings: readonly SourceReading[];
     readonly snapshots: readonly UsageLimitSourceSnapshot[];
-  }>({ readings: [], snapshots: [] });
+  } = { readings: [], snapshots: [] };
   const changes = yield* Effect.acquireRelease(
     PubSub.unbounded<ReadonlyArray<UsageLimitSourceSnapshot>>(),
     PubSub.shutdown,
@@ -390,8 +474,19 @@ export const make = Effect.gen(function* () {
     const finish = (
       result: Pick<UsageLimitSourceSnapshot, "accounts" | "quotaAccounts" | "error">,
       cacheTarget = target,
-    ): SourceReading => ({ target: cacheTarget, snapshot: { ...base, ...result } });
+      scope?: string,
+    ): SourceReading => ({
+      target: cacheTarget,
+      ...(scope === undefined ? {} : { scope }),
+      snapshot: { ...base, ...result },
+    });
     if (config.kind === "omp") return finish(yield* readOmpUsage(target));
+    if (config.kind === "ollama") {
+      const { keyIdentity, result } = yield* readOllamaUsage(target, requestQuotaJson).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      );
+      return finish(result, ollamaCacheTarget(target, keyIdentity));
+    }
     const managementKey = yield* readManagementKey(config);
     const authIdentity = yield* resolveAuthIdentity(config, managementKey);
     const credentialedTarget = `${target}\0${authIdentity}`;
@@ -425,38 +520,52 @@ export const make = Effect.gen(function* () {
     if (managementKey.length === 0) {
       return finish({ accounts: [], error: missingManagementKey(config) }, credentialedTarget);
     }
-    if (config.kind === "kimi") {
-      return finish(
-        yield* readKimiUsage(target, managementKey, requestQuotaJson),
-        credentialedTarget,
-      );
+    switch (config.kind) {
+      case "kimi":
+        return finish(
+          yield* readKimiUsage(target, managementKey, requestQuotaJson),
+          credentialedTarget,
+        );
+      case "zai":
+        return finish(
+          yield* readZaiUsage(target, managementKey, requestQuotaJson),
+          credentialedTarget,
+        );
+      case "openrouter":
+        return finish(
+          yield* readOpenRouterUsage(managementKey, requestQuotaJson),
+          credentialedTarget,
+        );
+      case "copilot": {
+        const { seatScope, result } = yield* readCopilotUsage(managementKey, requestQuotaJson);
+        return finish(result, credentialedTarget, seatScope);
+      }
+      case "openaiApi":
+        return finish(
+          yield* readOpenAiApiUsage(managementKey, requestQuotaJson),
+          credentialedTarget,
+        );
+      case "cliproxy": {
+        const accounts = yield* api
+          .readAccounts({ url: config.url, managementKey })
+          .pipe(Effect.result);
+        if (accounts._tag === "Failure") {
+          yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
+          return finish({ accounts: [], error: accounts.failure.detail }, credentialedTarget);
+        }
+        return finish({ accounts: accounts.success }, credentialedTarget);
+      }
     }
-    if (config.kind === "zai") {
-      return finish(
-        yield* readZaiUsage(target, managementKey, requestQuotaJson),
-        credentialedTarget,
-      );
-    }
-    const accounts = yield* api
-      .readAccounts({ url: config.url, managementKey })
-      .pipe(Effect.result);
-    if (accounts._tag === "Failure") {
-      yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
-      return finish({ accounts: [], error: accounts.failure.detail }, credentialedTarget);
-    }
-    return finish({ accounts: accounts.success }, credentialedTarget);
   });
 
-  const publish = Effect.fn("UsageLimitSources.publish")(function* (
+  const commitState = (
     snapshots: readonly UsageLimitSourceSnapshot[],
     retained: readonly SourceReading[],
-  ) {
-    const changed = yield* Ref.modify(stateRef, (previous) => [
-      !Equal.equals(previous.snapshots, snapshots),
-      { readings: retained, snapshots },
-    ]);
-    if (changed) yield* PubSub.publish(changes, snapshots);
-  });
+  ): readonly UsageLimitSourceSnapshot[] | undefined => {
+    const changed = !Equal.equals(state.snapshots, snapshots);
+    state = { readings: retained, snapshots };
+    return changed ? snapshots : undefined;
+  };
 
   // Serialize refreshes so slow old-settings reads cannot resurrect removed sources after newer refreshes.
   const refreshLock = yield* Semaphore.make(1);
@@ -492,28 +601,46 @@ export const make = Effect.gen(function* () {
         ) {
           return undefined;
         }
+        const checkedReference = managementKeyReference(checkedConfig);
         const checkedProvider =
-          typeof checkedConfig.managementKey === "string"
+          checkedReference === undefined
             ? undefined
-            : latest.secretProviders[checkedConfig.managementKey.provider];
-        let checkedRevision = yield* readSecretRevision(checkedConfig.managementKey);
-        let latestTarget = yield* resolveCacheTarget(checkedConfig);
-        let afterRevision = yield* readSecretRevision(checkedConfig.managementKey);
-        // A same-key refill after invalidate bumps the cache revision once; recheck on the warm
-        // cache so checkedRevision pairs with the resolved target without dropping last-good data.
-        if (afterRevision !== checkedRevision && latestTarget === reading.target) {
-          checkedRevision = afterRevision;
-          latestTarget = yield* resolveCacheTarget(checkedConfig);
-          afterRevision = yield* readSecretRevision(checkedConfig.managementKey);
-        }
-        if (latestTarget !== reading.target) {
-          return undefined;
+            : latest.secretProviders[checkedReference.provider];
+        let checkedOllamaPath: string | undefined;
+        let checkedOllamaGeneration: string | undefined;
+        let checkedRevision: string | undefined;
+        let afterRevision: string | undefined;
+        if (checkedConfig.kind === "ollama") {
+          checkedOllamaPath = resolveSourceEndpoint(checkedConfig).target;
+          const generationBefore = readOllamaKeyGenerationSync(checkedOllamaPath);
+          const latestTarget = yield* resolveCacheTarget(checkedConfig);
+          const generationAfter = readOllamaKeyGenerationSync(checkedOllamaPath);
+          if (generationBefore !== generationAfter || latestTarget !== reading.target) {
+            return undefined;
+          }
+          checkedOllamaGeneration = generationAfter;
+        } else {
+          checkedRevision = yield* readSecretRevision(checkedReference);
+          let latestTarget = yield* resolveCacheTarget(checkedConfig);
+          afterRevision = yield* readSecretRevision(checkedReference);
+          // A same-key refill after invalidate bumps the cache revision once; recheck on the warm
+          // cache so checkedRevision pairs with the resolved target without dropping last-good data.
+          if (afterRevision !== checkedRevision && latestTarget === reading.target) {
+            checkedRevision = afterRevision;
+            latestTarget = yield* resolveCacheTarget(checkedConfig);
+            afterRevision = yield* readSecretRevision(checkedReference);
+          }
+          if (latestTarget !== reading.target) {
+            return undefined;
+          }
         }
         return {
           id: sourceId,
           checkedConfig,
           checkedProvider,
           checkedRevision,
+          checkedOllamaPath,
+          checkedOllamaGeneration,
           revisionStable: afterRevision === checkedRevision,
           reading,
         };
@@ -523,48 +650,85 @@ export const make = Effect.gen(function* () {
     yield* settingsService
       .withSettingsSnapshot((committed) =>
         Effect.gen(function* () {
-          const previous = (yield* Ref.get(stateRef)).readings;
-          const visible: SourceReading[] = [];
-          const visibleIds = new Set<UsageLimitSourceId>();
-          const unverifiedSecretIds = new Set<UsageLimitSourceId>();
-          for (const candidate of candidates) {
-            const current = committed.usageLimitSources[candidate.id];
-            if (!current || !current.enabled) continue;
-            if (!sameEffectiveSourceIdentity(candidate.checkedConfig, current)) continue;
-            if (typeof current.managementKey !== "string") {
-              const committedProvider = committed.secretProviders[current.managementKey.provider];
-              if (!sameJsonValue(committedProvider, candidate.checkedProvider)) continue;
-              const committedRevision = yield* readSecretRevision(current.managementKey);
-              if (!candidate.revisionStable || committedRevision !== candidate.checkedRevision) {
-                // Keep publication fail-closed, but keep the prior reading keyed by target+digest
-                // so a subsequent refresh can restore last-good only if it proves the same key.
-                unverifiedSecretIds.add(candidate.id);
-                continue;
+          // Only custom test stubs without revisionSync need an Effect-level revision lookup;
+          // real SecretResolver instances expose revisionSync so final validation + commit run in one Effect.sync.
+          let fallbackRevisions: Map<string, string | undefined> | undefined;
+          if (secrets.revisionSync === undefined && secrets.revision !== undefined) {
+            fallbackRevisions = new Map();
+            for (const candidate of candidates) {
+              const current = committed.usageLimitSources[candidate.id];
+              const ref = current ? managementKeyReference(current) : undefined;
+              if (!ref) continue;
+              const key = `${ref.provider}\u0000${ref.reference}`;
+              if (!fallbackRevisions.has(key)) {
+                fallbackRevisions.set(key, yield* readSecretRevision(ref));
               }
             }
-            const latestLabel = sourceLabel(candidate.id, current);
-            visibleIds.add(candidate.id);
-            visible.push(
-              latestLabel === candidate.reading.snapshot.label
-                ? candidate.reading
-                : {
-                    ...candidate.reading,
-                    snapshot: { ...candidate.reading.snapshot, label: latestLabel },
-                  },
-            );
           }
-          const nextVisible = keepLastGoodReadings(previous, visible);
-          const retained = [
-            ...nextVisible,
-            ...previous.filter(
-              (entry) =>
-                !visibleIds.has(entry.snapshot.id) && unverifiedSecretIds.has(entry.snapshot.id),
-            ),
-          ];
-          yield* publish(
-            nextVisible.map((reading) => reading.snapshot),
-            retained,
-          );
+          // Run final validation and state commit in ONE synchronous section with zero Effect
+          // yields so Effect's fiber scheduler cannot preempt between early candidates and commit.
+          const nextToPublish = yield* Effect.sync(() => {
+            const previous = state.readings;
+            const visible: SourceReading[] = [];
+            const visibleIds = new Set<UsageLimitSourceId>();
+            const unverifiedSecretIds = new Set<UsageLimitSourceId>();
+            for (const candidate of candidates) {
+              const current = committed.usageLimitSources[candidate.id];
+              if (!current || !current.enabled) continue;
+              if (!sameEffectiveSourceIdentity(candidate.checkedConfig, current)) continue;
+              if (current.kind === "ollama") {
+                if (
+                  candidate.checkedOllamaPath === undefined ||
+                  readOllamaKeyGenerationSync(candidate.checkedOllamaPath) !==
+                    candidate.checkedOllamaGeneration
+                ) {
+                  continue;
+                }
+              }
+              const committedReference = managementKeyReference(current);
+              if (committedReference) {
+                const committedProvider = committed.secretProviders[committedReference.provider];
+                if (!sameJsonValue(committedProvider, candidate.checkedProvider)) continue;
+                const committedRevision =
+                  secrets.revisionSync !== undefined
+                    ? secrets.revisionSync(committedReference)
+                    : fallbackRevisions?.get(
+                        `${committedReference.provider}\u0000${committedReference.reference}`,
+                      );
+                if (!candidate.revisionStable || committedRevision !== candidate.checkedRevision) {
+                  // Keep publication fail-closed, but keep the prior reading keyed by target+digest
+                  // so a subsequent refresh can restore last-good only if it proves the same key.
+                  unverifiedSecretIds.add(candidate.id);
+                  continue;
+                }
+              }
+              const latestLabel = sourceLabel(candidate.id, current);
+              visibleIds.add(candidate.id);
+              visible.push(
+                latestLabel === candidate.reading.snapshot.label
+                  ? candidate.reading
+                  : {
+                      ...candidate.reading,
+                      snapshot: { ...candidate.reading.snapshot, label: latestLabel },
+                    },
+              );
+            }
+            const nextVisible = keepLastGoodReadings(previous, visible);
+            const retained = [
+              ...nextVisible,
+              ...previous.filter(
+                (entry) =>
+                  !visibleIds.has(entry.snapshot.id) && unverifiedSecretIds.has(entry.snapshot.id),
+              ),
+            ];
+            return commitState(
+              nextVisible.map((reading) => reading.snapshot),
+              retained,
+            );
+          });
+          if (nextToPublish !== undefined) {
+            yield* PubSub.publish(changes, nextToPublish);
+          }
         }),
       )
       .pipe(Effect.ignoreCause({ log: true }));
@@ -595,13 +759,17 @@ export const make = Effect.gen(function* () {
     // A redemption changes the reading, so a refused re-read must not bring back the one before it.
     // Update visible snapshots and retained cache independently so hidden fenced sources stay hidden.
     const reading = yield* readSource(input.sourceId, config);
-    const previous = yield* Ref.get(stateRef);
-    yield* publish(
-      previous.snapshots.map((snapshot) =>
-        snapshot.id === input.sourceId ? reading.snapshot : snapshot,
+    const nextToPublish = yield* Effect.sync(() =>
+      commitState(
+        state.snapshots.map((snapshot) =>
+          snapshot.id === input.sourceId ? reading.snapshot : snapshot,
+        ),
+        state.readings.map((entry) => (entry.snapshot.id === input.sourceId ? reading : entry)),
       ),
-      previous.readings.map((entry) => (entry.snapshot.id === input.sourceId ? reading : entry)),
     );
+    if (nextToPublish !== undefined) {
+      yield* PubSub.publish(changes, nextToPublish);
+    }
     return result;
   }, refreshLock.withPermits(1));
 
@@ -638,14 +806,14 @@ export const make = Effect.gen(function* () {
   yield* refresh.pipe(Effect.forkScoped);
 
   return {
-    current: Ref.get(stateRef).pipe(Effect.map((state) => state.snapshots)),
+    current: Effect.sync(() => state.snapshots),
     consumeResetCredit,
     refresh,
     get streamChanges() {
       return Stream.unwrap(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
-          const { snapshots: snapshot } = yield* Ref.get(stateRef);
+          const { snapshots: snapshot } = yield* Effect.sync(() => state);
           return Stream.concat(Stream.make(snapshot), Stream.fromSubscription(subscription)).pipe(
             Stream.changes,
           );

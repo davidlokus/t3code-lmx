@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   formatChatTimestampTooltip,
   formatDayAwareTimestamp,
+  formatUpcomingOrBareUtcDate,
   formatUpcomingTimestamp,
 } from "./timestampFormat";
 
@@ -98,5 +99,23 @@ describe("timestamps after the system time zone changes", () => {
     expect(formatChatTimestampTooltip(monthEnd, "12-hour")).toBe(
       `${timeIn(monthEnd, "Asia/Bangkok")}, 1st November 2026`,
     );
+  });
+});
+
+describe("formatUpcomingOrBareUtcDate", () => {
+  it("preserves valid bare YYYY-MM-DD dates in UTC across negative offsets and rejects invalid dates", () => {
+    using _zone = useTimeZone("America/New_York");
+    expect(
+      formatUpcomingOrBareUtcDate("2099-07-01", "12-hour", Date.UTC(2099, 5, 15), "en-US"),
+    ).toBe("Jul 1, 2099");
+    expect(
+      formatUpcomingOrBareUtcDate("2099-13-01", "12-hour", Date.UTC(2099, 5, 15), "en-US"),
+    ).toBeNull();
+    expect(
+      formatUpcomingOrBareUtcDate("2099-02-30", "12-hour", Date.UTC(2099, 5, 15), "en-US"),
+    ).toBeNull();
+    expect(
+      formatUpcomingOrBareUtcDate("not-a-timestamp", "12-hour", Date.UTC(2099, 5, 15), "en-US"),
+    ).toBeNull();
   });
 });

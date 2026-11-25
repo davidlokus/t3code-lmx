@@ -735,4 +735,239 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
       .element(page.getByTestId("usage-expiry-row").getByText("Aug 15, 2099"))
       .toBeVisible();
   });
+
+  it("renders OpenRouter, GitHub Copilot, Ollama Cloud, and balance-only OpenAI API sources in Matrix view", async () => {
+    vi.clearAllMocks();
+    window.localStorage.removeItem(USAGE_UI_OPTIONS_STORAGE_KEY);
+    useUsageOptionsStore.getState().resetUsageUiOptions();
+    useUsageOptionsStore.setState({ manualSubscriptionOverrides: {} });
+    useUsageOptionsStore.getState().setView("limits");
+    useUsageOptionsStore.getState().setLimitsLens("pools");
+    useUsageOptionsStore.getState().setLimitsLayout("matrix");
+
+    const externalSources: UsageLimitSourceSnapshot[] = [
+      {
+        id: UsageLimitSourceId.make("openrouter-1"),
+        kind: "openrouter",
+        label: "OpenRouter",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "openrouter",
+            label: "OpenRouter Work",
+            planTier: "Pay as you go",
+            windows: [
+              {
+                id: "credits",
+                kind: "other",
+                label: "Credits",
+                usedPercent: 30,
+                usedAmount: 15,
+                limitAmount: 50,
+                remainingAmount: 35,
+                unit: "USD",
+                category: "balance",
+              },
+            ],
+            balances: [{ id: "balance", label: "Balance", remaining: 35, unit: "USD" }],
+          },
+        ],
+      },
+      {
+        id: UsageLimitSourceId.make("copilot-1"),
+        kind: "copilot",
+        label: "GitHub Copilot",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "copilot",
+            label: "Copilot Pro",
+            planTier: "Pro",
+            windows: [
+              {
+                id: "premium_interactions",
+                kind: "monthly",
+                label: "Credits",
+                usedPercent: 20,
+                usedAmount: 60,
+                limitAmount: 300,
+                remainingAmount: 240,
+                unit: "credits",
+                resetsAt: "2099-07-01",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: UsageLimitSourceId.make("ollama-default"),
+        kind: "ollama",
+        label: "Ollama Cloud",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "ollama",
+            label: "Ollama Cloud",
+            planTier: "Pro",
+            windows: [
+              {
+                id: "monthly",
+                kind: "monthly",
+                label: "Monthly",
+                usedPercent: 40,
+                usedAmount: 8,
+                limitAmount: 20,
+                remainingAmount: 12,
+                unit: "USD",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: UsageLimitSourceId.make("openaiApi-1"),
+        kind: "openaiApi",
+        label: "OpenAI API",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "openai-api",
+            label: "OpenAI Org",
+            windows: [],
+            balances: [
+              { id: "today", label: "Today", remaining: 4.5, unit: "USD", kind: "spend" },
+              {
+                id: "30-day-spend",
+                label: "30-Day Spend",
+                remaining: 92.25,
+                unit: "USD",
+                kind: "spend",
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    setPresentations([], externalSources);
+    installUsageMock(["2099-06-15"]);
+
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <UsagePage />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByText("OpenRouter Work")).toBeVisible();
+    await expect.element(page.getByText("Copilot Pro")).toBeVisible();
+    await expect.element(page.getByText("Ollama Cloud").first()).toBeVisible();
+    await expect.element(page.getByText("OpenAI Org")).toBeVisible();
+    await expect.element(page.getByText("GitHub Copilot").first()).toBeVisible();
+    await expect.element(page.getByText("OpenAI API").first()).toBeVisible();
+    await expect.element(page.getByText("$92.25")).toBeVisible();
+    await expect.element(page.getByTestId("usage-source-icon-copilot")).toBeVisible();
+
+    // Switch to Exact reset mode and verify Copilot's bare YYYY-MM-DD date renders as its UTC calendar date.
+    await userEvent.click(page.getByTestId("usage-reset-mode-exact"));
+    await expect.element(page.getByText(/Resets Jul 1, 2099/)).toBeVisible();
+
+    await userEvent.click(page.getByTestId("usage-limits-lens-resets"));
+    await expect.element(page.getByText("Jul 1, 2099")).toBeVisible();
+  });
+
+  it("renders Pools view without crashing on an invalid bare reset date alongside a valid Copilot date", async () => {
+    vi.clearAllMocks();
+    window.localStorage.removeItem(USAGE_UI_OPTIONS_STORAGE_KEY);
+    useUsageOptionsStore.getState().resetUsageUiOptions();
+    useUsageOptionsStore.setState({ manualSubscriptionOverrides: {} });
+    useUsageOptionsStore.getState().setView("limits");
+    useUsageOptionsStore.getState().setLimitsLens("pools");
+    useUsageOptionsStore.getState().setLimitsLayout("pool");
+
+    const sources: UsageLimitSourceSnapshot[] = [
+      {
+        id: UsageLimitSourceId.make("http-bad-date"),
+        kind: "http",
+        label: "Malformed Date Gateway",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "bad-http",
+            label: "Bad Date Pool",
+            windows: [
+              {
+                id: "broken",
+                kind: "monthly",
+                label: "Broken Window",
+                usedPercent: 40,
+                resetsAt: "2099-13-45",
+              },
+              {
+                id: "rollover",
+                kind: "monthly",
+                label: "Rollover Window",
+                usedPercent: 30,
+                resetsAt: "2099-06-31",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: UsageLimitSourceId.make("copilot-valid-date"),
+        kind: "copilot",
+        label: "GitHub Copilot",
+        checkedAt: NOW_ISO,
+        accounts: [],
+        quotaAccounts: [
+          {
+            id: "copilot",
+            label: "Copilot Valid",
+            windows: [
+              {
+                id: "premium_interactions",
+                kind: "monthly",
+                label: "Credits",
+                usedPercent: 20,
+                resetsAt: "2099-07-01",
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    setPresentations([], sources);
+    installUsageMock(["2099-06-15"]);
+
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <UsagePage />
+      </AppAtomRegistryProvider>,
+    );
+
+    // Countdown mode must neither crash on 2099-13-45 nor roll 2099-06-31 into a fake countdown.
+    await expect.element(page.getByText("Bad Date Pool")).toBeVisible();
+    await expect.element(page.getByText("Broken Window")).toBeVisible();
+    await expect.element(page.getByText("Rollover Window")).toBeVisible();
+    await expect.element(page.getByText("Copilot Valid")).toBeVisible();
+    await expect.element(page.getByText("70% left", { exact: true })).toBeVisible();
+
+    // Exact mode must omit both invalid dates (no countdown fallback) and display Copilot's valid UTC date cleanly.
+    await userEvent.click(page.getByTestId("usage-reset-mode-exact"));
+    await expect.element(page.getByText("Bad Date Pool")).toBeVisible();
+    await expect.element(page.getByText("70% left", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/Jul 1, 2099/)).toBeVisible();
+    await expect.element(page.getByText(/2099-13-45/)).not.toBeInTheDocument();
+    await expect.element(page.getByText(/2099-06-31/)).not.toBeInTheDocument();
+
+    // Normalized Resets lens must classify 2099-06-31 as Unscheduled instead of rolling to Jul 1.
+    await userEvent.click(page.getByTestId("usage-limits-lens-resets"));
+    const unscheduled = page.getByTestId("usage-resets-group-unscheduled");
+    await expect.element(unscheduled).toBeVisible();
+    await expect.element(unscheduled.getByText(/Rollover Window/)).toBeVisible();
+  });
 });

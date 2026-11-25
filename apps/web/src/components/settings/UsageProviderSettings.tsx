@@ -27,12 +27,14 @@ export function UsageProviderSettings({
   sources,
   readOnly,
   supportsExtendedSources = true,
+  supportsExternalSources = true,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly sources: UnifiedSettings["usageLimitSources"];
   readonly readOnly: boolean;
   readonly supportsExtendedSources?: boolean;
+  readonly supportsExternalSources?: boolean;
 }) {
   const gt = useGT();
   const searchableSetting = useSearchableSetting();
@@ -52,6 +54,14 @@ export function UsageProviderSettings({
         return gt("Kimi Code");
       case "zai":
         return gt("Z.ai / BigModel");
+      case "openrouter":
+        return gt("OpenRouter");
+      case "copilot":
+        return gt("GitHub Copilot");
+      case "ollama":
+        return gt("Ollama Cloud");
+      case "openaiApi":
+        return gt("OpenAI API");
     }
   };
 
@@ -69,7 +79,15 @@ export function UsageProviderSettings({
               <Button
                 size="xs"
                 variant="outline"
-                onClick={() => setAdding(supportsExtendedSources ? "omp" : "http")}
+                onClick={() =>
+                  setAdding(
+                    supportsExtendedSources
+                      ? "omp"
+                      : supportsExternalSources
+                        ? "openrouter"
+                        : "http",
+                  )
+                }
               >
                 <PlusIcon className="size-3" aria-hidden />
                 <T>Add source</T>
@@ -86,9 +104,7 @@ export function UsageProviderSettings({
             const target = displayUsageLimitSourceTarget(source);
             const label =
               source.label?.trim() ||
-              (source.kind === "omp" || source.kind === "kimi" || source.kind === "zai"
-                ? typeLabel
-                : target);
+              (source.kind !== "cliproxy" && source.kind !== "http" ? typeLabel : target);
             const statusLabel = source.enabled
               ? typeLabel
               : gt("{name} · Disabled", { name: typeLabel });
@@ -119,6 +135,7 @@ export function UsageProviderSettings({
           open
           kind={adding}
           supportsExtendedSources={supportsExtendedSources}
+          supportsExternalSources={supportsExternalSources}
           onOpenChange={(open) => {
             if (!open) setAdding(null);
           }}

@@ -37,9 +37,10 @@ export function exhaustedUsageWindow(
       (model === undefined ||
         window.providerIds === undefined ||
         window.providerIds.includes(model.split("/")[0] ?? "")) &&
-      (!window.resetsAt ||
-        !Number.isFinite(Date.parse(window.resetsAt)) ||
-        Date.parse(window.resetsAt) > now),
+      (() => {
+        const resetAt = parseUsageLimitTimestampMs(window.resetsAt);
+        return resetAt === null || resetAt > now;
+      })(),
   );
   if (model === undefined) return exhausted[0];
   switch (provider?.driver) {
@@ -791,10 +792,40 @@ export function remainingPercent(window: ServerProviderUsageWindow): number {
   return Math.round(100 - Math.max(0, Math.min(100, window.usedPercent)));
 }
 
-function resetMillis(window: ServerProviderUsageWindow): number | null {
-  if (window.resetsAt === undefined) return null;
-  const at = Date.parse(window.resetsAt);
+const ISO_USAGE_LIMIT_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})(?:$|[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:[Zz]|[+-]\d{2}:?\d{2})?$)/;
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const maxDay =
+    month === 2
+      ? isLeap
+        ? 29
+        : 28
+      : month === 4 || month === 6 || month === 9 || month === 11
+        ? 30
+        : 31;
+  return day <= maxDay;
+}
+
+/** fork: Parse a documented four-digit ISO timestamp or bare YYYY-MM-DD UTC date, rejecting calendar rollovers. */
+export function parseUsageLimitTimestampMs(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const trimmed = value.trim();
+  const match = ISO_USAGE_LIMIT_TIMESTAMP.exec(trimmed);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!isValidCalendarDate(year, month, day)) return null;
+  // Avoid Date.UTC's 0..99 -> 1900..1999 year remapping for bare dates like 0099-07-01.
+  const at = Date.parse(trimmed.length === 10 ? `${trimmed}T00:00:00.000Z` : trimmed);
   return Number.isFinite(at) ? at : null;
+}
+
+function resetMillis(window: ServerProviderUsageWindow): number | null {
+  return parseUsageLimitTimestampMs(window.resetsAt);
 }
 
 export function elapsedShare(window: ServerProviderUsageWindow, now: number): number | null {

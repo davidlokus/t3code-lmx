@@ -66,6 +66,7 @@ import {
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   CLIENT_CAPABILITIES_QUERY_PARAM,
   EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY,
+  EXTERNAL_USAGE_LIMIT_SOURCES_CAPABILITY,
   HTTP_USAGE_LIMIT_SOURCES_CAPABILITY,
   SETTINGS_SECRET_REFERENCES_CAPABILITY,
   ORCHESTRATION_PROTOCOL_VERSION,
@@ -825,6 +826,8 @@ function readSettingsClient(url: URL) {
     secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
     httpUsageLimitSources: capabilities.includes(HTTP_USAGE_LIMIT_SOURCES_CAPABILITY),
     extendedUsageLimitSources: capabilities.includes(EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY),
+    // fork: Advertised by clients that decode external API quota sources (openrouter/copilot/ollama/openaiApi).
+    externalUsageLimitSources: capabilities.includes(EXTERNAL_USAGE_LIMIT_SOURCES_CAPABILITY),
   };
 }
 

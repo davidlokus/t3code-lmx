@@ -137,7 +137,18 @@ export const HttpQuotaResponse = Schema.Struct({
   accounts: Schema.Array(HttpQuotaAccount),
 });
 
-export const UsageLimitSourceKind = Schema.Literals(["cliproxy", "http", "omp", "kimi", "zai"]);
+export const UsageLimitSourceKind = Schema.Literals([
+  "cliproxy",
+  "http",
+  "omp",
+  "kimi",
+  "zai",
+  // fork: Wave 3 external quota source kinds (OpenRouter, GitHub Copilot, Ollama Cloud, OpenAI API)
+  "openrouter",
+  "copilot",
+  "ollama",
+  "openaiApi",
+]);
 export type UsageLimitSourceKind = typeof UsageLimitSourceKind.Type;
 
 export const UsageLimitSourceSnapshot = Schema.Struct({

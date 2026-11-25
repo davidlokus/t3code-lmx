@@ -45,22 +45,58 @@ import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
-// Clients from before HTTP sources decode only "cliproxy" and reject the whole settings payload.
-const decodePreHttpUsageLimitSources = Schema.decodeUnknownSync(
-  Schema.Record(
-    UsageLimitSourceId,
-    Schema.Struct({ ...UsageLimitSourceConfig.fields, kind: Schema.Literal("cliproxy") }),
-  ),
-);
-// Clients from before extended sources decode only "cliproxy" and "http".
-const decodeHttpOnlyUsageLimitSources = Schema.decodeUnknownSync(
-  Schema.Record(
-    UsageLimitSourceId,
-    Schema.Struct({
-      ...UsageLimitSourceConfig.fields,
-      kind: Schema.Literals(["cliproxy", "http"]),
-    }),
-  ),
+const preHttpKinds = ["cliproxy"] as const;
+const httpKinds = [...preHttpKinds, "http"] as const;
+const extendedKinds = [...httpKinds, "omp", "kimi", "zai"] as const;
+const externalKinds = [...extendedKinds, "openrouter", "copilot", "ollama", "openaiApi"] as const;
+
+it.each([
+  { tier: "legacy", client: { secretReferences: false }, kinds: preHttpKinds },
+  {
+    tier: "HTTP",
+    client: { secretReferences: true, httpUsageLimitSources: true },
+    kinds: httpKinds,
+  },
+  {
+    tier: "extended",
+    client: { secretReferences: true, extendedUsageLimitSources: true },
+    kinds: extendedKinds,
+  },
+  {
+    tier: "external",
+    client: { secretReferences: true, externalUsageLimitSources: true },
+    kinds: externalKinds,
+  },
+])(
+  "decodes all and only the source kinds understood by the $tier settings client",
+  ({ client, kinds }) => {
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      usageLimitSources: Object.fromEntries(
+        externalKinds.map((kind) => [
+          UsageLimitSourceId.make(kind),
+          { kind, enabled: true, url: `${kind}://default`, managementKey: "" },
+        ]),
+      ),
+    };
+    const decodeClientSettings = Schema.decodeUnknownSync(
+      Schema.Struct({
+        ...ServerSettings.fields,
+        usageLimitSources: Schema.Record(
+          UsageLimitSourceId,
+          Schema.Struct({ ...UsageLimitSourceConfig.fields, kind: Schema.Literals(kinds) }),
+        ),
+      }),
+    );
+    const redacted = ServerSettingsModule.redactServerSettingsForClient(settings, client);
+    const decoded = decodeClientSettings(encodeServerSettings(redacted), {
+      onExcessProperty: "error",
+    });
+    assert.deepEqual(
+      Object.values(decoded.usageLimitSources).map((source) => source.kind),
+      [...kinds],
+    );
+  },
 );
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
@@ -1879,30 +1915,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         });
         assert.equal(legacy.sourceControlHosts.bitbucket?.accessToken, SECRET_REDACTED);
         assert.equal(legacy.usageLimitSources[hub]?.managementKey, SECRET_REDACTED);
-        assert.deepEqual(
-          Object.keys(
-            decodePreHttpUsageLimitSources(encodeServerSettings(legacy).usageLimitSources),
-          ),
-          [hub],
-        );
-        const httpOnly = ServerSettingsModule.redactServerSettingsForClient(withUsage, {
-          secretReferences: true,
-          httpUsageLimitSources: true,
-        });
-        assert.deepEqual(
-          Object.keys(
-            decodeHttpOnlyUsageLimitSources(encodeServerSettings(httpOnly).usageLimitSources),
-          ),
-          [hub, quota],
-        );
-        assert.equal(
-          ServerSettingsModule.redactServerSettingsForClient(withUsage, {
-            secretReferences: true,
-            httpUsageLimitSources: true,
-            extendedUsageLimitSources: true,
-          }).usageLimitSources[kimi]?.kind,
-          "kimi",
-        );
         assert.equal(legacy.textGenerators[router]?.apiKey, SECRET_REDACTED);
         assert.equal(legacy.easDeviceHosts[0]?.accessToken, SECRET_REDACTED);
         assert.equal(legacy.simlockDeviceHosts[0]?.agentToken, SECRET_REDACTED);

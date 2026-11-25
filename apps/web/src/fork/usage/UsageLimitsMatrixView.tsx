@@ -15,15 +15,36 @@ import {
   WalletIcon,
 } from "lucide-react";
 
+import { OllamaIcon, OpenAI, OpenRouterIcon } from "~/components/Icons";
 import { ProviderInstanceIcon } from "~/components/chat/ProviderInstanceIcon";
 import { providerClients } from "~/components/settings/providerDriverMeta";
 import { RedactedSensitiveText } from "~/components/settings/RedactedSensitiveText";
 import { Button } from "~/components/ui/button";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
-import { formatUpcomingTimestamp } from "~/timestampFormat";
+import { formatUpcomingOrBareUtcDate } from "~/timestampFormat";
 import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
 import type { UsageQuotaDisplayMode, UsageResetTimeMode } from "./usageOptionsStore";
+
+function CopilotMark({ className }: { readonly className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M5 10a7 7 0 0 1 14 0" />
+      <rect x="3" y="10" width="18" height="8" rx="4" />
+      <circle cx="9.25" cy="14" r="1.25" fill="currentColor" stroke="none" />
+      <circle cx="14.75" cy="14" r="1.25" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 function riskToneTextClass(tone: UsageRiskTone): string {
   switch (tone) {
@@ -242,8 +263,21 @@ export function UsageLimitsMatrixView({
                     iconClassName="size-4 text-foreground/85"
                   />
                 ) : (
-                  <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                    <GlobeIcon className="size-3.5" aria-hidden />
+                  <span
+                    data-testid={`usage-source-icon-${account.sourceKind}`}
+                    className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+                  >
+                    {account.sourceKind === "openrouter" ? (
+                      <OpenRouterIcon className="size-3.5 text-foreground/85" aria-hidden />
+                    ) : account.sourceKind === "copilot" ? (
+                      <CopilotMark className="size-3.5 text-foreground/85" />
+                    ) : account.sourceKind === "ollama" ? (
+                      <OllamaIcon className="size-3.5 text-foreground/85" aria-hidden />
+                    ) : account.sourceKind === "openaiApi" ? (
+                      <OpenAI className="size-3.5 text-foreground/85" aria-hidden />
+                    ) : (
+                      <GlobeIcon className="size-3.5" aria-hidden />
+                    )}
                   </span>
                 )}
                 <div className="flex min-w-0 flex-col gap-0.5">
@@ -269,6 +303,22 @@ export function UsageLimitsMatrixView({
                     ) : account.sourceKind === "zai" ? (
                       <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
                         <T>Z.ai</T>
+                      </span>
+                    ) : account.sourceKind === "openrouter" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>OpenRouter</T>
+                      </span>
+                    ) : account.sourceKind === "copilot" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>GitHub Copilot</T>
+                      </span>
+                    ) : account.sourceKind === "ollama" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>Ollama Cloud</T>
+                      </span>
+                    ) : account.sourceKind === "openaiApi" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        <T>OpenAI API</T>
                       </span>
                     ) : null}
                     {credits > 0 ? (
@@ -348,13 +398,13 @@ export function UsageLimitsMatrixView({
                   const countdown = formatResetsIn(window, now, m) || null;
                   const exactTime =
                     window.resetsAt && window.resetsAtMs !== null
-                      ? formatUpcomingTimestamp(
+                      ? formatUpcomingOrBareUtcDate(
                           window.resetsAt,
                           timestampFormat,
                           now,
-                          undefined,
+                          locale,
                           m,
-                        ) || null
+                        )
                       : null;
                   const primaryReset =
                     resetTimeMode === "exact"

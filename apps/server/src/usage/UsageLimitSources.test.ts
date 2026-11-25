@@ -1,6 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Generate ephemeral Ed25519 test fixtures at runtime.
+import * as NodeCrypto from "node:crypto";
 import * as NodeSqlite from "node:sqlite";
 
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as EffectNodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -38,6 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as UsageLimitSources from "./UsageLimitSources.ts";
 
 const encodeConfigEvent = Schema.encodeSync(ServerConfigStreamEvent);
+const encodeTraceRecords = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.effect("keeps malformed source URLs encodable for config subscribers", () =>
   Effect.gen(function* () {
@@ -119,7 +122,8 @@ it.effect("keeps malformed source URLs encodable for config subscribers", () =>
         HttpClient.HttpClient,
         HttpClient.make(() => Effect.die("Unexpected network request")),
       ),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   ),
 );
@@ -196,7 +200,8 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
         shouldRunScopeWork: () => Effect.succeed(false),
       }),
       Layer.succeed(HttpClient.HttpClient, client),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   );
 });
@@ -341,17 +346,20 @@ it.effect("retains direct readings only for the same kind and effective target",
         invalidate: () => Effect.void,
       }),
       FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   );
 });
 
-it.effect(
-  "keeps resolved API keys out of trace spans on invalid headers or transport errors",
-  () => {
-    const newlineSecret = "sk-kimi-newline-secret\nInjected: 1";
-    const transportSecret = "sk-kimi-transport-secret";
+it.effect.each(["kimi", "copilot"] as const)(
+  "keeps resolved %s credentials out of trace spans on invalid headers or transport errors",
+  (kind) => {
+    const newlineSecret = "fixture-newline-secret\nInjected: 1";
+    const transportSecret = "fixture-transport-secret";
     let currentKey = newlineSecret;
+    const error =
+      kind === "kimi" ? "Could not read Kimi Code usage." : "Could not read GitHub Copilot usage.";
     let fetchCalls = 0;
     const records: Array<EffectTraceRecord> = [];
     const fetch: typeof globalThis.fetch = async (_input, init) => {
@@ -380,33 +388,31 @@ it.effect(
       const run = Effect.gen(function* () {
         const sources = yield* UsageLimitSources.make;
         yield* sources.refresh;
-        expect(yield* sources.current).toMatchObject([
-          { kind: "kimi", error: "Could not read Kimi Code usage." },
-        ]);
+        expect(yield* sources.current).toMatchObject([{ kind, error }]);
         expect(fetchCalls).toBe(0);
 
         currentKey = transportSecret;
         yield* sources.refresh;
-        expect(yield* sources.current).toMatchObject([
-          { kind: "kimi", error: "Could not read Kimi Code usage." },
-        ]);
+        expect(yield* sources.current).toMatchObject([{ kind, error }]);
         expect(fetchCalls).toBeGreaterThanOrEqual(1);
       }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
 
       yield* run;
-      const serialized = JSON.stringify(records);
-      expect(serialized).not.toContain("sk-kimi-newline-secret");
+      const serialized = yield* encodeTraceRecords(records);
+      expect(serialized).not.toContain("fixture-newline-secret");
       expect(serialized).not.toContain(transportSecret);
     }).pipe(
       Effect.scoped,
       Effect.provide([
         ServerSettings.layerTest({
           usageLimitSources: {
-            [UsageLimitSourceId.make("kimi")]: {
-              kind: "kimi",
-              region: "cn",
-              url: "https://api.kimi.com/coding/v1/usages",
-              managementKey: { provider: SecretProviderId.make("homelab"), reference: "kimi#key" },
+            [UsageLimitSourceId.make(kind)]: {
+              kind,
+              url: `${kind}://default`,
+              managementKey: {
+                provider: SecretProviderId.make("homelab"),
+                reference: `${kind}#key`,
+              },
               enabled: true,
             },
           },
@@ -420,7 +426,7 @@ it.effect(
           invalidate: () => Effect.void,
         }),
         FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     );
@@ -560,7 +566,8 @@ it.effect(
           read: (references) => Effect.succeed(references.map(() => undefined)),
           invalidate: () => Effect.void,
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
+        NodeServices.layer,
       ]),
     ),
 );
@@ -785,7 +792,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -979,7 +986,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -1131,7 +1138,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -1254,7 +1261,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -1390,7 +1397,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -1636,7 +1643,7 @@ it.effect(
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           shouldRunScopeWork: () => Effect.succeed(false),
         }),
-        NodeCrypto.layer,
+        EffectNodeCrypto.layer,
         NodeServices.layer,
       ]),
     ),
@@ -1694,9 +1701,973 @@ it.effect("a stalled Z.ai subscription yields to the request deadline without lo
         read: (references) => Effect.succeed(references.map(() => undefined)),
         invalidate: () => Effect.void,
       }),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   ),
+);
+
+function sshString(data: string | Buffer): Buffer {
+  const bytes = Buffer.from(data);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+function generateOllamaTestKey(): string {
+  const pair = NodeCrypto.generateKeyPairSync("ed25519");
+  const seed = pair.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32);
+  const rawPublic = pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const outerPublic = Buffer.concat([sshString("ssh-ed25519"), sshString(rawPublic)]);
+  const privateFields = Buffer.concat([
+    Buffer.alloc(4, 9),
+    Buffer.alloc(4, 9),
+    sshString("ssh-ed25519"),
+    sshString(rawPublic),
+    sshString(Buffer.concat([seed, rawPublic])),
+    sshString("test-fixture"),
+  ]);
+  const padding = Buffer.from(
+    Array.from({ length: (8 - (privateFields.length % 8)) % 8 }, (_, index) => index + 1),
+  );
+  const container = Buffer.concat([
+    Buffer.from("openssh-key-v1\0"),
+    sshString("none"),
+    sshString("none"),
+    sshString(""),
+    Buffer.from([0, 0, 0, 1]),
+    sshString(outerPublic),
+    sshString(Buffer.concat([privateFields, padding])),
+  ]);
+  const encoded = container
+    .toString("base64")
+    .match(/.{1,70}/g)
+    ?.join("\n");
+  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${encoded}\n-----END OPENSSH PRIVATE KEY-----\n`;
+}
+
+// Generate ephemeral Ed25519 fixtures at runtime so no private key material is committed.
+const OLLAMA_TEST_KEYS = [generateOllamaTestKey(), generateOllamaTestKey()] as const;
+
+const externalSourceTestLayer = Layer.mergeAll(
+  ServerSettings.layerTest(),
+  Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+    shouldRunScopeWork: () => Effect.succeed(false),
+  }),
+  Layer.succeed(SecretResolver.SecretResolver, {
+    label: (provider) => Effect.succeed(provider),
+    read: () => Effect.die("Unexpected secret lookup for explicitly configured fixtures"),
+    invalidate: () => Effect.void,
+  }),
+  EffectNodeCrypto.layer,
+  NodeServices.layer,
+);
+
+const writeOllamaTestKey = Effect.fn("UsageLimitSourcesTest.writeOllamaKey")(function* (
+  index: 0 | 1 = 0,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ollama-usage-" });
+  const keyPath = path.join(temp, "id_ed25519");
+  yield* fs.writeFileString(keyPath, OLLAMA_TEST_KEYS[index], { mode: 0o600 });
+  return keyPath;
+});
+
+it.effect(
+  "publishes all four external sources and retains same-credential readings on failure",
+  () => {
+    let fail = false;
+    let oversizedProfile = false;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      expect(request.redirect).toBe("error");
+      expect(request.headers.get("accept")).toBe("application/json");
+      expect(request.method).toBe(url.pathname === "/api/me" ? "POST" : "GET");
+      if (fail) return new Response(null, { status: 503 });
+      switch (url.origin + url.pathname) {
+        case "https://openrouter.ai/api/v1/credits":
+          expect(request.headers.get("authorization")).toBe("Bearer router-test");
+          return Response.json({ data: { total_credits: 10, total_usage: 5 } });
+        case "https://openrouter.ai/api/v1/key":
+          expect(request.headers.get("authorization")).toBe("Bearer router-test");
+          return Response.json({
+            data: { is_free_tier: false, usage_daily: 0, usage_weekly: 0, usage_monthly: 0 },
+          });
+        case "https://api.github.com/copilot_internal/user":
+          expect(request.headers.get("authorization")).toBe("token copilot-test");
+          return Response.json({
+            quota_snapshots: { premium_interactions: { entitlement: 10, remaining: 7.5 } },
+          });
+        case "https://ollama.com/api/balance":
+          expect(request.headers.get("authorization")).toMatch(/^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
+          return Response.json({ included: { session: { remaining_percent: 80 } } });
+        case "https://ollama.com/api/me":
+          expect(request.headers.get("authorization")).toMatch(/^[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
+          return oversizedProfile
+            ? new Response(`{"plan":"oversized"}${" ".repeat(1024 * 1024)}`)
+            : Response.json({ plan: "pro" });
+        case "https://api.openai.com/v1/organization/costs":
+          expect(request.headers.get("authorization")).toBe("Bearer admin-test");
+          return Response.json({ object: "page", data: [], has_more: false, next_page: null });
+        default:
+          throw new Error("Unexpected external quota endpoint");
+      }
+    };
+    return Effect.gen(function* () {
+      const path = yield* writeOllamaTestKey();
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("router")]: {
+            kind: "openrouter",
+            url: "https://out-of-scope.invalid",
+            managementKey: "router-test",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("copilot")]: {
+            kind: "copilot",
+            url: "https://out-of-scope.invalid",
+            managementKey: "copilot-test",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("ollama")]: {
+            kind: "ollama",
+            url: path,
+            managementKey: "",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("billing")]: {
+            kind: "openaiApi",
+            url: "https://out-of-scope.invalid",
+            managementKey: "admin-test",
+            enabled: true,
+          },
+        },
+      });
+      const sources = yield* UsageLimitSources.make;
+      yield* sources.refresh;
+      const before = yield* sources.current;
+      expect(
+        Object.fromEntries(before.map((reading) => [reading.kind, reading.quotaAccounts])),
+      ).toMatchObject({
+        openrouter: [{ windows: [{ usedPercent: 50 }] }],
+        copilot: [{ windows: [{ usedPercent: 25 }] }],
+        ollama: [{ planTier: "Pro", windows: [{ usedPercent: 20 }] }],
+        openaiApi: [
+          {
+            windows: [],
+            balances: [{ remaining: 0 }, { remaining: 0 }, { remaining: 0 }, { remaining: 0 }],
+          },
+        ],
+      });
+
+      oversizedProfile = true;
+      yield* sources.refresh;
+      const refreshed = yield* sources.current;
+      const ollama = refreshed.find(({ kind }) => kind === "ollama");
+      expect(ollama).toMatchObject({ quotaAccounts: [{ windows: [{ usedPercent: 20 }] }] });
+      expect(ollama?.quotaAccounts?.[0]?.planTier).toBeUndefined();
+      expect(ollama?.error).toBeUndefined();
+
+      fail = true;
+      yield* sources.refresh;
+      const failed = yield* sources.current;
+      expect(failed).toMatchObject(
+        refreshed.map(({ kind, quotaAccounts }) => ({
+          kind,
+          quotaAccounts,
+          error: expect.any(String),
+        })),
+      );
+    }).pipe(
+      Effect.provide([
+        externalSourceTestLayer,
+        FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
+      ]),
+    );
+  },
+);
+
+it.effect("fences old Ollama snapshots when the key file rotates at the same path", () =>
+  Effect.gen(function* () {
+    const path = yield* writeOllamaTestKey();
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* settings.updateSettings({
+      usageLimitSources: {
+        [UsageLimitSourceId.make("ollama")]: {
+          kind: "ollama",
+          url: path,
+          managementKey: "",
+          enabled: true,
+        },
+      },
+    });
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const authorization: string[] = [];
+    let phase: "initial" | "hold" | "rotated" = "initial";
+    const http = HttpClient.make((request, url) =>
+      Effect.gen(function* () {
+        if (url.pathname === "/api/me") {
+          return HttpClientResponse.fromWeb(request, Response.json({ Plan: "pro" }));
+        }
+        authorization.push(request.headers.authorization?.split(":")[0] ?? "");
+        if (phase === "hold") {
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+        } else if (phase === "rotated") {
+          return HttpClientResponse.fromWeb(request, new Response(null, { status: 401 }));
+        }
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            included: { session: { remaining_percent: 30 } },
+          }),
+        );
+      }),
+    );
+    const sources = yield* UsageLimitSources.make.pipe(
+      Effect.provideService(HttpClient.HttpClient, http),
+    );
+    yield* sources.refresh;
+    expect(yield* sources.current).toMatchObject([
+      { quotaAccounts: [{ windows: [{ usedPercent: 70 }] }] },
+    ]);
+    phase = "hold";
+    const poll = yield* sources.refresh.pipe(Effect.forkScoped);
+    yield* Deferred.await(started);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(`${path}.new`, OLLAMA_TEST_KEYS[1], { mode: 0o600 });
+    yield* fs.rename(`${path}.new`, path);
+    phase = "rotated";
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(poll);
+    expect((yield* sources.current).every((reading) => reading.quotaAccounts === undefined)).toBe(
+      true,
+    );
+
+    yield* sources.refresh;
+    const [refused] = yield* sources.current;
+    expect(refused?.error).toBe(
+      "Ollama Cloud rejected the signing key. Run ollama signin and try again.",
+    );
+    expect(refused?.quotaAccounts).toBeUndefined();
+    expect(new Set(authorization).size).toBe(2);
+  }).pipe(Effect.provide(externalSourceTestLayer)),
+);
+
+it.effect(
+  "blocks stale Ollama quotas when the key file rotates while waiting on withSettingsSnapshot",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* writeOllamaTestKey();
+      const sourceId = UsageLimitSourceId.make("ollama-lock-fence");
+      const initialSettings: ServerSettingsModel = {
+        ...DEFAULT_SERVER_SETTINGS,
+        usageLimitSources: {
+          [sourceId]: {
+            kind: "ollama",
+            url: path,
+            managementKey: "",
+            enabled: true,
+          },
+        },
+      };
+
+      const settingsRef = yield* Ref.make(initialSettings);
+      const writeLock = yield* Semaphore.make(1);
+      const waitingOnSnapshot = yield* Deferred.make<void>();
+      let snapshotCalls = 0;
+      const settingsService: ServerSettings.ServerSettingsService["Service"] = {
+        start: Effect.void,
+        ready: Effect.void,
+        getSettings: Ref.get(settingsRef),
+        updateSettings: (patch) =>
+          writeLock.withPermits(1)(
+            Ref.updateAndGet(settingsRef, (current) => applyServerSettingsPatch(current, patch)),
+          ),
+        updateProviderInstance: () => Effect.die("unused"),
+        withSettingsSnapshot: (use) => {
+          snapshotCalls += 1;
+          const notify =
+            snapshotCalls === 2 ? Deferred.succeed(waitingOnSnapshot, undefined) : Effect.void;
+          return notify.pipe(
+            Effect.andThen(
+              writeLock.withPermits(1)(Ref.get(settingsRef).pipe(Effect.flatMap(use))),
+            ),
+          );
+        },
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.succeed(Stream.empty),
+      };
+
+      let balanceCall = 0;
+      const http = HttpClient.make((request, url) =>
+        Effect.sync(() => {
+          if (url.pathname === "/api/me") {
+            return HttpClientResponse.fromWeb(request, Response.json({ plan: "pro" }));
+          }
+          balanceCall += 1;
+          if (balanceCall === 1) {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({ included: { session: { remaining_percent: 90 } } }),
+            );
+          }
+          if (balanceCall === 2) {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({ included: { session: { remaining_percent: 15 } } }),
+            );
+          }
+          return HttpClientResponse.fromWeb(request, new Response(null, { status: 401 }));
+        }),
+      );
+
+      const sources = yield* UsageLimitSources.make.pipe(
+        Effect.provide([
+          Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+          Layer.succeed(HttpClient.HttpClient, http),
+        ]),
+      );
+
+      // (1) Establish 10% under key A.
+      const initial = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length === 1),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(initial[0]?.quotaAccounts?.[0]?.windows[0]?.usedPercent).toBe(10);
+
+      // (2) Hold the settings lock, start poll #2 (85% under key A), and pause after pre-lock checks.
+      const holdLock = yield* Deferred.make<void>();
+      const lockAcquired = yield* Deferred.make<void>();
+      const holder = yield* Effect.forkChild(
+        writeLock.withPermits(1)(
+          Deferred.succeed(lockAcquired, undefined).pipe(Effect.andThen(Deferred.await(holdLock))),
+        ),
+      );
+      yield* Deferred.await(lockAcquired);
+
+      const poll2 = yield* Effect.forkChild(sources.refresh);
+      yield* Deferred.await(waitingOnSnapshot);
+
+      // (3) Rotate the signing key file at the same path while poll #2 waits on the settings lock.
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(`${path}.new`, OLLAMA_TEST_KEYS[1], { mode: 0o600 });
+      yield* fs.rename(`${path}.new`, path);
+
+      // (4) Release the settings lock: neither 85% nor old 10% may publish.
+      yield* Deferred.succeed(holdLock, undefined);
+      yield* Fiber.join(holder);
+      yield* Fiber.join(poll2);
+      expect(yield* sources.current).toEqual([]);
+
+      // (5) A subsequent rejected poll under key B must not restore key A's 10%.
+      yield* sources.refresh;
+      const [afterRotate] = yield* sources.current;
+      expect(afterRotate?.error).toBe(
+        "Ollama Cloud rejected the signing key. Run ollama signin and try again.",
+      );
+      expect(afterRotate?.quotaAccounts).toBeUndefined();
+    }).pipe(Effect.provide(externalSourceTestLayer)),
+);
+
+it.effect(
+  "blocks stale Ollama and secret-backed candidates when rotated while another Ollama candidate awaits stat",
+  () =>
+    Effect.gen(function* () {
+      const pathA = yield* writeOllamaTestKey(0);
+      const pathB = yield* writeOllamaTestKey(1);
+      const providerId = SecretProviderId.make("op-two-cand");
+      const reference = { provider: providerId, reference: "op://Private/OpenRouter/api-key" };
+      const routerId = UsageLimitSourceId.make("router-two-cand");
+      const ollamaAId = UsageLimitSourceId.make("ollama-a");
+      const ollamaBId = UsageLimitSourceId.make("ollama-b");
+      const initialSettings: ServerSettingsModel = {
+        ...DEFAULT_SERVER_SETTINGS,
+        secretProviders: {
+          [providerId]: {
+            kind: SecretProviderKind.make("one_password"),
+            label: "1Password",
+            config: { account: "personal" },
+          },
+        },
+        usageLimitSources: {
+          [routerId]: {
+            kind: "openrouter",
+            url: "https://openrouter.ai",
+            managementKey: reference,
+            enabled: true,
+          },
+          [ollamaAId]: {
+            kind: "ollama",
+            url: pathA,
+            managementKey: "",
+            enabled: true,
+          },
+          [ollamaBId]: {
+            kind: "ollama",
+            url: pathB,
+            managementKey: "",
+            enabled: true,
+          },
+        },
+      };
+
+      const settingsRef = yield* Ref.make(initialSettings);
+      const writeLock = yield* Semaphore.make(1);
+      const settingsService: ServerSettings.ServerSettingsService["Service"] = {
+        start: Effect.void,
+        ready: Effect.void,
+        getSettings: Ref.get(settingsRef),
+        updateSettings: (patch) =>
+          writeLock.withPermits(1)(
+            Ref.updateAndGet(settingsRef, (current) => applyServerSettingsPatch(current, patch)),
+          ),
+        updateProviderInstance: () => Effect.die("unused"),
+        withSettingsSnapshot: (use) =>
+          writeLock.withPermits(1)(Ref.get(settingsRef).pipe(Effect.flatMap(use))),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.succeed(Stream.empty),
+      };
+
+      let routerSecret = "router-key-a";
+      const secretResolver = yield* SecretResolver.make({
+        drivers: [
+          {
+            kind: onePasswordDefinition.kind,
+            definition: onePasswordDefinition,
+            read: (_config, references) => Effect.succeed(references.map(() => routerSecret)),
+          },
+        ],
+        secretProviders: Ref.get(settingsRef).pipe(
+          Effect.map((current) => current.secretProviders),
+        ),
+      });
+
+      const realFs = yield* FileSystem.FileSystem;
+      const pauseStatB = yield* Deferred.make<void>();
+      const releaseStatB = yield* Deferred.make<void>();
+      let statBCalls = 0;
+      const wrappedFs: FileSystem.FileSystem = {
+        ...realFs,
+        stat: (filePath) => {
+          if (filePath === pathB) {
+            statBCalls += 1;
+            // Poll 1: readSource (1) + pre-lock (2). Poll 2: readSource (3) + pre-lock (4).
+            if (statBCalls === 4) {
+              return Deferred.succeed(pauseStatB, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseStatB)),
+                Effect.andThen(realFs.stat(filePath)),
+              );
+            }
+          }
+          return realFs.stat(filePath);
+        },
+      };
+
+      let pollPhase = 1;
+      const http = HttpClient.make((request, url) =>
+        Effect.sync(() => {
+          if (url.pathname === "/api/v1/credits") {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                data: { total_credits: 100, total_usage: pollPhase === 1 ? 10 : 85 },
+              }),
+            );
+          }
+          if (url.pathname === "/api/v1/key") {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                data: { is_free_tier: false, usage_daily: 0, usage_weekly: 0, usage_monthly: 0 },
+              }),
+            );
+          }
+          if (url.pathname === "/api/me") {
+            return HttpClientResponse.fromWeb(request, Response.json({ plan: "pro" }));
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              included: { session: { remaining_percent: pollPhase === 1 ? 90 : 15 } },
+            }),
+          );
+        }),
+      );
+
+      const sources = yield* UsageLimitSources.make.pipe(
+        Effect.provide([
+          Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+          Layer.succeed(SecretResolver.SecretResolver, secretResolver),
+          Layer.succeed(FileSystem.FileSystem, wrappedFs),
+          Layer.succeed(HttpClient.HttpClient, http),
+        ]),
+      );
+
+      // (1) Establish all 3 sources at 10%.
+      const initial = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length === 3),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(initial.map((entry) => entry.quotaAccounts?.[0]?.windows[0]?.usedPercent)).toEqual([
+        10, 10, 10,
+      ]);
+
+      // (2) Poll 2 returns 85%, pausing during ollama-b's pre-lock stat (after router & ollama-a passed pre-lock).
+      pollPhase = 2;
+      const poll2 = yield* Effect.forkChild(sources.refresh);
+      yield* Deferred.await(pauseStatB);
+
+      // (3) While ollama-b's stat is pending, rotate BOTH router's secret revision AND ollama-a's key file.
+      routerSecret = "router-key-b";
+      yield* secretResolver.read([reference], { fresh: true });
+      yield* realFs.writeFileString(`${pathA}.new`, OLLAMA_TEST_KEYS[1], { mode: 0o600 });
+      yield* realFs.rename(`${pathA}.new`, pathA);
+
+      // (4) Release ollama-b's stat: ONLY ollama-b may publish; stale 85% for router & ollama-a must be blocked.
+      yield* Deferred.succeed(releaseStatB, undefined);
+      yield* Fiber.join(poll2);
+      const after = yield* sources.current;
+      expect(after.map((entry) => entry.id)).toEqual([ollamaBId]);
+      expect(after[0]?.quotaAccounts?.[0]?.windows[0]?.usedPercent).toBe(85);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunScopeWork: () => Effect.succeed(false),
+        }),
+        EffectNodeCrypto.layer,
+        NodeServices.layer,
+      ]),
+    ),
+);
+
+it.effect(
+  "completes final publication without scheduler yields across 1,060+ sources under the default Effect budget",
+  () =>
+    Effect.gen(function* () {
+      const pathA = yield* writeOllamaTestKey(0);
+      const providerId = SecretProviderId.make("op-noyield");
+      const reference = { provider: providerId, reference: "op://Private/OpenRouter/api-key" };
+      const routerId = UsageLimitSourceId.make("router-0");
+      const ollamaId = UsageLimitSourceId.make("ollama-0");
+      const usageLimitSources: Record<
+        UsageLimitSourceId,
+        ServerSettingsModel["usageLimitSources"][UsageLimitSourceId]
+      > = {
+        [routerId]: {
+          kind: "openrouter",
+          url: "https://openrouter.ai",
+          managementKey: reference,
+          enabled: true,
+        },
+        [ollamaId]: {
+          kind: "ollama",
+          url: pathA,
+          managementKey: "",
+          enabled: true,
+        },
+      };
+      for (let i = 0; i < 1_060; i += 1) {
+        usageLimitSources[UsageLimitSourceId.make(`router-filler-${i}`)] = {
+          kind: "openrouter",
+          url: "https://openrouter.ai",
+          managementKey: reference,
+          enabled: true,
+        };
+      }
+      const initialSettings: ServerSettingsModel = {
+        ...DEFAULT_SERVER_SETTINGS,
+        secretProviders: {
+          [providerId]: {
+            kind: SecretProviderKind.make("one_password"),
+            label: "1Password",
+            config: { account: "personal" },
+          },
+        },
+        usageLimitSources,
+      };
+
+      const settingsRef = yield* Ref.make(initialSettings);
+      const writeLock = yield* Semaphore.make(1);
+      const realFs = yield* FileSystem.FileSystem;
+      let routerSecret = "router-key-a";
+      let racerFiber: Fiber.Fiber<void> | undefined;
+      let racerSawPreCommitState = false;
+      let racerCompleted = false;
+      let sourcesHandle: UsageLimitSources.UsageLimitSources["Service"] | undefined;
+      let snapshotCalls = 0;
+
+      const secretResolver = yield* SecretResolver.make({
+        drivers: [
+          {
+            kind: onePasswordDefinition.kind,
+            definition: onePasswordDefinition,
+            read: (_config, references) => Effect.succeed(references.map(() => routerSecret)),
+          },
+        ],
+        secretProviders: Ref.get(settingsRef).pipe(
+          Effect.map((current) => current.secretProviders),
+        ),
+      });
+
+      const settingsService: ServerSettings.ServerSettingsService["Service"] = {
+        start: Effect.void,
+        ready: Effect.void,
+        getSettings: Ref.get(settingsRef),
+        updateSettings: (patch) =>
+          writeLock.withPermits(1)(
+            Ref.updateAndGet(settingsRef, (current) => applyServerSettingsPatch(current, patch)),
+          ),
+        updateProviderInstance: () => Effect.die("unused"),
+        withSettingsSnapshot: (use) => {
+          snapshotCalls += 1;
+          return writeLock.withPermits(1)(
+            Effect.gen(function* () {
+              const committed = yield* Ref.get(settingsRef);
+              if (snapshotCalls === 2) {
+                // Reset the fiber's 2,048-op budget, then fork a competing mutator fiber so it
+                // runs on the very first scheduler yield inside use(committed).
+                yield* Effect.yieldNow;
+                racerFiber = yield* Effect.forkChild(
+                  Effect.gen(function* () {
+                    const beforeMutation = yield* sourcesHandle!.current;
+                    racerSawPreCommitState =
+                      beforeMutation.find((entry) => entry.id === routerId)?.quotaAccounts?.[0]
+                        ?.windows[0]?.usedPercent === 10;
+                    routerSecret = "router-key-b";
+                    yield* secretResolver.read([reference], { fresh: true });
+                    yield* realFs.writeFileString(`${pathA}.new`, OLLAMA_TEST_KEYS[1], {
+                      mode: 0o600,
+                    });
+                    yield* realFs.rename(`${pathA}.new`, pathA);
+                    racerCompleted = true;
+                  }).pipe(Effect.orDie),
+                );
+              }
+              return yield* use(committed);
+            }),
+          );
+        },
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.succeed(Stream.empty),
+      };
+
+      let pollPhase = 1;
+      const http = HttpClient.make((request, url) =>
+        Effect.sync(() => {
+          if (url.pathname === "/api/v1/credits") {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                data: { total_credits: 100, total_usage: pollPhase === 1 ? 10 : 85 },
+              }),
+            );
+          }
+          if (url.pathname === "/api/v1/key") {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                data: { is_free_tier: false, usage_daily: 0, usage_weekly: 0, usage_monthly: 0 },
+              }),
+            );
+          }
+          if (url.pathname === "/api/me") {
+            return HttpClientResponse.fromWeb(request, Response.json({ plan: "pro" }));
+          }
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              included: { session: { remaining_percent: pollPhase === 1 ? 90 : 15 } },
+            }),
+          );
+        }),
+      );
+
+      const sources = yield* UsageLimitSources.make.pipe(
+        Effect.provide([
+          Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+          Layer.succeed(SecretResolver.SecretResolver, secretResolver),
+          Layer.succeed(HttpClient.HttpClient, http),
+        ]),
+      );
+      sourcesHandle = sources;
+
+      // (1) Establish all 1,062 sources at 10%.
+      const initial = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length === 1_062),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(
+        initial.find((entry) => entry.id === routerId)?.quotaAccounts?.[0]?.windows[0]?.usedPercent,
+      ).toBe(10);
+      expect(
+        initial.find((entry) => entry.id === ollamaId)?.quotaAccounts?.[0]?.windows[0]?.usedPercent,
+      ).toBe(10);
+
+      // (2) Trigger poll #2: final validation + commit across all 1,062 candidates must run in one
+      // no-yield section so racerFiber cannot preempt mid-loop before state commits.
+      pollPhase = 2;
+      yield* sources.refresh;
+      expect(racerFiber).toBeDefined();
+      yield* Fiber.join(racerFiber!);
+
+      const after = yield* sources.current;
+      expect(racerCompleted).toBe(true);
+      expect(racerSawPreCommitState).toBe(false);
+      expect(
+        after.find((entry) => entry.id === routerId)?.quotaAccounts?.[0]?.windows[0]?.usedPercent,
+      ).toBe(85);
+      expect(
+        after.find((entry) => entry.id === ollamaId)?.quotaAccounts?.[0]?.windows[0]?.usedPercent,
+      ).toBe(85);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunScopeWork: () => Effect.succeed(false),
+        }),
+        EffectNodeCrypto.layer,
+        NodeServices.layer,
+      ]),
+    ),
+);
+
+it.effect(
+  "preserves last-good OpenRouter credits and org-scoped Copilot billing without borrowing across orgs",
+  () => {
+    let partialOutage = false;
+    let overrideSeatBody: unknown = undefined;
+    let copilotOrg = "OldOrg";
+    let copilotTokenBased = true;
+    let copilotPersonalCredits = 7.5;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      switch (url.origin + url.pathname) {
+        case "https://openrouter.ai/api/v1/credits":
+          return partialOutage
+            ? new Response(null, { status: 503 })
+            : Response.json({ data: { total_credits: 50, total_usage: 10 } });
+        case "https://openrouter.ai/api/v1/key":
+          return Response.json({
+            data: { is_free_tier: false, usage_daily: 2, usage_weekly: 4, usage_monthly: 8 },
+          });
+        case "https://api.github.com/copilot_internal/user":
+          return Response.json(
+            overrideSeatBody !== undefined
+              ? overrideSeatBody
+              : {
+                  copilot_plan: "business",
+                  ...(copilotTokenBased
+                    ? { token_based_billing: true, credits_used: copilotPersonalCredits }
+                    : {}),
+                  organization_login_list: [copilotOrg],
+                },
+          );
+        case "https://api.github.com/organizations/oldorg/settings/billing/usage/summary":
+          return partialOutage
+            ? new Response(null, { status: 503 })
+            : Response.json({
+                usageItems: [
+                  { product: "copilot", unitType: "ai-credits", grossQuantity: 35, netAmount: 1.5 },
+                ],
+              });
+        case "https://api.github.com/organizations/neworg/settings/billing/usage/summary":
+          return new Response(null, { status: 503 });
+        default:
+          throw new Error(`Unexpected endpoint: ${url.href}`);
+      }
+    };
+    return Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("router")]: {
+            kind: "openrouter",
+            url: "https://openrouter.ai",
+            managementKey: "router-test",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("copilot")]: {
+            kind: "copilot",
+            url: "https://api.github.com/copilot_internal/user",
+            managementKey: "copilot-test",
+            enabled: true,
+          },
+        },
+      });
+      const sources = yield* UsageLimitSources.make;
+      yield* sources.refresh;
+      const before = yield* sources.current;
+      expect(before.find((entry) => entry.kind === "openrouter")?.quotaAccounts).toMatchObject([
+        {
+          windows: [{ id: "credits", usedPercent: 20 }],
+          balances: [
+            { id: "balance", remaining: 40 },
+            { id: "today", remaining: 2 },
+            { id: "this-week", remaining: 4 },
+            { id: "this-month", remaining: 8 },
+          ],
+        },
+      ]);
+      expect(before.find((entry) => entry.kind === "copilot")?.quotaAccounts).toMatchObject([
+        {
+          balances: [
+            { id: "credits-used", remaining: 7.5 },
+            { id: "org-credits-oldorg", label: "Org Credits (OldOrg)", remaining: 35 },
+            { id: "org-spend-oldorg", label: "Org Spend (OldOrg)", remaining: 1.5 },
+          ],
+        },
+      ]);
+
+      // Same seat org fails with 503: keep fresh personal credits AND retained OldOrg balances.
+      partialOutage = true;
+      copilotPersonalCredits = 8.25;
+      yield* sources.refresh;
+      const duringSameOrgOutage = yield* sources.current;
+      const routerOutage = duringSameOrgOutage.find((entry) => entry.kind === "openrouter");
+      const copilotSameOrgOutage = duringSameOrgOutage.find((entry) => entry.kind === "copilot");
+      expect(routerOutage?.error).toBe("Could not read usable OpenRouter usage data.");
+      expect(routerOutage?.quotaAccounts).toEqual(
+        before.find((entry) => entry.kind === "openrouter")?.quotaAccounts,
+      );
+      expect(copilotSameOrgOutage?.error).toBe(
+        "GitHub Copilot org billing request failed (HTTP 503).",
+      );
+      expect(copilotSameOrgOutage?.quotaAccounts).toMatchObject([
+        {
+          balances: [
+            { id: "credits-used", remaining: 8.25 },
+            { id: "org-credits-oldorg", label: "Org Credits (OldOrg)", remaining: 35 },
+            { id: "org-spend-oldorg", label: "Org Spend (OldOrg)", remaining: 1.5 },
+          ],
+        },
+      ]);
+
+      // Empty or malformed org-only 200 bodies have no valid seat evidence: preserve OldOrg balances.
+      for (const malformedBody of [{}, { organization: {} }, { organization_login_list: [null] }]) {
+        overrideSeatBody = malformedBody;
+        yield* sources.refresh;
+        const copilotMalformed = (yield* sources.current).find((entry) => entry.kind === "copilot");
+        expect(copilotMalformed?.error).toBe("GitHub Copilot returned no usable quota data.");
+        expect(copilotMalformed?.quotaAccounts).toMatchObject([
+          {
+            balances: [
+              { id: "credits-used", remaining: 8.25 },
+              { id: "org-credits-oldorg", label: "Org Credits (OldOrg)", remaining: 35 },
+              { id: "org-spend-oldorg", label: "Org Spend (OldOrg)", remaining: 1.5 },
+            ],
+          },
+        ]);
+      }
+      overrideSeatBody = undefined;
+
+      // Seat switches to NewOrg with token_based_billing absent and no quota windows: NEVER reattach OldOrg.
+      copilotOrg = "NewOrg";
+      copilotTokenBased = false;
+      yield* sources.refresh;
+      const copilotSwitchedWithoutFlag = (yield* sources.current).find(
+        (entry) => entry.kind === "copilot",
+      );
+      expect(copilotSwitchedWithoutFlag?.error).toBe(
+        "GitHub Copilot returned no usable quota data.",
+      );
+      expect(copilotSwitchedWithoutFlag?.quotaAccounts).toBeUndefined();
+
+      // Re-establish OldOrg, then switch to NewOrg with token_based_billing=true and summary 503:
+      // keep NewOrg personal credits, NEVER borrow OldOrg balances.
+      copilotOrg = "OldOrg";
+      copilotTokenBased = true;
+      partialOutage = false;
+      copilotPersonalCredits = 7.5;
+      yield* sources.refresh;
+      copilotOrg = "NewOrg";
+      partialOutage = true;
+      copilotPersonalCredits = 2;
+      yield* sources.refresh;
+      const copilotNewOrgOutage = (yield* sources.current).find(
+        (entry) => entry.kind === "copilot",
+      );
+      expect(copilotNewOrgOutage?.error).toBe(
+        "GitHub Copilot org billing request failed (HTTP 503).",
+      );
+      expect(copilotNewOrgOutage?.quotaAccounts).toEqual([
+        {
+          id: "copilot",
+          label: "GitHub Copilot",
+          planTier: "Business",
+          windows: [],
+          balances: [
+            {
+              id: "credits-used",
+              label: "Credits Used",
+              remaining: 2,
+              unit: "credits",
+              kind: "spend",
+            },
+          ],
+        },
+      ]);
+    }).pipe(
+      Effect.provide([
+        externalSourceTestLayer,
+        FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch))),
+      ]),
+    );
+  },
+);
+
+it.effect(
+  "a stalled Ollama account POST obeys the request deadline without losing the balance",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* writeOllamaTestKey();
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("ollama")]: {
+            kind: "ollama",
+            url: path,
+            managementKey: "",
+            enabled: true,
+          },
+        },
+      });
+      const started = yield* Deferred.make<void>();
+      const http = HttpClient.make((request, url) =>
+        url.pathname === "/api/me"
+          ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never))
+          : Effect.sync(() =>
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({ included: { allowance_usd: 10, balance_usd: 5 } }),
+              ),
+            ),
+      );
+      const sources = yield* UsageLimitSources.make.pipe(
+        Effect.provideService(HttpClient.HttpClient, http),
+      );
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("9 seconds");
+      expect(yield* sources.current).toEqual([]);
+      yield* TestClock.adjust("1 second");
+      const readings = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length > 0),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(readings).toMatchObject([{ quotaAccounts: [{ windows: [{ usedPercent: 50 }] }] }]);
+      expect(readings[0]?.error).toBeUndefined();
+      expect(readings[0]?.quotaAccounts?.[0]?.planTier).toBeUndefined();
+    }).pipe(Effect.provide(externalSourceTestLayer)),
 );
 
 it.effect("keeps cached OMP quotas after a same-path read failure but not after retargeting", () =>
@@ -1767,7 +2738,7 @@ it.effect("keeps cached OMP quotas after a same-path read failure but not after 
         HttpClient.HttpClient,
         HttpClient.make(() => Effect.die("Unexpected network request for a local cache")),
       ),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
       NodeServices.layer,
     ]),
   ),
@@ -1834,7 +2805,8 @@ it.effect("reads a management key from its secret provider", () => {
           }),
         ),
       ),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   );
 });
@@ -1935,7 +2907,8 @@ it.effect("keeps an account's last good reading when the hub's next read of it i
           }),
         ),
       ),
-      NodeCrypto.layer,
+      EffectNodeCrypto.layer,
+      NodeServices.layer,
     ]),
   );
 });

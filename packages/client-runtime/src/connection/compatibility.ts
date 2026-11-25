@@ -3,6 +3,7 @@ import { translatableDetail } from "../errors/translatable.ts";
 import {
   CLIENT_CAPABILITIES_QUERY_PARAM,
   EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY,
+  EXTERNAL_USAGE_LIMIT_SOURCES_CAPABILITY,
   HTTP_USAGE_LIMIT_SOURCES_CAPABILITY,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   ORCHESTRATION_PROTOCOL_VERSION,
@@ -58,6 +59,8 @@ export function appendOrchestrationProtocol(socketUrl: string): string {
       SETTINGS_SECRET_REFERENCES_CAPABILITY,
       HTTP_USAGE_LIMIT_SOURCES_CAPABILITY,
       EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY,
+      // fork: advertise Wave 3 external quota source kinds during WS capability negotiation
+      EXTERNAL_USAGE_LIMIT_SOURCES_CAPABILITY,
     ].join(","),
   );
   return url.toString();

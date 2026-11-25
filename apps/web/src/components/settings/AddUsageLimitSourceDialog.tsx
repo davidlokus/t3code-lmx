@@ -23,6 +23,7 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
+  OLLAMA_DEFAULT_SOURCE_URL,
   OMP_DEFAULT_SOURCE_URL,
   defaultUsageLimitSourceRegion,
   defaultUsageLimitSourceUrl,
@@ -31,16 +32,30 @@ import {
 import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 
 const LEGACY_SOURCE_KINDS: ReadonlyArray<UsageLimitSourceKind> = ["cliproxy", "http"];
-const SOURCE_KINDS: ReadonlyArray<UsageLimitSourceKind> = [
-  "cliproxy",
-  "http",
-  "omp",
-  "kimi",
-  "zai",
+const EXTENDED_SOURCE_KINDS: ReadonlyArray<UsageLimitSourceKind> = ["omp", "kimi", "zai"];
+const EXTERNAL_SOURCE_KINDS: ReadonlyArray<UsageLimitSourceKind> = [
+  "openrouter",
+  "copilot",
+  "ollama",
+  "openaiApi",
 ];
 
 /** Send source credentials once to server secret storage; settings retain only a redaction marker. */
-export function AddUsageLimitSourceDialog({
+export function AddUsageLimitSourceDialog(props: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly kind?: UsageLimitSourceKind;
+  readonly sources: UnifiedSettings["usageLimitSources"];
+  readonly supportsExtendedSources?: boolean;
+  readonly supportsExternalSources?: boolean;
+}) {
+  const capabilityKey = `${props.environmentId}:${props.supportsExtendedSources !== false}:${props.supportsExternalSources !== false}`;
+  return <AddUsageLimitSourceDialogInner key={capabilityKey} {...props} />;
+}
+
+function AddUsageLimitSourceDialogInner({
   open,
   onOpenChange,
   environmentId,
@@ -48,6 +63,7 @@ export function AddUsageLimitSourceDialog({
   sources,
   kind = "cliproxy",
   supportsExtendedSources = true,
+  supportsExternalSources = true,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -56,11 +72,16 @@ export function AddUsageLimitSourceDialog({
   readonly kind?: UsageLimitSourceKind;
   readonly sources: UnifiedSettings["usageLimitSources"];
   readonly supportsExtendedSources?: boolean;
+  readonly supportsExternalSources?: boolean;
 }) {
   const gt = useGT();
   const formId = useId();
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
-  const availableKinds = supportsExtendedSources ? SOURCE_KINDS : LEGACY_SOURCE_KINDS;
+  const availableKinds: ReadonlyArray<UsageLimitSourceKind> = [
+    ...LEGACY_SOURCE_KINDS,
+    ...(supportsExtendedSources ? EXTENDED_SOURCE_KINDS : []),
+    ...(supportsExternalSources ? EXTERNAL_SOURCE_KINDS : []),
+  ];
   const initialKind = availableKinds.includes(kind) ? kind : "http";
   const [selectedKind, setSelectedKind] = useState<UsageLimitSourceKind>(initialKind);
   const [region, setRegion] = useState<UsageLimitSourceRegion>(
@@ -73,6 +94,7 @@ export function AddUsageLimitSourceDialog({
   const [keyValid, setKeyValid] = useState(true);
   const [secretInputResetCount, setSecretInputResetCount] = useState(0);
 
+  const isSelectedKindSupported = availableKinds.includes(selectedKind);
   const managementKey = typeof keyDraft === "string" ? keyDraft.trim() : keyDraft;
   const trimmedUrl = url.trim();
   const isCliproxy = selectedKind === "cliproxy";
@@ -80,21 +102,29 @@ export function AddUsageLimitSourceDialog({
   const isOmp = selectedKind === "omp";
   const isKimi = selectedKind === "kimi";
   const isZai = selectedKind === "zai";
+  const isOpenRouter = selectedKind === "openrouter";
+  const isCopilot = selectedKind === "copilot";
+  const isOllama = selectedKind === "ollama";
+  const isOpenAiApi = selectedKind === "openaiApi";
   const hasRegion = isKimi || isZai;
-  const hasSecret = !isOmp;
+  const hasFixedEndpoint = isOpenRouter || isCopilot || isOpenAiApi;
+  const hasUrlInput = isCliproxy || isHttp || isOmp || isOllama;
+  const hasSecret = !isOmp && !isOllama;
   const endpoint = URL.parse(trimmedUrl);
 
-  const canSave = isOmp
-    ? true
-    : keyValid &&
-      (isHttp
-        ? endpoint !== null &&
-          /^https?:$/.test(endpoint.protocol) &&
-          !endpoint.username &&
-          !endpoint.password
-        : isCliproxy
-          ? trimmedUrl.length > 0 && managementKey !== ""
-          : managementKey !== "");
+  const canSave =
+    isSelectedKindSupported &&
+    (isOmp || isOllama
+      ? true
+      : keyValid &&
+        (isHttp
+          ? endpoint !== null &&
+            /^https?:$/.test(endpoint.protocol) &&
+            !endpoint.username &&
+            !endpoint.password
+          : isCliproxy
+            ? trimmedUrl.length > 0 && managementKey !== ""
+            : managementKey !== ""));
 
   const reset = () => {
     setSelectedKind(initialKind);
@@ -120,9 +150,13 @@ export function AddUsageLimitSourceDialog({
     if (!canSave) return;
     const resolvedUrl = isOmp
       ? trimmedUrl || OMP_DEFAULT_SOURCE_URL
-      : hasRegion
-        ? defaultUsageLimitSourceUrl(selectedKind, region)
-        : trimmedUrl;
+      : isOllama
+        ? trimmedUrl || OLLAMA_DEFAULT_SOURCE_URL
+        : hasRegion
+          ? defaultUsageLimitSourceUrl(selectedKind, region)
+          : hasFixedEndpoint
+            ? defaultUsageLimitSourceUrl(selectedKind)
+            : trimmedUrl;
     const id = sourceIdFromUrl(resolvedUrl, sources, selectedKind, hasRegion ? region : undefined);
     updateSettings({
       usageLimitSources: {
@@ -131,7 +165,7 @@ export function AddUsageLimitSourceDialog({
           ...(label.trim() ? { label: label.trim() } : {}),
           ...(hasRegion ? { region } : {}),
           url: resolvedUrl,
-          managementKey: isOmp ? "" : managementKey,
+          managementKey: hasSecret ? managementKey : "",
           enabled: true,
         },
       },
@@ -152,6 +186,14 @@ export function AddUsageLimitSourceDialog({
         return gt("Kimi Code");
       case "zai":
         return gt("Z.ai / BigModel");
+      case "openrouter":
+        return gt("OpenRouter");
+      case "copilot":
+        return gt("GitHub Copilot");
+      case "ollama":
+        return gt("Ollama Cloud");
+      case "openaiApi":
+        return gt("OpenAI API");
     }
   };
 
@@ -166,7 +208,11 @@ export function AddUsageLimitSourceDialog({
     ? gt("Bearer token (optional)")
     : isCliproxy
       ? gt("Management key")
-      : gt("API key");
+      : isCopilot
+        ? gt("GitHub token")
+        : isOpenAiApi
+          ? gt("Admin API key")
+          : gt("API key");
 
   const labelPlaceholder = isCliproxy
     ? gt("Defaults to the hub's host name")
@@ -176,7 +222,15 @@ export function AddUsageLimitSourceDialog({
         ? gt("Defaults to Kimi Code")
         : isZai
           ? gt("Defaults to Z.ai")
-          : gt("Defaults to the endpoint host name");
+          : isOpenRouter
+            ? gt("Defaults to OpenRouter")
+            : isCopilot
+              ? gt("Defaults to GitHub Copilot")
+              : isOllama
+                ? gt("Defaults to Ollama Cloud")
+                : isOpenAiApi
+                  ? gt("Defaults to OpenAI API")
+                  : gt("Defaults to the endpoint host name");
 
   return (
     <Dialog
@@ -197,8 +251,16 @@ export function AddUsageLimitSourceDialog({
               <T>Add OMP local cache</T>
             ) : isKimi ? (
               <T>Add Kimi Code quota</T>
-            ) : (
+            ) : isZai ? (
               <T>Add Z.ai / BigModel quota</T>
+            ) : isOpenRouter ? (
+              <T>Add OpenRouter quota</T>
+            ) : isCopilot ? (
+              <T>Add GitHub Copilot quota</T>
+            ) : isOllama ? (
+              <T>Add Ollama Cloud quota</T>
+            ) : (
+              <T>Add OpenAI API costs</T>
             )}
           </DialogTitle>
           <DialogDescription>
@@ -221,10 +283,30 @@ export function AddUsageLimitSourceDialog({
                 Read Kimi Code plan quotas and Booster balance on <Var>{environmentLabel}</Var>. The
                 API key stays on that server.
               </T>
-            ) : (
+            ) : isZai ? (
               <T>
                 Read GLM Coding Plan quotas and renewal date on <Var>{environmentLabel}</Var>. The
                 API key stays on that server.
+              </T>
+            ) : isOpenRouter ? (
+              <T>
+                Read OpenRouter credits, key limits, and period spend on{" "}
+                <Var>{environmentLabel}</Var>. The API key stays on that server.
+              </T>
+            ) : isCopilot ? (
+              <T>
+                Read GitHub Copilot quota snapshots and overage on <Var>{environmentLabel}</Var>.
+                The token stays on that server.
+              </T>
+            ) : isOllama ? (
+              <T>
+                Sign read-only Ollama Cloud balance requests using the local Ed25519 key on{" "}
+                <Var>{environmentLabel}</Var>. The private key never leaves that host.
+              </T>
+            ) : (
+              <T>
+                Read OpenAI organization API spend on <Var>{environmentLabel}</Var> using an
+                organization Admin key. Never reads OPENAI_API_KEY or Codex OAuth.
               </T>
             )}
           </DialogDescription>
@@ -275,11 +357,13 @@ export function AddUsageLimitSourceDialog({
                   </SelectPopup>
                 </Select>
               </div>
-            ) : (
+            ) : hasUrlInput ? (
               <div className="grid gap-1.5">
                 <Label htmlFor="usage-source-url">
                   {isOmp ? (
                     <T>Database path (optional)</T>
+                  ) : isOllama ? (
+                    <T>Signing key path (optional)</T>
                   ) : isHttp ? (
                     <T>Endpoint URL</T>
                   ) : (
@@ -288,13 +372,19 @@ export function AddUsageLimitSourceDialog({
                 </Label>
                 <Input
                   id="usage-source-url"
-                  placeholder={isOmp ? "~/.omp/agent/agent.db" : "https://hub.example.ts.net:8318"}
+                  placeholder={
+                    isOmp
+                      ? "~/.omp/agent/agent.db"
+                      : isOllama
+                        ? "~/.ollama/id_ed25519"
+                        : "https://hub.example.ts.net:8318"
+                  }
                   value={url}
                   onChange={(event) => setUrl(event.target.value)}
                   autoFocus
                 />
               </div>
-            )}
+            ) : null}
             {hasSecret ? (
               <div className="grid gap-1.5">
                 <Label htmlFor="usage-source-key">{secretLabel}</Label>
