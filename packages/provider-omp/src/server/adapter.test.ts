@@ -13,6 +13,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
+  type ResolvedProviderInstanceEnvironment,
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -35,6 +36,7 @@ import type { PiDiscoveredCommands } from "@t3tools/provider-pi/server/commands"
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 
+import type { OmpSettings } from "../settings.ts";
 import { OmpAdapterV2Driver } from "./adapter.ts";
 import { OMP_PROVIDER } from "./dialect.ts";
 import { type FakeOmp, makeFakeOmp } from "./fakeOmp.testkit.ts";
@@ -52,20 +54,27 @@ const SESSION_ID = ProviderSessionId.make("provider-session-omp-test");
 
 const modelSelection = (model = "default"): ModelSelection => ({ instanceId: INSTANCE_ID, model });
 
-const runtimePolicy = (runtimeMode: RuntimeMode) =>
+const runtimePolicy = (runtimeMode: RuntimeMode, extraRoots?: ReadonlyArray<string>) =>
   ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
     runtimeMode,
     interactionMode: "default",
     cwd: null,
+    ...(extraRoots === undefined ? {} : { workspace: { folders: [], extraRoots } }),
   });
 
 const openRuntime = Effect.fnUntraced(function* (
   fake: FakeOmp,
   runtimeMode: RuntimeMode,
-  forkFake?: FakeOmp,
-  initialNativeThreadId?: string,
-  onCommands?: Parameters<typeof OmpAdapterV2Driver.create>[0]["onCommands"],
+  options: {
+    readonly config?: Partial<OmpSettings>;
+    readonly environment?: ResolvedProviderInstanceEnvironment;
+    readonly extraRoots?: ReadonlyArray<string>;
+    readonly forkFake?: FakeOmp;
+    readonly initialNativeThreadId?: string | undefined;
+    readonly onCommands?: Parameters<typeof OmpAdapterV2Driver.create>[0]["onCommands"];
+  } = {},
 ) {
+  const { forkFake, initialNativeThreadId, onCommands } = options;
   const spawner =
     forkFake === undefined
       ? fake.spawner
@@ -78,11 +87,11 @@ const openRuntime = Effect.fnUntraced(function* (
     instanceId: INSTANCE_ID,
     displayName: undefined,
     enabled: true,
-    environment: [
+    environment: options.environment ?? [
       { name: "OPENAI_API_KEY", value: "instance-test-key", sensitive: true },
       { name: "PI_CODING_AGENT_DIR", value: "/fake/isolated", sensitive: false },
     ],
-    config: { enabled: true, binaryPath: "omp", launchArgs: "--no-lsp", customModels: [] },
+    config: { ...OmpAdapterV2Driver.defaultConfig(), launchArgs: "--no-lsp", ...options.config },
     onCommands,
   }).pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -92,6 +101,8 @@ const openRuntime = Effect.fnUntraced(function* (
       OPENAI_API_KEY: "ambient-test-key",
       ANTHROPIC_API_KEY: "unconfigured-test-key",
       OMP_PROFILE: "ambient-profile",
+      PI_CODING_AGENT_DIR: "/fake/ambient-pi",
+      PI_CODING_AGENT_SESSION_DIR: "/fake/ambient-pi-sessions",
     }),
     Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
       offer: () => Effect.void,
@@ -102,7 +113,7 @@ const openRuntime = Effect.fnUntraced(function* (
     threadId: THREAD_ID,
     providerSessionId: SESSION_ID,
     modelSelection: modelSelection(),
-    runtimePolicy: runtimePolicy(runtimeMode),
+    runtimePolicy: runtimePolicy(runtimeMode, options.extraRoots),
     ...(initialNativeThreadId === undefined ? {} : { initialNativeThreadId }),
   });
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -120,7 +131,7 @@ const openRuntime = Effect.fnUntraced(function* (
   const providerThread = yield* runtime.ensureThread({
     threadId: THREAD_ID,
     modelSelection: modelSelection(),
-    runtimePolicy: runtimePolicy(runtimeMode),
+    runtimePolicy: runtimePolicy(runtimeMode, options.extraRoots),
   });
   return { runtime, takeEvent, providerThread };
 });
@@ -129,6 +140,7 @@ const startTurn = Effect.fnUntraced(function* (
   runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
   providerThread: OrchestrationV2ProviderThread,
   runtimeMode: RuntimeMode,
+  selection = modelSelection(),
 ) {
   const now = yield* DateTime.now;
   const appThread = {
@@ -171,7 +183,7 @@ const startTurn = Effect.fnUntraced(function* (
       createdBy: "user",
       creationSource: "web",
     },
-    modelSelection: modelSelection(),
+    modelSelection: selection,
     runtimePolicy: runtimePolicy(runtimeMode),
   });
 });
@@ -258,6 +270,7 @@ describe("OmpAdapterV2", () => {
       });
       assert.notProperty(env, "ANTHROPIC_API_KEY");
       assert.notProperty(env, "OMP_PROFILE");
+      assert.notProperty(env, "PI_CODING_AGENT_SESSION_DIR");
 
       yield* startTurn(runtime, providerThread, "full-access");
       const prompt = yield* fake.takeRequest("prompt");
@@ -294,15 +307,38 @@ describe("OmpAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect("isolates a custom agent directory and applies auto thinking on a live omp turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp();
+      const { runtime, providerThread } = yield* openRuntime(fake, "full-access", {
+        config: { agentDir: "~/omp-alt" },
+        environment: [],
+      });
+      assert.equal(fake.lastSpawnEnv()?.PI_CODING_AGENT_DIR, "/fake/omp-alt");
+      assert.isUndefined(fake.lastSpawnEnv()?.PI_CODING_AGENT_SESSION_DIR);
+      yield* startTurn(runtime, providerThread, "full-access", {
+        ...modelSelection(),
+        options: [{ id: "thinking", value: "auto" }],
+      });
+      yield* fake.takeRequest("prompt");
+      assert.include(
+        fake.allRequests().find((entry) => entry["type"] === "set_thinking_level"),
+        {
+          level: "auto",
+        },
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("reads and updates the command catalog of an authorized session without a prompt", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeOmp({
         get_available_commands: { commands: [{ name: "inspect", source: "file" }] },
       });
       const observed = yield* Queue.unbounded<PiDiscoveredCommands>();
-      yield* openRuntime(fake, "full-access", undefined, undefined, (_cwd, catalog) =>
-        Queue.offer(observed, catalog).pipe(Effect.asVoid),
-      );
+      yield* openRuntime(fake, "full-access", {
+        onCommands: (_cwd, catalog) => Queue.offer(observed, catalog).pipe(Effect.asVoid),
+      });
       assert.deepEqual((yield* Queue.take(observed)).slashCommands, [{ name: "inspect" }]);
       yield* fake.emit({
         type: "available_commands_update",
@@ -683,10 +719,18 @@ describe("OmpAdapterV2", () => {
         );
         const fake = yield* makeFakeOmp();
         const forkFake = yield* makeFakeOmp({ get_state: { sessionFile: forkFile } });
-        const { runtime, providerThread: source } = yield* openRuntime(
-          fake,
-          "full-access",
+        const { runtime, providerThread: source } = yield* openRuntime(fake, "full-access", {
           forkFake,
+          config: { profile: "team", agentDir: "~/ignored", launchArgs: "--add-dir /repo/docs" },
+          environment: [],
+          extraRoots: ["/repo/shared", "", "/repo/shared", " ", "/repo/docs", "/repo/design"],
+        });
+        assert.isUndefined(fake.lastSpawnEnv()?.PI_CODING_AGENT_DIR);
+        const liveArgs = fake.lastSpawnArgs();
+        assert.equal(liveArgs[liveArgs.indexOf("--profile") + 1], "team");
+        assert.deepEqual(
+          liveArgs.flatMap((arg, index) => (arg === "--add-dir" ? [liveArgs[index + 1]] : [])),
+          ["/repo/docs", "/repo/shared", "/repo/design"],
         );
         const turn = (ordinal: number): OrchestrationV2ProviderTurn => ({
           id: ProviderTurnId.make(`turn-${ordinal}`),
@@ -717,6 +761,7 @@ describe("OmpAdapterV2", () => {
         assert.equal(args[args.indexOf("--fork") + 1], source.nativeThreadRef?.nativeId);
         assert.deepEqual(args.slice(0, 2), ["--mode", "rpc"]);
         assert.notInclude(args, "--no-session");
+        assert.notInclude(args, "--add-dir");
         // omp's own `fork` keeps the entry it is given and Pi's drops it; only `branch` cuts before it.
         const forks = (process: typeof fake) =>
           process
@@ -735,7 +780,7 @@ describe("OmpAdapterV2", () => {
       const forkFile = "/fake/.omp/agent/sessions/--worktree--/forked.jsonl";
       const fake = yield* makeFakeOmp();
       const forkFake = yield* makeFakeOmp({ get_state: { sessionFile: forkFile } });
-      const { runtime, providerThread } = yield* openRuntime(fake, "full-access", forkFake);
+      const { runtime, providerThread } = yield* openRuntime(fake, "full-access", { forkFake });
       const dir = yield* fileSystem.makeTempDirectoryScoped();
       // omp's first line is a title record; the session record, which names the cwd, follows it.
       const sessionAt = (name: string, sessionCwd: string | undefined) =>
@@ -795,7 +840,9 @@ describe("OmpAdapterV2", () => {
         ["other", yield* sessionAt("cold-other", `${host.paths.cwd}-original-checkout`)],
       ] as const) {
         const coldFake = yield* makeFakeOmp();
-        yield* openRuntime(coldFake, "full-access", undefined, thread.nativeThreadRef?.nativeId);
+        yield* openRuntime(coldFake, "full-access", {
+          initialNativeThreadId: thread.nativeThreadRef?.nativeId,
+        });
         const args = coldFake.lastSpawnArgs();
         assert.equal(
           args.includes("--resume") ? args[args.indexOf("--resume") + 1] : undefined,

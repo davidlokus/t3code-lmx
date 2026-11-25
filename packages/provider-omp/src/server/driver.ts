@@ -1,5 +1,3 @@
-// omp keeps user-wide state in ~/.omp/agent, so continuation identity uses default instance grouping.
-import { TextGenerationError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -20,10 +18,9 @@ import {
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import {
   makeCachedProviderMaintenanceResolution,
-  makeManualOnlyProviderMaintenanceCapabilities,
-  type ProviderMaintenanceCapabilitiesResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "@t3tools/provider-core/server/maintenanceResolver";
+import { providerProbeEnvironment } from "@t3tools/provider-core/server/snapshotProbe";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import {
@@ -31,7 +28,6 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { enrichPiSnapshot } from "@t3tools/provider-pi/server/status";
 import type { PiAdapterV2DriverEnv } from "@t3tools/provider-pi/server/adapter";
 import {
@@ -41,42 +37,17 @@ import {
 
 import { OmpSettings } from "../settings.ts";
 import { OmpAdapterV2Driver, ompInstanceEnvironment } from "./adapter.ts";
-import { OMP_PROVIDER } from "./dialect.ts";
-import { buildInitialOmpProviderSnapshot, checkOmpProviderStatus } from "./status.ts";
+import { OMP_DIALECT, OMP_PROVIDER, ompInventoryLaunchArgs } from "./dialect.ts";
+import { OMP_MAINTENANCE_RESOLVER } from "./maintenance.ts";
+import {
+  buildInitialOmpProviderSnapshot,
+  checkOmpProviderStatus,
+  runOmpInventoryCommand,
+} from "./status.ts";
+import { makeOmpTextGeneration } from "./textGeneration.ts";
 import { ompUsageReader } from "./usage.ts";
 
 const decodeOmpSettings = Schema.decodeSync(OmpSettings);
-
-// omp installs through its own script and `omp update`, neither of which T3 can vouch for, so
-// updates stay manual.
-const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
-  resolve: () =>
-    Effect.succeed(
-      makeManualOnlyProviderMaintenanceCapabilities({
-        provider: OMP_PROVIDER,
-        packageName: null,
-        manualCommand: "omp update",
-      }),
-    ),
-};
-
-const makeUnsupportedTextGeneration = (): ProviderTextGeneration => {
-  const unsupported = (operation: string) =>
-    Effect.fail(
-      new TextGenerationError({
-        operation,
-        detail: "omp instances do not provide application text generation.",
-      }),
-    );
-  return {
-    generateCommitMessage: () => unsupported("generateCommitMessage"),
-    generatePrContent: () => unsupported("generatePrContent"),
-    generateBranchName: () => unsupported("generateBranchName"),
-    generateThreadTitle: () => unsupported("generateThreadTitle"),
-    generateReviewGuide: () => unsupported("generateReviewGuide"),
-    generateTranscriptionPostProcessing: () => unsupported("generateTranscriptionPostProcessing"),
-  };
-};
 
 export type OmpDriverEnv =
   | PiAdapterV2DriverEnv
@@ -111,7 +82,11 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const host = yield* ProviderHost.ProviderHost;
     const probeCwd = pathService.join(host.paths.providerStatusCacheDir, "omp-status-probe");
-    const processEnv = yield* ompInstanceEnvironment(environment);
+    const effectiveConfig = { ...config, enabled } satisfies OmpSettings;
+    const { env: processEnv, launchArgs } = yield* ompInstanceEnvironment(
+      effectiveConfig,
+      environment,
+    );
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: OMP_PROVIDER,
       instanceId,
@@ -123,10 +98,9 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
-    const effectiveConfig = { ...config, enabled } satisfies OmpSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
+      resolveProviderMaintenanceCapabilitiesEffect(OMP_MAINTENANCE_RESOLVER, {
+        binaryPath: effectiveConfig.binaryPath || OMP_DIALECT.defaultBinary,
         env: processEnv,
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -162,17 +136,61 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
       ),
     );
 
-    const checkProvider = fileSystem
+    const textGeneration = yield* makeOmpTextGeneration(effectiveConfig, processEnv);
+    const prepareProbeCwd = fileSystem
       .makeDirectory(probeCwd, { recursive: true })
-      .pipe(
-        Effect.ignore,
-        Effect.andThen(
-          checkOmpProviderStatus(effectiveConfig, processEnv, probeCwd, host.compatibility),
+      .pipe(Effect.ignore);
+    const checkProvider = prepareProbeCwd.pipe(
+      Effect.andThen(
+        checkOmpProviderStatus(effectiveConfig, processEnv, probeCwd, host.compatibility),
+      ),
+      Effect.map(stampIdentity),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(Path.Path, pathService),
+    );
+    const refreshModels = Effect.fn("OmpDriver.refreshModels")(function* () {
+      if (!launchArgs.ok) {
+        return yield* new ProviderDriverError({
+          driver: OMP_PROVIDER,
+          instanceId,
+          detail: launchArgs.message,
+        });
+      }
+      yield* prepareProbeCwd;
+      const result = yield* runOmpInventoryCommand(
+        effectiveConfig.binaryPath,
+        [
+          "models",
+          "refresh",
+          "--no-extensions",
+          ...ompInventoryLaunchArgs(launchArgs.args, pathService.isAbsolute),
+        ],
+        providerProbeEnvironment(processEnv),
+        probeCwd,
+      ).pipe(
+        Effect.timeout("30 seconds"),
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: OMP_PROVIDER,
+              instanceId,
+              detail:
+                cause._tag === "TimeoutError"
+                  ? "omp model refresh timed out."
+                  : "Failed to run omp model refresh.",
+              cause,
+            }),
         ),
-        Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(Path.Path, pathService),
       );
+      if (result.code !== 0) {
+        return yield* new ProviderDriverError({
+          driver: OMP_PROVIDER,
+          instanceId,
+          detail: `omp model refresh exited with code ${result.code}.`,
+        });
+      }
+    });
 
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<OmpSettings>>({
@@ -233,7 +251,8 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
           }),
         ),
       orchestrationAdapter,
-      textGeneration: makeUnsupportedTextGeneration(),
+      textGeneration,
+      ...(enabled ? { refreshModels } : {}),
     } satisfies ProviderInstance;
   }),
 };

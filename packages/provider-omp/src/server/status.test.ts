@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { OmpSettings } from "../settings.ts";
 import { OMP_PROVIDER } from "./dialect.ts";
 import { checkOmpProviderStatus, parseOmpModels } from "./status.ts";
 
@@ -13,6 +15,7 @@ import { checkOmpProviderStatus, parseOmpModels } from "./status.ts";
 const state = {
   model: { provider: "magpie", id: "auto/deepseek-v4.1-flash" },
   thinkingLevel: "high",
+  configuredThinkingLevel: "auto",
 };
 const models = {
   models: [
@@ -30,35 +33,40 @@ const models = {
 };
 
 const probeCwd = "/cache/omp-status-probe";
-const settings = {
+const settings = Schema.decodeSync(OmpSettings)({
   enabled: true,
   binaryPath: "omp",
-  launchArgs: "--profile work --extension custom.ts --hook startup.ts --no-lsp",
-  customModels: [],
+  profile: "work",
+  agentDir: "~/ignored",
+  launchArgs: "--extension custom.ts --hook startup.ts --no-lsp",
+});
+
+const cliCatalog = {
+  models: [
+    {
+      id: "gpt-5",
+      provider: "openai",
+      name: "GPT-5",
+      reasoning: true,
+      thinking: ["low", "high"],
+    },
+  ],
 };
 
-function probeSpawner(version: string) {
-  const launches: Array<{ args: ReadonlyArray<string>; cwd?: string }> = [];
+function probeSpawner(version: string, catalog: unknown = cliCatalog) {
+  const launches: Array<{ args: ReadonlyArray<string>; cwd?: string; agentDir?: string }> = [];
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       if (!ChildProcess.isStandardCommand(command)) throw new Error("Expected an omp command");
+      const agentDir = command.options.env?.PI_CODING_AGENT_DIR;
       launches.push({
         args: command.args.map(String),
         ...(command.options.cwd ? { cwd: command.options.cwd } : {}),
+        ...(typeof agentDir === "string" ? { agentDir } : {}),
       });
       const output = command.args.includes("--version")
         ? `omp/${version}\n`
-        : JSON.stringify({
-            models: [
-              {
-                id: "gpt-5",
-                provider: "openai",
-                name: "GPT-5",
-                reasoning: true,
-                thinking: ["low", "high"],
-              },
-            ],
-          });
+        : JSON.stringify(catalog);
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(900_000_001),
         exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
@@ -92,8 +100,9 @@ describe("omp model discovery", () => {
     expect(thinking).toMatchObject({ id: "thinking", type: "select" });
     expect(thinking?.type === "select" ? thinking.options : undefined).toEqual([
       { id: "off", label: "Off" },
+      { id: "auto", label: "Auto", isDefault: true },
       { id: "low", label: "Low" },
-      { id: "high", label: "High", isDefault: true },
+      { id: "high", label: "High" },
       { id: "max", label: "Max" },
     ]);
     expect(parsed?.[1]?.capabilities?.optionDescriptors).toEqual([]);
@@ -115,11 +124,64 @@ describe("omp model discovery", () => {
         { args: ["--version"], cwd: probeCwd },
         { args: ["models", "--json", "--no-extensions", "--profile", "work"], cwd: probeCwd },
       ]);
-      expect(snapshot).toMatchObject({ status: "ready", version: "19.1.1" });
+      expect(snapshot).toMatchObject({
+        status: "ready",
+        version: "19.1.1",
+        supportsTextGeneration: true,
+      });
       expect(snapshot.models.map((model) => model.slug)).toEqual(["default", "openai/gpt-5"]);
       expect(snapshot.models[1]?.capabilities?.optionDescriptors).toMatchObject([
-        { id: "thinking", options: [{ id: "off" }, { id: "low" }, { id: "high" }] },
+        { id: "thinking", options: [{ id: "off" }, { id: "auto" }, { id: "low" }, { id: "high" }] },
       ]);
+    }),
+  );
+
+  it.effect(
+    "does not advertise text generation when disabled or all catalog entries are unusable",
+    () =>
+      Effect.gen(function* () {
+        const { spawner, launches } = probeSpawner("19.2.1", {
+          models: [
+            { provider: "openai", id: "image", kind: "image" },
+            { provider: "openai", id: "" },
+          ],
+        });
+        const environment = { HOME: "/fixture-home" };
+        const config = { ...settings, profile: "", agentDir: "~/alternate" };
+        const probe = (enabled: boolean) =>
+          checkOmpProviderStatus({ ...config, enabled }, environment, probeCwd).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provide(Path.layer),
+          );
+        expect((yield* probe(true)).supportsTextGeneration).toBe(false);
+        expect((yield* probe(false)).supportsTextGeneration).toBe(false);
+        expect(launches).toEqual([
+          { args: ["--version"], cwd: probeCwd, agentDir: "/fixture-home/alternate" },
+          {
+            args: ["models", "--json", "--no-extensions"],
+            cwd: probeCwd,
+            agentDir: "/fixture-home/alternate",
+          },
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    { profile: "nul.txt", launchArgs: "", error: "Invalid omp profile name" },
+    { profile: "work", launchArgs: "--profile=other", error: "'profile' conflicts" },
+  ])("rejects $profile / $launchArgs before spawning omp", ({ error, ...config }) =>
+    Effect.gen(function* () {
+      const { spawner, launches } = probeSpawner("19.2.1");
+      const snapshot = yield* checkOmpProviderStatus({ ...settings, ...config }, {}, probeCwd).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provide(Path.layer),
+      );
+      expect(snapshot).toMatchObject({
+        status: "error",
+        supportsTextGeneration: false,
+        message: expect.stringContaining(error),
+      });
+      expect(launches).toEqual([]);
     }),
   );
 

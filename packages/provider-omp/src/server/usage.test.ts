@@ -6,7 +6,11 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { assert, describe, it } from "@effect/vitest";
 
-import { ompUsageFormat, ompUsageReader, resolveOmpSessionsDir } from "./usage.ts";
+import type { OmpSettings } from "../settings.ts";
+import { OmpAdapterV2Driver } from "./adapter.ts";
+import { ompUsageReader } from "./usage.ts";
+
+const { format: ompUsageFormat } = ompUsageReader;
 
 describe("ompUsageFormat", () => {
   it("parses assistant messages, auxiliary model_usage entries, reasoningTokens, and cost", () => {
@@ -155,58 +159,55 @@ describe("ompUsageReader directories", () => {
     NodeServices.layer,
     Layer.succeed(HostProcess.HomeDirectory, "/home/tester"),
     Layer.succeed(HostProcess.Platform, "darwin"),
+    Layer.succeed(HostProcess.Environment, { OMP_PROFILE: "ambient" }),
   );
 
-  it.effect("resolves default ~/.omp/agent/sessions and env overrides without leaking Pi dir", () =>
+  const directories = (
+    config: Partial<OmpSettings>,
+    environment: NodeJS.ProcessEnv = {},
+    configured = true,
+  ) =>
+    ompUsageReader.directories({
+      instanceId: ProviderInstanceId.make("omp"),
+      config: { ...OmpAdapterV2Driver.defaultConfig(), ...config },
+      environment: { HOME: "/home/tester", ...environment },
+      configured,
+    });
+
+  it.effect("does not scan ambient Pi or OMP profile directories for default OMP history", () =>
     Effect.gen(function* () {
-      const pathService = yield* Path.Path;
-      assert.equal(
-        resolveOmpSessionsDir({}, "/home/tester", pathService),
-        pathService.resolve("/home/tester/.omp/agent/sessions"),
-      );
-      assert.equal(
-        resolveOmpSessionsDir(
-          { OMP_CODING_AGENT_DIR: "~/custom-omp" },
-          "/home/tester",
-          pathService,
-        ),
-        pathService.resolve("/home/tester/custom-omp/sessions"),
-      );
-      assert.equal(
-        resolveOmpSessionsDir({ PI_CODING_AGENT_DIR: "~/pi-only" }, "/home/tester", pathService),
-        pathService.resolve("/home/tester/.omp/agent/sessions"),
-      );
-      assert.equal(
-        resolveOmpSessionsDir(
-          { OMP_CODING_AGENT_SESSION_DIR: "/var/omp/sessions" },
-          "/home/tester",
-          pathService,
-        ),
-        pathService.resolve("/var/omp/sessions"),
-      );
+      const env = {
+        OMP_PROFILE: "ambient",
+        PI_CODING_AGENT_DIR: "~/pi-only",
+        PI_CODING_AGENT_SESSION_DIR: "~/pi-sessions",
+      };
+      assert.deepEqual(yield* directories({}, env, false), [
+        { dir: "/home/tester/.omp/agent/sessions" },
+      ]);
+      assert.deepEqual(yield* directories({}, env), [{ dir: "/home/tester/.omp/agent/sessions" }]);
     }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "scans only the selected profile or first-class agent directory for each instance",
+    () =>
+      Effect.gen(function* () {
+        const env = { OMP_CODING_AGENT_DIR: "~/legacy", PI_CODING_AGENT_DIR: "~/pi-only" };
+        const work = yield* directories({ profile: "work", agentDir: "~/ignored" }, env);
+        const personal = yield* directories({ launchArgs: "--profile=personal" }, env);
+        const custom = yield* directories({ agentDir: "~/my-agent" }, env);
+        assert.deepEqual(work, [{ dir: "/home/tester/.omp/profiles/work/agent/sessions" }]);
+        assert.deepEqual(personal, [{ dir: "/home/tester/.omp/profiles/personal/agent/sessions" }]);
+        assert.deepEqual(custom, [{ dir: "/home/tester/my-agent/sessions" }]);
+      }).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("includes --session-dir from launchArgs alongside default sessions directory", () =>
     Effect.gen(function* () {
-      if (ompUsageReader.kind !== "transcripts") {
-        return assert.fail("expected transcripts reader");
-      }
       const pathService = yield* Path.Path;
-      const dirs = yield* ompUsageReader.directories(
-        {
-          instanceId: ProviderInstanceId.make("omp"),
-          configured: true,
-          config: {
-            enabled: true,
-            binaryPath: "omp",
-            launchArgs: "--thinking high --session-dir /custom/omp-sessions",
-            customModels: [],
-          },
-          environment: { HOME: "/home/tester" },
-        },
-        { awaitRefresh: false },
-      );
+      const dirs = yield* directories({
+        launchArgs: "--thinking high --session-dir /custom/omp-sessions",
+      });
       assert.deepEqual(dirs, [
         { dir: pathService.resolve("/custom/omp-sessions") },
         { dir: pathService.resolve("/home/tester/.omp/agent/sessions") },
