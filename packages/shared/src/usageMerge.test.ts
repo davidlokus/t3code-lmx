@@ -3,6 +3,8 @@ import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
+  type UsageProjectBucket,
+  type UsageSessionSummary,
   type UsageDay,
   type UsageProviderKind,
   UsageSummary,
@@ -82,6 +84,141 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
+  it("uses exact reported spend in mixed buckets and degrades to reported-only legacy buckets", () => {
+    const source = { provider: "claude", hostId: "mac", homePath: "/claude" } as const;
+    const legacy = decodeSummary(
+      summary(
+        [bucket({ costSource: "providerReported", costUsd: 3 }), bucket({ costUsd: 5 })],
+        [source],
+        USAGE_MERGE_COMPATIBLE_SINCE,
+      ),
+    );
+    const current = decodeSummary(
+      summary(
+        [bucket({ providerReportedCostUsd: 2, costUsd: 7 })],
+        [{ ...source, hostId: "linux" }],
+      ),
+    );
+
+    expect(mergeUsage([environment("old", legacy)], USAGE_CONTRACT_VERSION)).toMatchObject({
+      providerReportedCostUsd: 3,
+      hasProjectAttribution: false,
+      hasSessionAttribution: false,
+    });
+    expect(
+      mergeUsage([environment("old", legacy), environment("new", current)], USAGE_CONTRACT_VERSION)
+        .providerReportedCostUsd,
+    ).toBe(5);
+  });
+
+  it("merges projects only from owned sources, preserving their provider and model split", () => {
+    const accounts = [
+      { provider: "claude", hostId: "mac", homePath: "/claude" },
+      { provider: "omp", hostId: "linux", homePath: "/omp" },
+    ] as const;
+    const attributed = (
+      source: (typeof accounts)[number],
+      costUsd: number,
+      worktreeCount: number,
+    ) => {
+      const usage = bucket({ provider: source.provider, sourcePath: source.homePath, costUsd });
+      const project: UsageProjectBucket = {
+        projectKey: "path:/work/repo",
+        label: "repo",
+        workspaceRoot: "/work/repo",
+        provider: source.provider,
+        sourcePath: source.homePath,
+        worktreeCount,
+        totals: usage.totals,
+        costUsd,
+        cacheSavingsUsd: 2,
+        records: 5,
+        unpricedRecords: 0,
+        sessions: 1,
+        topModels: [{ model: usage.model, costUsd, totalTokens: 1160 }],
+      };
+      return decodeSummary({ ...summary([usage], [source]), projects: [project], topSessions: [] });
+    };
+    const main = attributed(accounts[0], 3, 1);
+    const merged = mergeUsage(
+      [
+        environment("alias", main),
+        environment("a-owner", main),
+        environment("linux", attributed(accounts[1], 7, 2)),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.hasProjectAttribution).toBe(true);
+    expect(merged.hasSessionAttribution).toBe(true);
+    expect(merged.projects).toMatchObject([
+      {
+        costUsd: 10,
+        totalTokens: 2320,
+        costShare: 1,
+        tokenShare: 1,
+        sessions: 2,
+        worktreeCount: 2,
+        providers: ["claude", "omp"],
+        topModel: "claude-fable-5",
+        modelContributions: [
+          { provider: "omp", costUsd: 7 },
+          { provider: "claude", costUsd: 3 },
+        ],
+      },
+    ]);
+  });
+
+  it("deduplicates sessions across distinct sources and keeps the winning environment for navigation", () => {
+    const source = { provider: "claude", hostId: "a", homePath: "/a" } as const;
+    const session: UsageSessionSummary = {
+      sessionId: "shared",
+      provider: "claude",
+      projectKey: "t3:project",
+      projectLabel: "repo",
+      primaryModel: "model",
+      models: ["model"],
+      totals: bucket().totals,
+      costUsd: 7,
+      records: 2,
+      unpricedRecords: 0,
+      firstTimestampMs: 100,
+      lastTimestampMs: 200,
+    };
+    const merged = mergeUsage(
+      [
+        environment("a", {
+          ...summary([bucket()], [source]),
+          topSessions: [
+            { ...session, costUsd: 6, records: 1 },
+            ...Array.from({ length: 51 }, (_, index) => ({
+              ...session,
+              sessionId: `unpriced-${index}`,
+              costUsd: 0,
+              totals: { ...session.totals, outputTokens: index },
+              unpricedRecords: 2,
+            })),
+          ],
+        }),
+        environment("b", {
+          ...summary([bucket()], [{ ...source, hostId: "b", homePath: "/b" }]),
+          topSessions: [{ ...session, title: "Current name", t3ThreadId: "thread-in-b" }],
+        }),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.topSessions).toHaveLength(50);
+    expect(merged.topSessions[0]).toMatchObject({
+      sessionId: "shared",
+      environmentId: "b",
+      t3ThreadId: "thread-in-b",
+      costUsd: 7,
+    });
+    expect(merged.topSessions.filter(({ sessionId }) => sessionId === "shared")).toHaveLength(1);
+    expect(merged.topSessions[1]?.sessionId).toBe("unpriced-50");
+  });
+
   it("counts a Cursor account once across servers while retaining each server's other providers", () => {
     const account = {
       provider: "cursor" as const,
@@ -705,5 +842,210 @@ describe("mergeUsage", () => {
 
     expect(merged.sessions).toBe(1);
     expect(merged.providers[0]?.sessions).toBe(1);
+  });
+
+  it("keeps spend provenance separate from unpriced record share, unions cross-provider worktrees, marks partial attribution, and prefers connected T3 thread metadata & title", () => {
+    const sharedSource = { provider: "omp" as const, hostId: "mac", homePath: "/a/.omp" };
+    const claudeSource = { provider: "claude" as const, hostId: "mac", homePath: "/a/.claude" };
+    const linkedSummary: UsageSummary = {
+      ...summary(
+        [
+          bucket({
+            provider: "omp",
+            sourcePath: "/a/.omp",
+            costUsd: 10,
+            providerReportedCostUsd: 4,
+            costSource: "modelPriced",
+            records: 10,
+            unpricedRecords: 2,
+          }),
+          bucket({
+            provider: "claude",
+            sourcePath: "/a/.claude",
+            costUsd: 0,
+            providerReportedCostUsd: 0,
+            costSource: "unpriced",
+            records: 0,
+            unpricedRecords: 0,
+          }),
+        ],
+        [sharedSource, claudeSource],
+      ),
+      readAt: "2026-08-06T12:00:00.000Z",
+      projects: [
+        {
+          projectKey: "t3:proj-1",
+          label: "Alpha",
+          workspaceRoot: "/work/alpha",
+          t3ProjectId: "proj-1",
+          worktreeCount: 1,
+          worktreeRoots: ["/work/alpha-wt-a"],
+          provider: "omp",
+          sourcePath: "/a/.omp",
+          totals: bucket().totals,
+          costUsd: 10,
+          providerReportedCostUsd: 4,
+          cacheSavingsUsd: 0,
+          records: 10,
+          unpricedRecords: 2,
+          sessions: 1,
+        },
+        {
+          projectKey: "t3:proj-1",
+          label: "Alpha",
+          workspaceRoot: "/work/alpha",
+          t3ProjectId: "proj-1",
+          worktreeCount: 1,
+          worktreeRoots: ["/work/alpha-wt-b"],
+          provider: "claude",
+          sourcePath: "/a/.claude",
+          totals: bucket().totals,
+          costUsd: 0,
+          providerReportedCostUsd: 0,
+          cacheSavingsUsd: 0,
+          records: 0,
+          unpricedRecords: 0,
+          sessions: 1,
+        },
+      ],
+      topSessions: [
+        {
+          sessionId: "sess-shared",
+          provider: "omp",
+          sourcePath: "/a/.omp",
+          title: "Linked Thread Title",
+          t3ThreadId: "thread-linked-1",
+          t3ProjectId: "proj-1",
+          projectKey: "t3:proj-1",
+          projectLabel: "Alpha",
+          primaryModel: "gpt-5",
+          models: ["gpt-5"],
+          totals: {
+            uncachedInputTokens: 100,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 50,
+            reasoningTokens: 0,
+          },
+          costUsd: 10,
+          providerReportedCostUsd: 4,
+          records: 10,
+          unpricedRecords: 2,
+          firstTimestampMs: 1_700_000_000_000,
+          lastTimestampMs: 1_700_000_100_000,
+        },
+      ],
+    };
+    const offlineNewerLinkedSummary: UsageSummary = {
+      ...linkedSummary,
+      readAt: "2026-08-06T12:03:00.000Z",
+      topSessions: [
+        {
+          ...linkedSummary.topSessions![0]!,
+          t3ThreadId: "thread-offline-2",
+          title: "Offline Thread Title",
+        },
+      ],
+    };
+    const newerUnlinkedSummary: UsageSummary = {
+      ...summary(
+        [
+          bucket({
+            provider: "omp",
+            sourcePath: "/a/.omp",
+            costUsd: 10,
+            providerReportedCostUsd: 4,
+            costSource: "modelPriced",
+            records: 10,
+            unpricedRecords: 2,
+          }),
+        ],
+        [sharedSource],
+      ),
+      readAt: "2026-08-06T12:05:00.000Z",
+      projects: [
+        {
+          projectKey: "t3:proj-1",
+          label: "Alpha",
+          workspaceRoot: "/work/alpha",
+          t3ProjectId: "proj-1",
+          worktreeCount: 1,
+          worktreeRoots: ["/work/alpha-wt-a"],
+          provider: "omp",
+          sourcePath: "/a/.omp",
+          totals: bucket().totals,
+          costUsd: 10,
+          providerReportedCostUsd: 4,
+          cacheSavingsUsd: 0,
+          records: 10,
+          unpricedRecords: 2,
+          sessions: 1,
+        },
+      ],
+      topSessions: [
+        {
+          sessionId: "sess-shared",
+          provider: "omp",
+          sourcePath: "/a/.omp",
+          // Unlinked CLI title must yield to borrowed live T3 thread title.
+          title: "Unlinked Native CLI Title",
+          projectKey: "path:/repo",
+          projectLabel: "repo",
+          primaryModel: "gpt-5",
+          models: ["gpt-5"],
+          totals: {
+            uncachedInputTokens: 100,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 50,
+            reasoningTokens: 0,
+          },
+          costUsd: 10,
+          providerReportedCostUsd: 4,
+          records: 10,
+          unpricedRecords: 2,
+          firstTimestampMs: 1_700_000_000_000,
+          lastTimestampMs: 1_700_000_100_000,
+        },
+      ],
+    };
+    const legacyPeer = summary(
+      [
+        bucket({
+          provider: "codex",
+          sourcePath: "/b/.codex",
+          costUsd: 0,
+          records: 0,
+          unpricedRecords: 0,
+        }),
+      ],
+      [{ provider: "codex", hostId: "remote", homePath: "/b/.codex" }],
+    );
+
+    const merged = mergeUsage(
+      [
+        { ...environment("env-linked", linkedSummary), isConnected: true },
+        { ...environment("env-offline-linked", offlineNewerLinkedSummary), isConnected: false },
+        { ...environment("env-newer-unlinked", newerUnlinkedSummary), isConnected: true },
+        environment("env-legacy", legacyPeer),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    // Spend provenance (40% reported / 60% estimated of priced USD) stays independent of unpriced record share (20%).
+    expect(merged.costQuality.unpricedShare).toBeCloseTo(0.2, 5);
+    expect(merged.costQuality.providerReportedShare).toBeCloseTo(0.4, 5);
+    expect(merged.costQuality.modelPricedShare).toBeCloseTo(0.6, 5);
+    expect(merged.partialProjectAttribution).toBe(true);
+    expect(merged.partialSessionAttribution).toBe(true);
+    // Disjoint worktrees across Claude (/work/alpha-wt-b) and omp (/work/alpha-wt-a) union to 2.
+    expect(merged.projects[0]?.worktreeCount).toBe(2);
+    // Connected linked copy wins over newer offline copy, and T3 title beats owner's unlinked CLI title.
+    expect(merged.topSessions[0]).toMatchObject({
+      sessionId: "sess-shared",
+      t3ThreadId: "thread-linked-1",
+      title: "Linked Thread Title",
+      environmentId: "env-linked" as EnvironmentId,
+    });
   });
 });

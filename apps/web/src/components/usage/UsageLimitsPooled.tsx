@@ -45,6 +45,30 @@ import {
   formatResetsIn,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
+// fork: Risk-tiered semantic styling shared with Overview Quota Strip and HUD Quota Card.
+import { quotaRiskTone, type UsageRiskTone } from "~/fork/usage/usageDashboard.logic";
+
+function riskToneTextClass(tone: UsageRiskTone): string {
+  switch (tone) {
+    case "error":
+      return "text-error-foreground";
+    case "warning":
+      return "text-warning-foreground";
+    case "normal":
+      return "text-success-foreground";
+  }
+}
+
+function riskToneBarColor(tone: UsageRiskTone): string {
+  switch (tone) {
+    case "error":
+      return "var(--error)";
+    case "warning":
+      return "var(--warning)";
+    case "normal":
+      return "var(--success)";
+  }
+}
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -567,7 +591,12 @@ function PoolBar({
               window={member.window}
               reset={restores.get(member.account.key)}
               refillPercent={member.refillPercent}
-              color={normalizeProviderAccentColor(member.account.accentColor) ?? color}
+              color={
+                // fork: Risk-tiered semantic bar colors (green / amber / red), falling back to accent/driver color if needed.
+                riskToneBarColor(quotaRiskTone(remainingPercent(member.window))) ||
+                normalizeProviderAccentColor(member.account.accentColor) ||
+                color
+              }
               now={now}
               index={position + 1}
               showAccountName={pool.columns.length > 1}
@@ -604,15 +633,30 @@ function PoolWindowCard({
   readonly label?: string | null | undefined;
   readonly description?: string | undefined;
 }) {
+  const gt = useGT();
+  const m = useMessages();
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
+  // fork: Align risk tone + reset timestamp/countdown to the same reset event as the refill indicator.
+  const tone = quotaRiskTone(pool.remainingPercent);
+  const primaryReset = nextRefill ?? pool.resets[0];
+  const resetWindow = primaryReset?.member.window ?? pool.members[0]?.window;
+  const resetsAt = resetWindow?.resetsAt
+    ? formatUpcomingTimestamp(resetWindow.resetsAt, timestampFormat, now, undefined, m)
+    : null;
+  const resetsIn = resetWindow ? formatResetsIn(resetWindow, now, m, "in") : null;
   return (
-    <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
+    <div
+      data-testid="usage-limit-window-card"
+      data-tone={tone}
+      className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[13rem_minmax(0,1fr)]"
+    >
       <div className="flex flex-col gap-1">
         {label !== null ? (
           <span className="text-sm font-medium text-foreground">{label ?? pool.label}</span>
         ) : null}
         <span className="flex items-baseline gap-2">
-          <span className="text-3xl font-semibold text-foreground tabular-nums">
+          <span className={cn("text-3xl font-semibold tabular-nums", riskToneTextClass(tone))}>
             {pool.remainingPercent}%
           </span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
@@ -622,6 +666,18 @@ function PoolWindowCard({
             {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
           </span>
         </span>
+        {resetsAt || resetsIn ? (
+          <span
+            data-testid="usage-limit-reset-info"
+            className="text-2xs text-muted-foreground tabular-nums"
+          >
+            {resetsAt && resetsIn
+              ? gt("Resets {resetsAt} · {resetsIn}", { resetsAt, resetsIn })
+              : resetsAt
+                ? gt("Resets {resetsAt}", { resetsAt })
+                : resetsIn}
+          </span>
+        ) : null}
         {nextRefill && pool.columns.length > 1 ? (
           <span className="text-xs font-medium text-foreground tabular-nums">
             ↻ +{nextRefill.restoresPercent}%
@@ -641,9 +697,17 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
   const m = useMessages();
+  // fork: Surface account plan badge(s) directly in the provider pool heading.
+  const plans = [
+    ...new Set(
+      pool.accounts
+        .map((account) => account.plan?.trim())
+        .filter((plan): plan is string => Boolean(plan)),
+    ),
+  ];
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+      <h2 className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground">
         <ProviderInstanceIcon
           driverKind={pool.driver}
           displayName={label}
@@ -651,7 +715,16 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           className="size-5"
           iconClassName="size-4 text-foreground/80"
         />
-        {label}
+        <span>{label}</span>
+        {plans.map((plan) => (
+          <span
+            key={plan}
+            data-testid="usage-limit-plan-badge"
+            className="rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground"
+          >
+            {plan}
+          </span>
+        ))}
       </h2>
       {windows.map((window) => {
         const details =

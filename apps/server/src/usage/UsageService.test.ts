@@ -526,6 +526,66 @@ describe("Codex usage history", () => {
 });
 
 describe("UsageService", () => {
+  it.effect("filters cached projects and retains late session titles after restart", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-08-02T12:00:00Z"));
+      const { home, settings, transcript } = yield* setup;
+      const repo = NodePath.join(home, "repo");
+      const other = NodePath.join(home, "other");
+      const contents = [
+        { sessionId: "main-session", cwd: repo, output: 3 },
+        { sessionId: "other-session", cwd: other, output: 7 },
+      ].flatMap(({ sessionId, cwd, output }) => [
+        encodeUnknownJsonString({
+          type: "assistant",
+          timestamp: "2026-08-01T10:00:00Z",
+          sessionId,
+          cwd,
+          costUSD: output / 10,
+          message: { id: sessionId, model: "claude-fable-5", usage: { output_tokens: output } },
+        }),
+        encodeUnknownJsonString({ type: "ai-title", sessionId, aiTitle: `Title: ${sessionId}` }),
+      ]);
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, contents.join("\n")));
+
+      yield* Effect.gen(function* () {
+        const first = yield* UsageService.make;
+        const unfiltered = yield* first.readSummary(WINDOW);
+        assert.strictEqual(unfiltered.topSessions?.length, 2);
+        yield* first.awaitPersisted;
+        yield* Effect.promise(() => NodeFSP.unlink(transcript));
+
+        const restarted = yield* UsageService.make;
+        const [mainSummary, otherSummary] = yield* Effect.all(
+          [
+            restarted.readSummary({ ...WINDOW, projectFilter: { projectKey: `path:${repo}` } }),
+            restarted.readSummary({ ...WINDOW, projectFilter: { projectKey: `path:${other}` } }),
+          ],
+          { concurrency: 2 },
+        );
+        assert.strictEqual(mainSummary.projectFilter?.projectKey, `path:${repo}`);
+        assert.deepStrictEqual(
+          mainSummary.buckets.map((bucket) => bucket.totals.outputTokens),
+          [3],
+        );
+        assert.deepStrictEqual(
+          otherSummary.buckets.map((bucket) => bucket.totals.outputTokens),
+          [7],
+        );
+        assert.strictEqual(
+          mainSummary.sources.find((src) => src.fingerprint.provider === "claude")
+            ?.distinctSessions,
+          1,
+        );
+        assert.deepStrictEqual(
+          mainSummary.topSessions?.map(({ title, cwd }) => [title, cwd]),
+          [["Title: main-session", repo]],
+        );
+        assert.strictEqual(otherSummary.projects?.[0]?.workspaceRoot, other);
+      }).pipe(Effect.provide(layerService({ home, settings, prefix: "project-attribution" })));
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps pricing metadata paired with the rates used during a concurrent refresh", () =>
     Effect.gen(function* () {
       const { home, settings } = yield* setup;
@@ -3580,7 +3640,7 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v17.json");
+          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v18.json");
           assert.deepStrictEqual(
             (yield* Effect.promise(() => NodeFSP.readdir(stateDir)))
               .filter((name) => name.startsWith("usage-scan-cache"))

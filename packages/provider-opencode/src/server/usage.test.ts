@@ -100,6 +100,52 @@ const recordedForkDatabase = Effect.fn(function* (
 });
 
 describe("readOpenCodeUsage", () => {
+  it.effect(
+    "attaches session metadata from both schemas and refreshes it without new messages",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "usage-reader-metadata-" });
+        const db = yield* openDatabase(path.join(dir, "opencode.db"));
+        yield* db.unsafe(
+          "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER, time_updated INTEGER)",
+        );
+        for (const [table, id, cwd, title] of [
+          ["session", "legacy", "/work/old", "Legacy session"],
+          ["session_v2", "current", "/work/new", "Current session"],
+        ] as const) {
+          yield* db.unsafe(`CREATE TABLE ${table} (id TEXT, directory TEXT, title TEXT)`);
+          yield* db.unsafe(`INSERT INTO ${table} VALUES (?, ?, ?)`, [id, cwd, title]);
+          yield* db.unsafe("INSERT INTO message VALUES (?, ?, ?, 1000, 1000)", [
+            `msg-${id}`,
+            id,
+            JSON.stringify({ role: "assistant", modelID: "gpt", tokens: { input: 1 } }),
+          ]);
+        }
+        const first = (yield* readOpenCodeUsage(dir, 0)).files[0];
+        assert.deepStrictEqual(
+          first?.records.map((record) => [record.sessionId, record.cwd]),
+          [
+            ["legacy", "/work/old"],
+            ["current", "/work/new"],
+          ],
+        );
+        assert.deepStrictEqual(
+          first?.sessionTitles,
+          new Map([
+            ["legacy", "Legacy session"],
+            ["current", "Current session"],
+          ]),
+        );
+        yield* db.unsafe("UPDATE session_v2 SET title = 'Renamed session' WHERE id = 'current'");
+        assert.strictEqual(
+          (yield* readOpenCodeUsage(dir, 0)).files[0]?.sessionTitles?.get("current"),
+          "Renamed session",
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("bounds raw history allocations while counting every eligible message once", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -590,6 +636,7 @@ describe("readOpenCodeUsage", () => {
             sessionID: "session-1",
             role: "assistant",
             modelID: "claude-sonnet-4-5",
+            path: { cwd: "/work/legacy" },
             time: { created: sinceMs + 1000 },
             tokens: { input: 100, output: 20 },
           }),
@@ -614,6 +661,7 @@ describe("readOpenCodeUsage", () => {
         result.files.flatMap((file) => file.records).map((record) => record.dedupeKey),
         ["opencode:msg-new"],
       );
+      assert.strictEqual(result.files[0]?.records[0]?.cwd, "/work/legacy");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

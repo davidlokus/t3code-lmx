@@ -18,7 +18,12 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { OmpSettings } from "../settings.ts";
 import { ompLaunchSessionDir } from "./dialect.ts";
 
-const OmpScanState = Schema.Struct({ sessionId: Schema.mutableKey(Schema.String) });
+const OmpScanState = Schema.Struct({
+  sessionId: Schema.mutableKey(Schema.String),
+  cwd: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  pendingTitle: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  titles: Schema.mutableKey(Schema.optionalKey(Schema.Record(Schema.String, Schema.String))),
+});
 const Usage = Schema.Struct({
   input: Schema.optional(Schema.Unknown),
   output: Schema.optional(Schema.Unknown),
@@ -35,7 +40,12 @@ const Model = {
   responseModel: Schema.optional(Schema.NonEmptyString),
 };
 const Entry = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("session"), id: Schema.NonEmptyString }),
+  Schema.Struct({
+    type: Schema.Literal("session"),
+    id: Schema.NonEmptyString,
+    cwd: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({ type: Schema.Literal("title"), title: Schema.String }),
   Schema.Struct({
     ...Identity,
     type: Schema.Literal("message"),
@@ -66,8 +76,22 @@ function parseRecord(parsed: unknown, state: typeof OmpScanState.Type): readonly
   const decoded = decodeEntry(parsed);
   if (Option.isNone(decoded)) return [];
   const entry = decoded.value;
+  if (entry.type === "title") {
+    const title = entry.title.trim();
+    if (title) {
+      if (state.sessionId) state.titles = { ...state.titles, [state.sessionId]: title };
+      else state.pendingTitle = title;
+    }
+    return [];
+  }
   if (entry.type === "session") {
     state.sessionId = entry.id;
+    if (typeof entry.cwd === "string" && entry.cwd.trim()) state.cwd = entry.cwd.trim();
+    else delete state.cwd;
+    if (state.pendingTitle !== undefined) {
+      state.titles = { ...state.titles, [entry.id]: state.pendingTitle };
+      delete state.pendingTitle;
+    }
     return [];
   }
   const timestampMs = parseTimestampMs(entry.timestamp);
@@ -96,6 +120,7 @@ function parseRecord(parsed: unknown, state: typeof OmpScanState.Type): readonly
       model,
       ...(rateModel === undefined ? {} : { rateModel }),
       sessionId: state.sessionId,
+      ...(state.cwd === undefined ? {} : { cwd: state.cwd }),
       totals,
       reportedCostUsd,
       speed: "standard",
@@ -108,6 +133,8 @@ export const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
   selectFields: {
     type: true,
     id: true,
+    cwd: true,
+    title: true,
     timestamp: true,
     provider: true,
     model: true,
@@ -115,7 +142,7 @@ export const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
     usage: true,
     message: { role: true, provider: true, model: true, responseModel: true, usage: true },
   },
-  usageMarkers: ['"usage"', '"session"'],
+  usageMarkers: ['"usage"', '"session"', '"title"'],
   parseLine: (line, state) => {
     let parsed: unknown;
     try {
@@ -126,6 +153,7 @@ export const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
     return parseRecord(parsed, state);
   },
   parseProjected: parseRecord,
+  readSessionTitles: (state) => new Map(Object.entries(state.titles ?? {})),
   state: { initial: () => ({ sessionId: "" }), schema: OmpScanState },
 };
 

@@ -24,6 +24,7 @@ export interface UsageRecord {
   readonly speed: UsageSpeed;
   readonly unresolvedServiceTierTurnId?: string;
   readonly dedupeKey: string | null;
+  readonly cwd?: string;
 }
 
 export const EMPTY_TOTALS: UsageTokenTotals = {
@@ -64,6 +65,7 @@ export interface TranscriptUsageFormat<State> {
   parseProjected(projected: unknown, state: State): readonly UsageRecord[];
   /** Timestamps of malformed or inconsistent usage records, including skipped records. */
   readMalformedRecords?(state: State): readonly number[];
+  readSessionTitles?(state: State): ReadonlyMap<string, string>;
   /**
    * Present for formats whose records depend on earlier lines. The state at a
    * resume point is persisted in the scan cache through `schema`, so a grown
@@ -92,7 +94,11 @@ export interface ProviderUsageScan {
   readonly status?: UsageSource["status"];
   readonly message?: string;
   readonly files:
-    | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
+    | readonly {
+        readonly path: string;
+        readonly records: readonly UsageRecord[];
+        readonly sessionTitles?: ReadonlyMap<string, string>;
+      }[]
     | null;
   readonly refreshing?: true;
 }

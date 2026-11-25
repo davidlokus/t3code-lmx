@@ -1,4 +1,4 @@
-<!-- reviewed-through: bc15649e28 (2026-11-24) -->
+<!-- reviewed-through: 95913d0502 (2026-11-24) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -76,3 +76,19 @@
 - **铁证**：PR #11（`82588d0e53`）与 PR #12（`bc15649e28`）在 `Fork CI`（`ubuntu-latest`）均一次绿灯通过。
 - **代码守卫**：`.agents/skills/t3lab-dev/references/handoff.md`、`.agents/skills/t3lab-dev/references/fork-gates.md`、`packages/shared/src/forkIdentity.guard.test.ts`。
 - **Seen**：2（2026-11-23–24，PR #11 与 PR #12）
+
+## 9. 同大版本扩展可选协议字段必须覆盖混合旧服、失败态与缓存版本测试
+
+- **规则**：① 保持 `USAGE_CONTRACT_VERSION` 等协议大版本不变而新增可选过滤/窗口字段时，前端必须基于**服务端回显字段**与去重后**实际贡献源**（`contributingEnvironments`）判断生效范围，在范围失败或全部被旧服排除时绝不渲染伪 `$0` / 预算 / 导出，且当 `AsyncResult` 失败保留旧 `previousSuccess` 时用按环境+时间锚点钉扎避免重查震荡。② 升级服务端持久化缓存版本号（如 `v17 → v18`）时，必须全局搜索旧文件名并同步更新所有升级测试断言。
+- **原因**：旧版服务端会静默忽略新可选字段（`projectFilter`、精确 MTD 边界）或拒绝 >24h 的 DST `Today` 请求；同时 React `AsyncResult.getOrElse` 在失败态仍返回上一次成功缓存，若直接按其覆盖降级标记会导致双查询键无限重渲染。
+- **铁证**：`feat/usage-dashboard` 在 5 轮跨模型只读 Review 中连续暴露混合舰队 `projectFilter` 污染、失败态伪 `$0`、以及回退/升级期间双键震荡问题；首轮 `check:changed` 亦检出 `UsageService.test.ts:3643` 硬编码 `usage-scan-cache-v17.json` 导致 10 个升级用例失败。
+- **代码守卫**：`apps/web/src/state/usage.test.ts`、`apps/web/src/fork/usage/usageDashboard.browser.test.tsx`、`apps/server/src/usage/UsageService.test.ts`。
+- **Seen**：1（2026-11-24，`feat/usage-dashboard`）
+
+## 10. macOS 路径探测防 TCC 弹窗须全祖先最外层 `readLink` 且按次扫描隔离
+
+- **规则**：在 macOS 服务端对用户工作目录执行 `.git` 等文件系统探测时，不能仅做词法前缀排除或固定深度截断，也不能跨扫描持久缓存“非符号链接”负结果；必须从文件系统根向外到内逐级调用 `readLink`（仅放行 `/var -> private/var` 与 `/tmp -> private/tmp`），超出上限即 fail-closed，并将缓存作用域限定在单次扫描内。
+- **原因**：词法路径检查无法拦住指向 `~/Documents` 等 TCC 受保护目录的符号链接别名；复用 12 层 Git 查找深度会漏检更高层别名，而进程级负缓存会在目录被替换为符号链接后失效，使 `stat` 穿透触发系统弹窗或卡死。
+- **铁证**：`feat/usage-dashboard` 跨模型只读 Review 通过注入式文件系统先后验证了 12 层以上深路径别名穿透与二次扫描目录替换穿透，改为全祖先最外层校验 + 按次扫描缓存后彻底闭环。
+- **代码守卫**：`apps/server/src/usage/usageProjectResolution.test.ts`（覆盖 16 层深符号链接拦截及二次扫描目录替换重校验）。
+- **Seen**：1（2026-11-24，`feat/usage-dashboard`）
