@@ -19,7 +19,10 @@ jobs:
     name: Fork checks
     if: github.repository == 'davidlokus/t3code-lmx'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
+    env:
+      # Large upstream sync PRs run 500+ Vitest files on 4-core ubuntu-latest, exceeding the default 900s step timeout.
+      CHECK_CHANGED_TIMEOUT: "2700"
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
