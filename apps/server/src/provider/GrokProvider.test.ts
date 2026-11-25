@@ -493,11 +493,17 @@ describe("Grok usage limits", () => {
       ],
     ] as const) {
       const response = { config: { currentPeriod } };
-      expect
-        .soft(grokUsageResponseToLimits(response, checkedAt).windows)
-        .toEqual([
-          { id: "subscription", kind, label, usedPercent: 0, resetsAt, windowDurationMins },
-        ]);
+      expect.soft(grokUsageResponseToLimits(response, checkedAt).windows).toEqual([
+        {
+          id: "subscription",
+          kind,
+          label,
+          category: "plan",
+          usedPercent: 0,
+          resetsAt,
+          windowDurationMins,
+        },
+      ]);
     }
   });
 
@@ -541,7 +547,15 @@ describe("Grok usage limits", () => {
     }
     expect(
       grokUsageResponseToLimits({ config: { creditUsagePercent: 0 } }, checkedAt).windows,
-    ).toEqual([{ id: "subscription", kind: "other", label: "Subscription", usedPercent: 0 }]);
+    ).toEqual([
+      {
+        id: "subscription",
+        kind: "other",
+        label: "Subscription",
+        category: "plan",
+        usedPercent: 0,
+      },
+    ]);
     expect(
       grokUsageResponseToLimits(
         {
@@ -552,7 +566,9 @@ describe("Grok usage limits", () => {
         },
         checkedAt,
       ).windows,
-    ).toEqual([{ id: "subscription", kind: "monthly", label: "Monthly", usedPercent: 100 }]);
+    ).toEqual([
+      { id: "subscription", kind: "monthly", label: "Monthly", category: "plan", usedPercent: 100 },
+    ]);
   });
 
   it("measures the window from the reported period bounds", () => {
@@ -571,6 +587,7 @@ describe("Grok usage limits", () => {
       id: "subscription",
       kind: "weekly",
       label: "Weekly",
+      category: "plan",
       usedPercent: 4,
       resetsAt: "2026-10-21T20:51:37.352Z",
       windowDurationMins: 7 * 24 * 60,

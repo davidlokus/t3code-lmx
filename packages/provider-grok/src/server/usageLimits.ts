@@ -26,6 +26,7 @@ const GrokCredentials = Schema.Record(
 const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(GrokCredentials));
 export const GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 export const GrokUsageResponse = Schema.Struct({
+  subscription_tier_display: Schema.optional(Schema.NullOr(Schema.String)),
   config: Schema.optional(
     Schema.Struct({
       creditUsagePercent: Schema.optional(Schema.Number),
@@ -66,6 +67,7 @@ export function grokUsageResponseToLimits(
   response: typeof GrokUsageResponse.Type,
   checkedAt: string,
 ) {
+  const planTier = response.subscription_tier_display?.trim() || undefined;
   const period = response.config?.currentPeriod;
   const periodType = period?.type?.replace(/^USAGE_PERIOD_TYPE_/, "");
   const kind = periodType === "WEEKLY" ? "weekly" : periodType === "MONTHLY" ? "monthly" : "other";
@@ -78,18 +80,19 @@ export function grokUsageResponseToLimits(
     usedPercent = 0;
   }
   if (usedPercent === undefined || !Number.isFinite(usedPercent)) {
-    return makeUsageLimits({ checkedAt, windows: [] });
+    return makeUsageLimits({ checkedAt, windows: [], planTier });
   }
   const reset = period?.end ? DateTime.make(period.end) : Option.none();
   const window: ServerProviderUsageWindow = {
     id: "subscription",
     kind,
     label: kind === "weekly" ? "Weekly" : kind === "monthly" ? "Monthly" : "Subscription",
+    category: "plan",
     usedPercent: clampPercent(usedPercent),
     ...(Option.isSome(reset) ? { resetsAt: DateTime.formatIso(reset.value) } : {}),
     ...(windowDurationMins > 0 ? { windowDurationMins } : {}),
   };
-  return makeUsageLimits({ checkedAt, windows: [window] });
+  return makeUsageLimits({ checkedAt, windows: [window], planTier });
 }
 
 const readGrokCredential = Effect.fn("readGrokCredential")(function* (

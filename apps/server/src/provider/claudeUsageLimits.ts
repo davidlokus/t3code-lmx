@@ -26,6 +26,13 @@ const WINDOWS: Readonly<
   seven_day: { kind: "weekly", label: "Weekly", windowDurationMins: WEEK_MINS },
 };
 
+const MONTHLY_SPEND_WINDOW = {
+  id: "monthly_spend",
+  kind: "monthly",
+  label: "Monthly spend",
+  category: "overage",
+} as const;
+
 /** Reuse probed display names for streamed bucket types so mid-turn updates target the same row. */
 const OVERAGE_INCLUDED_EVENT_TYPE = "seven_day_overage_included";
 
@@ -72,47 +79,101 @@ function scopedWindow(
     id: scopedWindowId(displayName),
     kind: "weekly",
     label: `Weekly · ${displayName}`,
+    category: "plan",
+    scopeLabel: displayName,
     windowDurationMins: WEEK_MINS,
     usedPercent: clampPercent(usedPercent),
     ...(resetsAt ? { resetsAt } : {}),
   };
 }
 
-function percentFromAmounts(used: number | null | undefined, limit: number | null | undefined) {
+function makeSpendWindow(
+  used: number | null | undefined,
+  limit: number | null | undefined,
+  unit: string,
+  scale: number,
+): ServerProviderUsageWindow | undefined {
   if (
     typeof used !== "number" ||
     typeof limit !== "number" ||
     !Number.isFinite(used) ||
     !Number.isFinite(limit) ||
     used < 0 ||
-    limit <= 0
+    limit <= 0 ||
+    !Number.isFinite(scale)
   ) {
     return undefined;
   }
-  const percent = (used / limit) * 100;
-  return Number.isFinite(percent) ? clampPercent(percent) : undefined;
+  const limitAmount = limit / scale;
+  if (limitAmount === 0) return undefined;
+  return {
+    ...MONTHLY_SPEND_WINDOW,
+    usedPercent: Math.min(1, used / limit) * 100,
+    usedAmount: used / scale,
+    limitAmount,
+    remainingAmount: Math.max(0, limit - used) / scale,
+    unit,
+  };
 }
 
-function readSpendPercent(rateLimits: NonNullable<SDKControlGetUsageResponse["rate_limits"]>) {
-  const spend = Option.getOrUndefined(
-    decodeSpendBudget((rateLimits as { readonly spend?: unknown }).spend),
-  );
+function readSpendWindow(rateLimits: NonNullable<SDKControlGetUsageResponse["rate_limits"]>) {
+  const spend =
+    "spend" in rateLimits ? Option.getOrUndefined(decodeSpendBudget(rateLimits.spend)) : undefined;
   // Minor-unit ratios require matching currency and scale; spend.percent is rounded.
-  if (
-    spend?.enabled &&
-    spend.used.currency.trim().length > 0 &&
-    spend.used.currency.trim() === spend.limit.currency.trim() &&
-    spend.used.exponent === spend.limit.exponent
-  ) {
-    const percent = percentFromAmounts(spend.used.amount_minor, spend.limit.amount_minor);
-    if (percent !== undefined) return percent;
+  if (spend?.enabled) {
+    const currency = spend.used.currency.trim().toUpperCase();
+    if (
+      currency &&
+      currency === spend.limit.currency.trim().toUpperCase() &&
+      spend.used.exponent === spend.limit.exponent
+    ) {
+      const window = makeSpendWindow(
+        spend.used.amount_minor,
+        spend.limit.amount_minor,
+        currency,
+        10 ** spend.used.exponent,
+      );
+      if (window) return window;
+    }
   }
 
   const extra = rateLimits.extra_usage;
   if (extra?.is_enabled !== true) return undefined;
-  const percent = percentFromAmounts(extra.used_credits, extra.monthly_limit) ?? extra.utilization;
+  const currency = typeof extra.currency === "string" ? extra.currency.trim().toUpperCase() : "";
+  const decimalPlaces = "decimal_places" in extra ? extra.decimal_places : undefined;
+  const hasExplicitDecimals =
+    typeof decimalPlaces === "number" && Number.isInteger(decimalPlaces) && decimalPlaces >= 0;
+  const omittedDecimals = decimalPlaces === undefined || decimalPlaces === null;
+  const currencyScale = currency
+    ? hasExplicitDecimals
+      ? 10 ** decimalPlaces
+      : omittedDecimals && currency === "USD"
+        ? 100
+        : undefined
+    : undefined;
+  const window =
+    currency && currencyScale === undefined
+      ? undefined
+      : makeSpendWindow(
+          extra.used_credits,
+          extra.monthly_limit,
+          currencyScale === undefined ? "credits" : currency,
+          currencyScale ?? 1,
+        );
+  if (window) return window;
+  const percent =
+    (currency && currencyScale === undefined
+      ? typeof extra.used_credits === "number" &&
+        typeof extra.monthly_limit === "number" &&
+        Number.isFinite(extra.used_credits) &&
+        Number.isFinite(extra.monthly_limit) &&
+        extra.used_credits >= 0 &&
+        extra.monthly_limit > 0
+        ? (extra.used_credits / extra.monthly_limit) * 100
+        : undefined
+      : undefined) ?? extra.utilization;
   return typeof percent === "number" && Number.isFinite(percent) && percent >= 0
-    ? clampPercent(percent)
+    ? { ...MONTHLY_SPEND_WINDOW, usedPercent: clampPercent(percent) }
     : undefined;
 }
 
@@ -158,6 +219,7 @@ function makeWindow(
   return {
     id,
     ...window,
+    category: "plan",
     usedPercent: clampPercent(usedPercent),
     ...(resetsAt ? { resetsAt } : {}),
   };
@@ -213,16 +275,9 @@ export function claudeUsageResponseToLimits(input: {
     );
     overageIncluded ??= entry.display_name;
   }
-  const spendPercent = readSpendPercent(response.rate_limits);
+  const spendWindow = readSpendWindow(response.rate_limits);
   const extra = response.rate_limits.extra_usage;
-  if (spendPercent !== undefined) {
-    windows.push({
-      id: "monthly_spend",
-      kind: "monthly",
-      label: "Monthly spend",
-      usedPercent: spendPercent,
-    });
-  }
+  if (spendWindow) windows.push(spendWindow);
   return {
     limits: {
       ...makeUsageLimits({ checkedAt, windows }),

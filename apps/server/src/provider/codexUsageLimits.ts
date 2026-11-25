@@ -22,9 +22,20 @@ export interface CodexRateLimitSnapshot {
   readonly rateLimitReachedType?: string | null;
   readonly primary?: CodexRateLimitWindow | null;
   readonly secondary?: CodexRateLimitWindow | null;
+  readonly credits?:
+    | {
+        readonly hasCredits: boolean;
+        readonly unlimited: boolean;
+        readonly balance?: string | null | undefined;
+      }
+    | null
+    | undefined;
+  readonly subscriptionActiveUntil?: string | number | null | undefined;
   readonly individualLimit?: {
     readonly remainingPercent: number;
     readonly resetsAt: number;
+    readonly used?: string | null;
+    readonly limit?: string | null;
   } | null;
 }
 
@@ -42,8 +53,91 @@ const MONTH_MINS = 30 * 24 * 60;
 
 function isoFromEpochSeconds(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
-  const dt = DateTime.make(value * 1000);
+  const millis = value * 1000;
+  if (millis > 8.64e15) return undefined;
+  const dt = DateTime.make(millis);
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
+}
+
+function parseFiniteDecimal(value: string | null | undefined): number | undefined {
+  const text = value?.trim();
+  if (!text || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return undefined;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function subscriptionExpiry(value: CodexRateLimitSnapshot["subscriptionActiveUntil"]) {
+  if (typeof value !== "string") return isoFromEpochSeconds(value);
+  const text = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const midnight = DateTime.make(`${text}T00:00:00Z`);
+    return Option.isSome(midnight) && DateTime.formatIso(midnight.value).startsWith(`${text}T`)
+      ? text
+      : undefined;
+  }
+  const date =
+    /^((?:\d{4}|[+-]\d{6})-\d{2}-\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.exec(
+      text,
+    )?.[1];
+  if (!date) return isoFromEpochSeconds(parseFiniteDecimal(text));
+  const midnight = DateTime.make(`${date}T00:00:00Z`);
+  // JS date parsing rolls impossible dates forward rather than rejecting them.
+  if (Option.isNone(midnight) || !DateTime.formatIso(midnight.value).startsWith(`${date}T`)) {
+    return undefined;
+  }
+  const expiry = DateTime.make(text);
+  return Option.isSome(expiry) ? DateTime.formatIso(expiry.value) : undefined;
+}
+
+function codexPlanTier(value: CodexRateLimitSnapshot["planType"]) {
+  const plan = value?.trim();
+  switch (plan?.toLowerCase()) {
+    case undefined:
+    case "":
+    case "unknown":
+      return undefined;
+    case "free":
+      return "Free";
+    case "go":
+      return "Go";
+    case "plus":
+      return "Plus";
+    case "pro":
+      return "Pro";
+    case "prolite":
+      return "Pro 100";
+    case "promax":
+      return "Pro 500";
+    case "self_serve_business_prolite":
+      return "Business Premium";
+    case "team":
+    case "business":
+    case "self_serve_business_usage_based":
+      return "Business";
+    case "ent26":
+    case "enterprise":
+    case "enterprise_cbp_automation":
+    case "enterprise_cbp_usage_based":
+      return "Enterprise";
+    default:
+      return plan;
+  }
+}
+
+// undefined means unmeasured; null means the provider explicitly reports no credits.
+function creditBalance(credits: CodexRateLimitSnapshot["credits"]) {
+  if (!credits || credits.unlimited) return undefined;
+  if (!credits.hasCredits) return null;
+  const balance = parseFiniteDecimal(credits.balance);
+  return balance === undefined ? undefined : Math.max(0, balance);
+}
+
+function usageBalances(
+  remaining: number | null | undefined,
+): ServerProviderUsageLimits["balances"] {
+  if (remaining === undefined) return undefined;
+  if (remaining === null) return [];
+  return [{ id: "codex-credits", label: "Credits", remaining, unit: "credits", kind: "credits" }];
 }
 
 function kindForDuration(mins: number): ServerProviderUsageWindow["kind"] {
@@ -78,6 +172,7 @@ function codexRateLimitsToWindows(
       id,
       kind,
       label: labelForKind(kind),
+      category: "plan",
       usedPercent: clampPercent(window.usedPercent),
       windowDurationMins,
       ...(resetsAt ? { resetsAt } : {}),
@@ -86,11 +181,22 @@ function codexRateLimitsToWindows(
   const individualLimit = snapshot.individualLimit;
   if (individualLimit && Number.isFinite(individualLimit.remainingPercent)) {
     const resetsAt = isoFromEpochSeconds(individualLimit.resetsAt);
+    const used = parseFiniteDecimal(individualLimit.used);
+    const limit = parseFiniteDecimal(individualLimit.limit);
     windows.push({
       id: "individual",
       kind: "monthly",
       label: "Monthly credit limit",
+      category: "balance",
       usedPercent: clampPercent(100 - individualLimit.remainingPercent),
+      ...(used !== undefined && used >= 0 && limit !== undefined && limit > 0
+        ? {
+            usedAmount: used,
+            limitAmount: limit,
+            remainingAmount: Math.max(0, limit - used),
+            unit: "credits",
+          }
+        : {}),
       ...(resetsAt ? { resetsAt } : {}),
     });
   }
@@ -123,11 +229,17 @@ export function codexRateLimitsToLimits(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
   const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const candidate = input.rateLimitsByLimitId?.codex ?? input.snapshot;
+  const snapshot = !candidate.limitId || candidate.limitId === "codex" ? candidate : undefined;
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,
-      windows,
+      windows: snapshot ? codexRateLimitsToWindows(snapshot) : [],
+      planTier: snapshot ? codexPlanTier(snapshot.planType) : undefined,
+      balances: snapshot ? usageBalances(creditBalance(snapshot.credits)) : undefined,
+      subscriptionExpiresAt: snapshot
+        ? subscriptionExpiry(snapshot.subscriptionActiveUntil)
+        : undefined,
     }),
     ...(resetCredits ? { resetCredits } : {}),
   };
@@ -137,6 +249,7 @@ export function codexRateLimitsToUpdate(
   snapshot: CodexRateLimitSnapshot,
   previous?: CodexRateLimitSnapshot,
 ): ProviderUsageLimitsUpdate | undefined {
+  if (snapshot.limitId && snapshot.limitId !== "codex") return undefined;
   const previousWindows = previous ? codexRateLimitsToWindows(previous) : [];
   // Token ticks repeat session-cached limits that may predate an account probe or reset.
   const windows = codexRateLimitsToWindows(snapshot).filter((window) => {
@@ -146,10 +259,33 @@ export function codexRateLimitsToUpdate(
       existing.kind !== window.kind ||
       existing.usedPercent !== window.usedPercent ||
       existing.resetsAt !== window.resetsAt ||
-      existing.windowDurationMins !== window.windowDurationMins
+      existing.windowDurationMins !== window.windowDurationMins ||
+      (window.usedAmount !== undefined &&
+        (existing.usedAmount !== window.usedAmount || existing.limitAmount !== window.limitAmount))
     );
   });
-  return windows.length > 0 ? { windows } : undefined;
+  const balance = creditBalance(snapshot.credits);
+  const balances =
+    balance !== undefined && balance !== creditBalance(previous?.credits)
+      ? usageBalances(balance)
+      : undefined;
+  const expiry = subscriptionExpiry(snapshot.subscriptionActiveUntil);
+  const subscriptionExpiresAt =
+    expiry !== undefined && expiry !== subscriptionExpiry(previous?.subscriptionActiveUntil)
+      ? expiry
+      : undefined;
+  if (windows.length === 0 && balances === undefined && subscriptionExpiresAt === undefined) {
+    return undefined;
+  }
+  const planTier = codexPlanTier(snapshot.planType);
+  return {
+    windows,
+    ...(planTier !== undefined && planTier !== codexPlanTier(previous?.planType)
+      ? { planTier }
+      : {}),
+    ...(balances !== undefined ? { balances } : {}),
+    ...(subscriptionExpiresAt !== undefined ? { subscriptionExpiresAt } : {}),
+  };
 }
 
 export function codexRateLimitsFailureMessage(error: CodexErrors.CodexAppServerError): string {
@@ -183,6 +319,10 @@ export function mergeCodexRateLimits(
     ...(update.primary !== undefined ? { primary: update.primary } : {}),
     ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
     ...(update.individualLimit !== undefined ? { individualLimit: update.individualLimit } : {}),
+    ...(update.credits !== undefined ? { credits: update.credits } : {}),
+    ...(update.subscriptionActiveUntil !== undefined
+      ? { subscriptionActiveUntil: update.subscriptionActiveUntil }
+      : {}),
   };
 }
 

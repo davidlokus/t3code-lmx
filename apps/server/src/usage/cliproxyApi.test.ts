@@ -56,7 +56,12 @@ function fixture(
       email?: string;
       disabled?: boolean;
       project_id?: string;
-      id_token?: { chatgpt_account_id: string; plan_type?: string; chatgpt_plan_type?: string };
+      id_token?: {
+        chatgpt_account_id: string;
+        plan_type?: string;
+        chatgpt_plan_type?: string;
+        chatgpt_subscription_active_until?: string | number;
+      };
     }>;
     upstream?: (request: RequestBody) => { status: number; body: unknown };
     cooldownStatus?: number;
@@ -290,6 +295,52 @@ describe("CLIProxyAPI built-in management API", () => {
           ["ChatGPT Free Subscription", "monthly"],
         ],
       );
+      expect(result.map((account) => account.usageLimits.planTier)).toEqual(["Plus", "Go", "Free"]);
+      expect(result[0]?.usageLimits).not.toHaveProperty("balances");
+    }),
+  );
+
+  it.effect("reads Codex balances and prefers the usage expiry to the token fallback", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: accounts.map((account) => ({
+          ...account,
+          id_token: { ...account.id_token, chatgpt_subscription_active_until: 1_784_500_000 },
+        })),
+        upstream: (request) => ({
+          status: 200,
+          body: request.url?.endsWith("/rate-limit-reset-credits")
+            ? { credits: [] }
+            : {
+                rate_limit: { primary_window: { used_percent: 12 } },
+                credits:
+                  request.auth_index === "a"
+                    ? { has_credits: true, unlimited: false, balance: "12.5" }
+                    : { has_credits: false, unlimited: false },
+                ...(request.auth_index === "a"
+                  ? { subscription_active_until: "2026-08-01T00:00:00Z" }
+                  : {}),
+              },
+        }),
+      });
+      const result = yield* (yield* test.api).readAccounts(config);
+      expect(
+        result.map(({ usageLimits }) => [usageLimits.subscriptionExpiresAt, usageLimits.balances]),
+      ).toEqual([
+        [
+          "2026-08-01T00:00:00.000Z",
+          [
+            {
+              id: "codex-credits",
+              label: "Credits",
+              remaining: 12.5,
+              unit: "credits",
+              kind: "credits",
+            },
+          ],
+        ],
+        ["2026-07-19T22:26:40.000Z", []],
+      ]);
     }),
   );
 
@@ -420,6 +471,8 @@ describe("CLIProxyAPI built-in management API", () => {
           used_credits: 4_631,
           monthly_limit: 50_000,
           utilization: 9,
+          currency: "USD",
+          decimal_places: 2,
         },
       },
     },
@@ -433,11 +486,75 @@ describe("CLIProxyAPI built-in management API", () => {
         }),
       });
       const result = yield* (yield* test.api).readAccounts(config);
-      expect(
-        result[0]?.usageLimits.windows.map((window) => [window.id, window.usedPercent]),
-      ).toEqual([
-        ["five_hour", 10],
-        ["monthly_spend", expect.closeTo(9.262, 10)],
+      expect(result[0]?.usageLimits.windows).toMatchObject([
+        { id: "five_hour", category: "plan", usedPercent: 10 },
+        {
+          id: "monthly_spend",
+          category: "overage",
+          usedPercent: expect.closeTo(9.262, 10),
+          usedAmount: 46.31,
+          limitAmount: 500,
+          remainingAmount: 453.69,
+          unit: "USD",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("decodes numeric Codex credit balances and omitted unlimited flags", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [accounts[0]!],
+        upstream: (request) =>
+          request.url?.endsWith("rate-limit-reset-credits")
+            ? { status: 200, body: { credits: [] } }
+            : {
+                status: 200,
+                body: {
+                  plan_type: "plus",
+                  credits: { has_credits: true, balance: 42.5 },
+                  subscription_active_until: "2026-12-31",
+                  rate_limit: {
+                    primary_window: { used_percent: 20, limit_window_seconds: 18_000 },
+                  },
+                },
+              },
+      });
+      const [account] = yield* (yield* test.api).readAccounts(config);
+      expect(account?.usageLimits.planTier).toBe("Plus");
+      expect(account?.usageLimits.subscriptionExpiresAt).toBe("2026-12-31");
+      expect(account?.usageLimits.balances).toEqual([
+        {
+          id: "codex-credits",
+          label: "Credits",
+          remaining: 42.5,
+          unit: "credits",
+          kind: "credits",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("keeps Claude utilization without inferring amounts from currency alone", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ ...accounts[0]!, provider: "claude" }],
+        upstream: () => ({
+          status: 200,
+          body: {
+            extra_usage: { is_enabled: true, utilization: 9, currency: "USD", decimal_places: 2 },
+          },
+        }),
+      });
+      const [account] = yield* (yield* test.api).readAccounts(config);
+      expect(account?.usageLimits.windows).toEqual([
+        {
+          id: "monthly_spend",
+          kind: "monthly",
+          label: "Monthly spend",
+          category: "overage",
+          usedPercent: 9,
+        },
       ]);
     }),
   );
