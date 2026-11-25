@@ -98,18 +98,18 @@
    ```
    自动快进 `origin/main` 到目标提交，并从 `origin/lmx-lab` 新建 `sync/upstream-<YYYYMMDD>-<shortsha>` 分支与相邻 worktree，执行 `git merge --no-ff --no-commit <target>`。
 3. **解决冲突与必过门禁**（在同步 worktree 内执行）：
-   - `pnpm-lock.yaml` 若冲突，优先采用上游版本后跑 `vp i` 重新对齐 workspace 依赖。
+   - `pnpm-lock.yaml` 若冲突或自动合并后报 `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY`（残留旧 patch hash），先执行 `git checkout <target> -- pnpm-lock.yaml` 回到上游版本，再跑 `vp i` 重新对齐 workspace 依赖。
    - 保留 `AGENTS.md` 顶部 `FORK-OVERRIDE` 与所有 `// fork:` 钩子，同步更新下方「上游同步基线」表。
    - 必跑：`vp test run packages/shared/src/forkIdentity.guard.test.ts`、`vp run check:changed origin/lmx-lab`、`vp run i18n:check`；若改动 `apps/desktop/` 或 `forkIdentity.ts`，补跑 `vp test run apps/desktop/scripts/main-process-bundle.test.mjs`。
 4. **提 PR、过 `Fork CI` 并以真 Merge Commit 合入**：
-   - 提交合并、推送 `sync/upstream-*`、向 `davidlokus/t3code-lmx`（`--base lmx-lab`）开 PR 并等待 `Fork CI` 绿灯。
+   - 提交合并、推送 `sync/upstream-*`、向 `davidlokus/t3code-lmx`（`--base lmx-lab`）开 PR 并等待 `Fork CI` 绿灯（>80 文件或涉及 `vite.config.ts`/`pnpm-lock.yaml` 时 `Fork CI` 自动切分片并行模式并由 `Fork checks` 汇总门禁）。
    - **严禁 `--squash` 或 `rebase`**，必须使用真 merge commit 推进 `merge-base`：
      ```bash
      gh pr merge <n> --repo davidlokus/t3code-lmx --merge --match-head-commit <sha> --delete-branch
      ```
 5. **合并后巡检与清理**：
-   - 若本次同步新增了上游 `.github/workflows/*.yml`，立刻执行 `gh workflow disable <id> -R davidlokus/t3code-lmx` 禁用。
-   - 主目录快进 `lmx-lab` 并 `git worktree remove` 回收同步 worktree。
+   - 巡检 `gh api repos/davidlokus/t3code-lmx/actions/workflows`，禁用所有处于 `active` 状态的继承上游 workflow（仅保留 `Fork CI` 与 `Fork Release`）。
+   - 主目录快进 `main` 与 `lmx-lab`、执行 `vp i --frozen-lockfile`，并用 `git worktree remove` 回收同步 worktree。
 
 | 日期       | 上游基线     | 记录                                                                                               |
 | ---------- | ------------ | -------------------------------------------------------------------------------------------------- |
@@ -135,3 +135,4 @@
 | `chore/refine-agent-workflow`   | `fork/scripts/install-local-mac.sh`、`.agents/skills/t3lab-dev/{SKILL.md,references/{handoff,fork-gates}.md}`、`openspec/config.yaml`、`LESSONS.md`、`FORK.md`、`forkIdentity.guard.test.ts`                                                                                                                                                                                                                  | 沉淀 PR #9/#11/#12 复盘优化（Provider 真值抽样、Pre-Review 门禁、`hc run --bg` 修正、快循环→重门禁、worktree 一键本地试装脚本与 `LESSONS.md` 教训闭环）                                                                                                       |
 | `feat/usage-dashboard`          | `packages/contracts/src/usage.ts`、`packages/shared/src/usageMerge*`、`packages/provider-{core,omp,pi,opencode}/src/server/usage*`、`apps/server/src/usage/*`、`apps/server/src/provider/Drivers/{claude,codex}Usage*`、`apps/web/src/fork/usage/*`、`apps/web/src/state/usage*`、`apps/web/src/components/usage/{UsagePage,UsageModelDialog,UsageLimitsPooled}.tsx`、`i18n/translations/*.json`、`openspec/` | 重构 `/usage` 为双视角仪表盘（总览 + 额度）、服务端向后兼容项目/worktree/Top 50 会话归因与扫描缓存 v18、6 档周期与诚实环比、4 卡 KPI 与双口径软预算、堆叠柱/折线趋势图、4 视角明细（含 `Day/Hour` Tokens 修复、跨页项目筛选与 T3 会话直达）及全 10 语言本地化 |
 | `chore/epic-workflow`           | `fork/scripts/worktree-task.{mjs,test.mjs}`、`openspec/epics/README.md`、`openspec/{config.yaml,schemas/t3lab-light/templates/proposal.md}`、`.agents/skills/t3lab-dev/{SKILL.md,references/{handoff,fork-gates}.md}`、`FORK.md`、`LESSONS.md`、`forkIdentity.guard.test.ts`                                                                                                                                  | 升级多 PR / 并行 Wave Epic 编排协议（Epic Charter、L1+ 路由、异构 Author ≠ Reviewer 与全新只读 Reviewer、真实载荷真值表 + 四象限防御矩阵、并行低冲突与 Wave 级 Dogfood）并新增 worktree 生命周期脚本与隔离单测                                                |
+| #15 `sync/upstream-20261125`    | `.github/workflows/fork-ci.yml`、`McpAppFrame.browser.test.tsx`、`UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`、`UsageDashboard.tsx`、`SidebarThreadRow.tsx`                                                                                                                                                                                          | 升级 `Fork CI` 为 `fast` / `sharded`（Web ×3 + Server ×8）双模式并保持 `Fork checks` 门禁名，同步上游 512 个提交并补齐 `T3 Lab` 品牌、`omp` 槽位与 Pi `cost`/`reasoningOutputTokens` 跨目录测试断言                                                           |
