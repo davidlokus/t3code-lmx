@@ -128,6 +128,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         ".github/workflows/fork-release.yml",
         "fork/scripts/release-preflight.mjs",
         "fork/scripts/sync-upstream.mjs",
+        "fork/scripts/worktree-task.mjs",
         "fork/scripts/verify-mac-dmg.sh",
         "fork/scripts/install-local-mac.sh",
       ]) {
@@ -145,6 +146,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
     Effect.gen(function* () {
       for (const required of [
         "openspec/config.yaml",
+        "openspec/epics/README.md",
         "openspec/schemas/t3lab-light/schema.yaml",
         "openspec/schemas/t3lab-light/templates/proposal.md",
         "openspec/schemas/t3lab-light/templates/tasks.md",
@@ -164,6 +166,10 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
       assert.include(handoffDoc, "hc run --bg", "handoff runbook must use hc run --bg");
       assert.notInclude(handoffDoc, "hc spawn", "handoff runbook must not use removed hc spawn");
       assert.include(handoffDoc, "Pre-Review Gate");
+      assert.include(handoffDoc, "Author ≠ Reviewer");
+      assert.include(handoffDoc, "fresh read-only");
+      assert.include(handoffDoc, "4-Quadrant Defense Matrix");
+      assert.include(handoffDoc, "worktree-task.mjs");
 
       const viteConfig = yield* readRepoFile("vite.config.ts");
       assert.include(
@@ -184,6 +190,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
       const decision = ciChanges.decide(
         [
           "openspec/config.yaml",
+          "openspec/epics/usage-subscriptions.md",
           "openspec/changes/demo/proposal.md",
           ".agents/skills/t3lab-dev/SKILL.md",
         ],

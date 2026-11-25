@@ -4,12 +4,12 @@ Modeled after OpenSpec lifecycle hooks (`auto` = follow without asking; `suggest
 
 ## Lifecycle hooks
 
-| Hook                | Mode      | Action                                                                                                                                                                                                                                               |
-| ------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apply.before`      | `auto`    | Confirm dedicated branch + adjacent worktree (`../t3code-lmx-<topic>`), never directly on `lmx-lab` or `main`. Verify live `~/.t3/userdata` will not be touched.                                                                                     |
-| `apply.completed`   | `auto`    | Run the matching verification gates below (fast loop first, then one `check:changed` pass) and report three-part evidence: `Verified`, `Broken by hand` (or `N/A` for pure docs/config), and `Not tried`.                                            |
-| `archive.before`    | `suggest` | If the change adds, modifies, or removes a long-lived Fork divergence, update the 「分叉改动台账」 table in `FORK.md`.                                                                                                                               |
-| `archive.completed` | `auto`    | Explicitly audit whether rework, real-app regressions, or CI failures from this change produced 0–2 new lessons for `LESSONS.md` (advancing `reviewed-through`, or stating `No new lessons`). Promote repeated issues ≥ 2 to `FORK.md` + guard test. |
+| Hook                | Mode      | Action                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apply.before`      | `auto`    | Confirm dedicated branch + adjacent worktree (`../t3code-lmx-<topic>`, prefer `node fork/scripts/worktree-task.mjs open <topic>`), never directly on `lmx-lab` or `main`. Verify live `~/.t3/userdata` will not be touched.                                                                                                                     |
+| `apply.completed`   | `auto`    | Run the matching verification gates below (fast loop first, then one `check:changed` pass) and report three-part evidence: `Verified`, `Broken by hand` (or `N/A` for pure docs/config), and `Not tried`.                                                                                                                                       |
+| `archive.before`    | `suggest` | If the change adds, modifies, or removes a long-lived Fork divergence, update the 「分叉改动台账」 table in `FORK.md` (for parallel Wave PRs, defer until pre-merge rebase or the Wave closeout PR).                                                                                                                                            |
+| `archive.completed` | `auto`    | Explicitly audit whether rework, real-app regressions, or CI failures from this change produced 0–2 new lessons for `LESSONS.md` (advancing `reviewed-through`, or stating `No new lessons`). Promote repeated issues ≥ 2 to `FORK.md` + guard test. After merge, reclaim the worktree via `node fork/scripts/worktree-task.mjs close <topic>`. |
 
 ## Verification cadence (Fast Loop → Heavy Gate)
 
@@ -22,12 +22,13 @@ Modeled after OpenSpec lifecycle hooks (`auto` = follow without asking; `suggest
 
 ## Dogfood-first gate (UI & Provider experience changes)
 
-For user-facing UI or Provider changes where live feel matters (e.g. Sidebar, HUD, `omp` runtime behavior):
+For user-facing UI or Provider changes where live feel matters (e.g. Sidebar, HUD, `/usage`, `omp` runtime behavior):
 
 - Prefer building and locally overwrite-installing `/Applications/T3 Lab (Extend).app` **from the feature worktree first** via:
   ```bash
   bash fork/scripts/install-local-mac.sh <version>
   ```
+- **Wave-level grouping for multi-PR Epics**: do NOT rebuild a full macOS DMG for every pure-backend or intermediate adapter PR; aggregate live DMG Dogfood at **Wave closeout** (after the UI or end-to-end milestone in that Wave lands).
 - Let the user verify on real sessions, fix any real-world data gaps in the same branch, and only then archive OpenSpec, open the Fork PR, pass `Fork CI`, and squash-merge to `lmx-lab`.
 
 ## Verification gate matrix
