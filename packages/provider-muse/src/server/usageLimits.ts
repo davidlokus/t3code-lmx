@@ -16,6 +16,7 @@ export function museUsageToLimits(usage: MuseSubscriptionUsage): ProviderUsageLi
         id: "session",
         kind: "session",
         label: "Session",
+        category: "plan",
         usedPercent: clampPercent(usage.window.usedPercent),
         resetsAt: isoMillis(usage.window.resetsAtMs),
         windowDurationMins: usage.window.windowDurationMins,
@@ -24,12 +25,13 @@ export function museUsageToLimits(usage: MuseSubscriptionUsage): ProviderUsageLi
         id: "weekly",
         kind: "weekly",
         label: "Weekly",
+        category: "plan",
         usedPercent: clampPercent(usage.weekly.usedPercent),
         resetsAt: isoMillis(usage.weekly.resetsAtMs),
         windowDurationMins: 7 * 24 * 60,
       },
     ],
-    ...(tier ? { authLabel: tier } : {}),
+    ...(tier ? { authLabel: tier, planTier: tier } : {}),
   };
 }
 

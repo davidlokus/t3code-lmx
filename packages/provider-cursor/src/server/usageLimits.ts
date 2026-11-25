@@ -15,51 +15,150 @@ import {
 } from "@t3tools/provider-core/server/usageLimits";
 import { DEFAULT_CURSOR_API_ENDPOINT, exchangeCursorApiKey } from "./apiKey.ts";
 
+const OptionalNullableNumber = Schema.optional(Schema.NullOr(Schema.Number));
+const OptionalNullableString = Schema.optional(Schema.NullOr(Schema.String));
+
 const CursorUsageResponse = Schema.Struct({
-  billingCycleStart: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
-  billingCycleEnd: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+  billingCycleStart: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+  billingCycleEnd: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+  membershipType: OptionalNullableString,
   planUsage: Schema.optional(
-    Schema.Struct({
-      totalPercentUsed: Schema.optional(Schema.Number),
-      autoPercentUsed: Schema.optional(Schema.Number),
-      apiPercentUsed: Schema.optional(Schema.Number),
-    }),
+    Schema.NullOr(
+      Schema.Struct({
+        totalPercentUsed: OptionalNullableNumber,
+        autoPercentUsed: OptionalNullableNumber,
+        apiPercentUsed: OptionalNullableNumber,
+        limit: OptionalNullableNumber,
+        totalSpend: OptionalNullableNumber,
+        remaining: OptionalNullableNumber,
+        autoSpend: OptionalNullableNumber,
+        apiSpend: OptionalNullableNumber,
+        bonusSpend: OptionalNullableNumber,
+      }),
+    ),
+  ),
+  spendLimitUsage: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        enabled: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        limitType: OptionalNullableString,
+        individualLimit: OptionalNullableNumber,
+        individualUsed: OptionalNullableNumber,
+        individualRemaining: OptionalNullableNumber,
+        pooledLimit: OptionalNullableNumber,
+        pooledUsed: OptionalNullableNumber,
+        pooledRemaining: OptionalNullableNumber,
+      }),
+    ),
   ),
 });
+
+const PLAN_TIERS: Record<string, string> = {
+  pro: "Pro",
+  pro_plus: "Pro+",
+  ultra: "Ultra",
+  team: "Team",
+  enterprise: "Enterprise",
+};
+
+function nonNegativeCents(cents: number | null | undefined) {
+  return typeof cents === "number" && Number.isFinite(cents) && cents >= 0 ? cents : undefined;
+}
+
+function usdAmounts(
+  limit: number,
+  usedCents: number | null | undefined,
+  remainingCents: number | null | undefined,
+) {
+  const used = nonNegativeCents(usedCents);
+  const remaining = nonNegativeCents(remainingCents);
+  const usedAmount = used ?? (remaining === undefined ? undefined : Math.max(0, limit - remaining));
+  const remainingAmount = remaining ?? (used === undefined ? undefined : Math.max(0, limit - used));
+  return {
+    limitAmount: limit / 100,
+    ...(usedAmount === undefined ? {} : { usedAmount: usedAmount / 100 }),
+    ...(remainingAmount === undefined ? {} : { remainingAmount: remainingAmount / 100 }),
+    unit: "USD",
+  };
+}
 
 /** Cursor's dashboard percentages include bonus usage; spend / limit does not. */
 export function cursorUsageResponseToLimits(
   response: typeof CursorUsageResponse.Type,
   checkedAt: string,
 ) {
-  const reset = DateTime.make(Number(response.billingCycleEnd));
+  const cycleEnd = Number(response.billingCycleEnd);
+  const reset = DateTime.make(cycleEnd);
   const resetsAt =
-    Number(response.billingCycleEnd) > 0 && Option.isSome(reset)
-      ? DateTime.formatIso(reset.value)
-      : undefined;
+    cycleEnd > 0 && Option.isSome(reset) ? DateTime.formatIso(reset.value) : undefined;
   const cycleStart = Number(response.billingCycleStart);
   const windowDurationMins =
-    resetsAt && cycleStart > 0
-      ? Math.round((Number(response.billingCycleEnd) - cycleStart) / 60_000)
-      : 0;
+    resetsAt && cycleStart > 0 ? Math.round((cycleEnd - cycleStart) / 60_000) : 0;
+  const timing = {
+    ...(resetsAt ? { resetsAt } : {}),
+    ...(windowDurationMins > 0 ? { windowDurationMins } : {}),
+  };
   const windows: ServerProviderUsageWindow[] = [];
-  if (response.planUsage) {
+  const { planUsage, spendLimitUsage } = response;
+  if (planUsage) {
+    const planLimit = nonNegativeCents(planUsage.limit);
     for (const { id, label } of CURSOR_USAGE_WINDOWS) {
-      const usedPercent = response.planUsage[id];
-      if (usedPercent === undefined || !Number.isFinite(usedPercent)) continue;
+      const usedPercent = planUsage[id];
+      if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent)) continue;
+      const amounts =
+        id === "totalPercentUsed" && planLimit
+          ? usdAmounts(planLimit, planUsage.totalSpend, planUsage.remaining)
+          : undefined;
       windows.push({
         id,
         kind: "monthly",
         label,
+        category: "plan",
+        ...(id === "totalPercentUsed" ? {} : { scopeLabel: label }),
         usedPercent: clampPercent(usedPercent),
-        ...(resetsAt ? { resetsAt } : {}),
-        ...(windowDurationMins > 0 ? { windowDurationMins } : {}),
+        ...timing,
+        ...(amounts?.usedAmount === undefined ? {} : amounts),
       });
     }
   }
-  return windows.length > 0
-    ? makeUsageLimits({ checkedAt, windows })
-    : makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
+  if (spendLimitUsage && spendLimitUsage.enabled !== false) {
+    const individualLimit = nonNegativeCents(spendLimitUsage.individualLimit);
+    const usePooled =
+      !individualLimit && spendLimitUsage.limitType?.trim().toLowerCase() !== "individual";
+    const limit =
+      individualLimit || (usePooled ? nonNegativeCents(spendLimitUsage.pooledLimit) : undefined);
+    if (limit) {
+      const amounts = usdAmounts(
+        limit,
+        individualLimit ? spendLimitUsage.individualUsed : spendLimitUsage.pooledUsed,
+        individualLimit ? spendLimitUsage.individualRemaining : spendLimitUsage.pooledRemaining,
+      );
+      if (amounts.usedAmount !== undefined) {
+        const usedPercent = clampPercent((amounts.usedAmount / amounts.limitAmount) * 100);
+        windows.push({
+          id: "on_demand",
+          kind: "monthly",
+          label: individualLimit ? "On-demand" : "Team spend",
+          category: "overage",
+          usedPercent,
+          ...amounts,
+          ...timing,
+        });
+      }
+    }
+  }
+  if (windows.length === 0) {
+    return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
+  }
+  const membership = response.membershipType?.trim() || undefined;
+  const tierKey = membership?.toLowerCase();
+  return makeUsageLimits({
+    checkedAt,
+    windows,
+    planTier: tierKey && Object.hasOwn(PLAN_TIERS, tierKey) ? PLAN_TIERS[tierKey] : membership,
+    subscriptionExpiresAt:
+      windowDurationMins === 0 || windowDurationMins >= 28 * 24 * 60 ? resetsAt : undefined,
+  });
 }
 
 export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function* (

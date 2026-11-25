@@ -103,6 +103,7 @@ function iso(value: string | undefined): string | undefined {
 function quotaWindow(
   id: string,
   label: string,
+  family: string,
   quota: typeof Quota.Type,
   kind: ServerProviderUsageWindow["kind"] = "other",
   windowDurationMins?: number,
@@ -115,6 +116,8 @@ function quotaWindow(
     id,
     label,
     kind,
+    category: "plan",
+    scopeLabel: family,
     usedPercent: (1 - Math.max(0, Math.min(1, quota.remainingFraction))) * 100,
     ...(resetsAt ? { resetsAt } : {}),
     ...(windowDurationMins === undefined ? {} : { windowDurationMins }),
@@ -274,6 +277,7 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
       const window = quotaWindow(
         bucket.bucketId,
         `${family} · ${weekly ? "Weekly" : session ? "5-hour" : bucket.displayName?.trim() || "Quota"}`,
+        family,
         { ...bucket, resetTime: summaryResetTime(bucket, windowDurationMins, requestedAt) },
         weekly ? "weekly" : session ? "session" : "other",
         windowDurationMins,
@@ -305,6 +309,7 @@ function modelWindows(models: typeof Models.Type) {
       const window = quotaWindow(
         `${family.toLowerCase()}-${suffix}`,
         `${family} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
+        family,
         quota,
         suffix === "weekly" ? "weekly" : "other",
         suffix === "weekly" ? 7 * 24 * 60 : undefined,

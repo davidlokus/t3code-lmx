@@ -194,6 +194,8 @@ describe("Antigravity subscription limits", () => {
         id: "3p-5h",
         label: "Claude & GPT (shared) · 5-hour",
         kind: "session",
+        category: "plan",
+        scopeLabel: "Claude & GPT (shared)",
         usedPercent: 0,
         windowDurationMins: 300,
       });
@@ -201,6 +203,8 @@ describe("Antigravity subscription limits", () => {
         id: "3p-weekly",
         label: "Claude & GPT (shared) · Weekly",
         kind: "weekly",
+        category: "plan",
+        scopeLabel: "Claude & GPT (shared)",
         usedPercent: 0,
         windowDurationMins: 10080,
       });
@@ -385,6 +389,8 @@ describe("Antigravity subscription limits", () => {
           id: "3p-5h",
           label: "Claude & GPT (shared) · 5-hour",
           kind: "session",
+          category: "plan",
+          scopeLabel: "Claude & GPT (shared)",
           usedPercent: 50,
           windowDurationMins: 300,
           resetsAt: "2026-10-21T13:16:04.000Z",
@@ -393,6 +399,8 @@ describe("Antigravity subscription limits", () => {
           id: "3p-weekly",
           label: "Claude & GPT (shared) · Weekly",
           kind: "weekly",
+          category: "plan",
+          scopeLabel: "Claude & GPT (shared)",
           usedPercent: 0,
           windowDurationMins: 10080,
         },
@@ -550,10 +558,26 @@ describe("Antigravity subscription limits", () => {
       });
       const limits = yield* probe;
       const byId = new Map(limits.windows.map((window) => [window.id, window]));
-      expect(byId.get("gemini-weekly")?.label).toBe("Gemini · Weekly");
-      expect(byId.get("gemini-argon-wtu-weekly")?.label).toBe("Gemini 4 Argon · Weekly");
-      expect(byId.get("gemini-carbon-wtu-weekly")?.label).toBe("Gemini 4 Carbon · Weekly");
-      expect(byId.get("gemini-carbon-5h")?.label).toBe("Gemini Carbon · 5-hour");
+      expect(byId.get("gemini-weekly")).toMatchObject({
+        label: "Gemini · Weekly",
+        category: "plan",
+        scopeLabel: "Gemini",
+      });
+      expect(byId.get("gemini-argon-wtu-weekly")).toMatchObject({
+        label: "Gemini 4 Argon · Weekly",
+        category: "plan",
+        scopeLabel: "Gemini 4 Argon",
+      });
+      expect(byId.get("gemini-carbon-wtu-weekly")).toMatchObject({
+        label: "Gemini 4 Carbon · Weekly",
+        category: "plan",
+        scopeLabel: "Gemini 4 Carbon",
+      });
+      expect(byId.get("gemini-carbon-5h")).toMatchObject({
+        label: "Gemini Carbon · 5-hour",
+        category: "plan",
+        scopeLabel: "Gemini Carbon",
+      });
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
@@ -621,6 +645,10 @@ describe("Antigravity subscription limits", () => {
       });
       const limits = yield* probe;
       expect(limits.windows).toHaveLength(2);
+      expect(limits.windows).toMatchObject([
+        { id: "claude-quota", category: "plan", scopeLabel: "Claude" },
+        { id: "gemini-quota", category: "plan", scopeLabel: "Gemini" },
+      ]);
       expect(limits.windows.find((window) => window.id === "gemini-quota")?.usedPercent).toBe(40);
       expect(
         limits.windows.every(
@@ -646,6 +674,8 @@ describe("Antigravity subscription limits", () => {
           id: "gemini-5h",
           kind: "session",
           label: "Gemini · 5-hour",
+          category: "plan",
+          scopeLabel: "Gemini",
           usedPercent: 0,
           windowDurationMins: 300,
         },
