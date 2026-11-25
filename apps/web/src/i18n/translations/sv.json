@@ -7582,17 +7582,27 @@
   "d506ce8b0300061c": "Lokal OMP-cache",
   "1b4eb0f933274892": "Kimi Code",
   "0765824fc86ac61e": "Z.ai / BigModel",
+  "9a14df7925cee3fb": "OpenRouter",
+  "4e6abdb5add5cfb6": "GitHub Copilot",
+  "46633c0e6cb2fbf0": "Ollama Cloud",
+  "9b1b6ae7cdf64293": "OpenAI API",
   "4ca61d42a50cb12f": "Global (api.kimi.ai)",
   "991aa1a77c649a96": "Kina (api.kimi.com)",
   "7860eb75df697e4a": "Kina (open.bigmodel.cn)",
   "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Bearer-token (valfritt)",
   "84eb2878dc17d3eb": "Hanteringsnyckel",
+  "a8904d6e4f4801e5": "GitHub-token",
+  "83ea7ed7618a7166": "Admin-API-nyckel",
   "cad38c8893ab98e4": "API-nyckel",
   "7ac196c1e8175928": "Standard är hubbens värdnamn",
   "c3bb1b02f759513c": "Standard är lokal OMP-cache",
   "758fd105d61f060c": "Standard är Kimi Code",
   "a1c1d25aa3c703e4": "Standard är Z.ai",
+  "162835fc07090edc": "Standard: OpenRouter",
+  "c767e81d003f64fc": "Standard: GitHub Copilot",
+  "803a1242c1affaa2": "Standard: Ollama Cloud",
+  "dc8fbccb6cf7dd36": "Standard: OpenAI API",
   "4809220aa17c66b5": "Standard är slutpunktens värdnamn",
   "05d145b2961446c2": "Källtyp",
   "9440f5a5a9b8d8f9": "Region",
@@ -7601,6 +7611,10 @@
   "1007886c2c1a36de": "Lägg till lokal OMP-cache",
   "b0c43dd75ca0d6b7": "Lägg till Kimi Code-kvot",
   "2faf1206960bad9c": "Lägg till Z.ai / BigModel-kvot",
+  "60ff9604ff0e518b": "Lägg till OpenRouter-kvot",
+  "af6b3c1a4f4ec6ba": "Lägg till GitHub Copilot-kvot",
+  "b324f57e3c5edd17": "Lägg till Ollama Cloud-kvot",
+  "dfc5399c76b40d98": "Lägg till OpenAI API-kostnader",
   "432e85a50e2e7964": [
     "Visa kvoten för alla konton som hubben samlar, bredvid leverantörerna på",
     " ",
@@ -7647,9 +7661,46 @@
     },
     ". API-nyckeln stannar på den servern."
   ],
+  "53a884349cf1faca": [
+    "Läser OpenRouter-krediter, nyckelgränser och periodutgifter på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". API-nyckeln stannar på den servern."
+  ],
+  "fca0cd85d66686af": [
+    "Läser GitHub Copilot-kvotögonblicksbilder och överförbrukning på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Token stannar på den servern."
+  ],
+  "4e87fed14f3566fe": [
+    "Signerar skrivskyddade Ollama Cloud-saldoförfrågningar med den lokala Ed25519-nyckeln på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Den privata nyckeln lämnar aldrig den värden."
+  ],
+  "3187ae810ee11182": [
+    "Läser OpenAI-organisationens API-utgifter på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " med en organisationsadministratörsnyckel. Läser aldrig OPENAI_API_KEY eller Codex OAuth."
+  ],
   "915324a100de587d": "Källtyp",
   "b56c8c003c79841d": "Region",
   "bf2c160f8212e4f5": "Databassökväg (valfritt)",
+  "074575109bd1da8b": "Sökväg till signeringsnyckel (valfritt)",
   "2324770ba91371ac": "Slutpunktens URL",
   "556a695b117565ac": "Hubb-URL",
   "f1b3d0634ec035cb": "Etikett (valfritt)",
@@ -13147,6 +13198,10 @@
   "6e26d9e1ed75423a": "OMP-cache",
   "e23aca0e0c5d8a2f": "Kimi Code",
   "dcd6ef5faf4761b9": "Z.ai",
+  "6d17c10025909493": "OpenRouter",
+  "6c854ccb39db36e8": "GitHub Copilot",
+  "f97599c51089cf8a": "Ollama Cloud",
+  "9d78a459700eeb5e": "OpenAI API",
   "b14eb83f4f7aa041": "Redigera detaljer",
   "8a59ab765ff886ef": "Spåra förnyelse",
   "97f160e15a8dca18": "Nästa 24 timmar",

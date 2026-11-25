@@ -115,7 +115,7 @@ describe("AddUsageLimitSourceDialog", () => {
     expect(updateSettings).toHaveBeenCalledOnce();
     const saved = updateSettings.mock.calls[0]?.[0]?.usageLimitSources as Record<string, unknown>;
     const [savedId] = Object.keys(saved);
-    expect(savedId).toMatch(/^kimi-cn-[a-z0-9]+$/);
+    expect(savedId).toMatch(/^kimi-cn-[a-f0-9-]{32,}$/);
     expect(saved[savedId!]).toEqual({
       kind: "kimi",
       region: "cn",
@@ -148,7 +148,7 @@ describe("AddUsageLimitSourceDialog", () => {
     expect(updateSettings).toHaveBeenCalledOnce();
     const saved = updateSettings.mock.calls[0]?.[0]?.usageLimitSources as Record<string, unknown>;
     const [savedId] = Object.keys(saved);
-    expect(savedId).toMatch(/^zai-cn-[a-z0-9]+$/);
+    expect(savedId).toMatch(/^zai-cn-[a-f0-9-]{32,}$/);
     expect(saved[savedId!]).toEqual({
       kind: "zai",
       region: "cn",
@@ -216,7 +216,7 @@ describe("AddUsageLimitSourceDialog", () => {
     }
   });
 
-  it("hides extended source kinds when connected to an older server", async () => {
+  it("hides extended and external source kinds when connected to an older server", async () => {
     updateSettings.mockClear();
     await using _screen = await render(
       <UsageProviderSettings
@@ -224,6 +224,7 @@ describe("AddUsageLimitSourceDialog", () => {
         environmentLabel="Older Host"
         readOnly={false}
         supportsExtendedSources={false}
+        supportsExternalSources={false}
         sources={{}}
       />,
     );
@@ -240,9 +241,94 @@ describe("AddUsageLimitSourceDialog", () => {
     await expect
       .element(page.getByRole("option", { name: "Z.ai / BigModel" }))
       .not.toBeInTheDocument();
+    await expect.element(page.getByRole("option", { name: "OpenRouter" })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("option", { name: "GitHub Copilot" }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("option", { name: "Ollama Cloud" }))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByRole("option", { name: "OpenAI API" })).not.toBeInTheDocument();
   });
 
-  it("renders saved OMP, Kimi, and Z.ai rows in UsageProviderSettings", async () => {
+  it("hides external source kinds on a Wave-2 server that only supports extended sources", async () => {
+    updateSettings.mockClear();
+    await using _screen = await render(
+      <UsageProviderSettings
+        environmentId={EnvironmentId.make("local")}
+        environmentLabel="Wave 2 Host"
+        readOnly={false}
+        supportsExtendedSources
+        supportsExternalSources={false}
+        sources={{}}
+      />,
+    );
+
+    await userEvent.click(page.getByRole("button", { name: "Add source" }));
+    const dialog = page.getByRole("dialog");
+    await userEvent.click(dialog.getByLabelText("Source type"));
+    await expect.element(page.getByRole("option", { name: "Kimi Code" })).toBeVisible();
+    await expect.element(page.getByRole("option", { name: "OpenRouter" })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("option", { name: "GitHub Copilot" }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("option", { name: "Ollama Cloud" }))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByRole("option", { name: "OpenAI API" })).not.toBeInTheDocument();
+  });
+
+  it("adds Ollama Cloud without a secret and OpenRouter/Copilot/OpenAI API with explicit credentials", async () => {
+    updateSettings.mockClear();
+    await using _screen = await render(
+      <UsageProviderSettings
+        environmentId={EnvironmentId.make("local")}
+        environmentLabel="This Mac"
+        readOnly={false}
+        sources={{}}
+      />,
+    );
+
+    await userEvent.click(page.getByRole("button", { name: "Add source" }));
+    const dialog = page.getByRole("dialog");
+    await userEvent.click(dialog.getByLabelText("Source type"));
+    await userEvent.click(page.getByRole("option", { name: "Ollama Cloud" }));
+    await expect.element(dialog.getByLabelText("Signing key path (optional)")).toBeVisible();
+    await expect.element(dialog.getByLabelText("API key")).not.toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Add source" }));
+
+    expect(updateSettings).toHaveBeenCalledWith({
+      usageLimitSources: {
+        "ollama-default": {
+          kind: "ollama",
+          url: "ollama://default",
+          managementKey: "",
+          enabled: true,
+        },
+      },
+    });
+
+    updateSettings.mockClear();
+    await userEvent.click(page.getByRole("button", { name: "Add source" }));
+    await userEvent.click(dialog.getByLabelText("Source type"));
+    await userEvent.click(page.getByRole("option", { name: "OpenAI API" }));
+    await expect.element(dialog.getByLabelText("Endpoint URL")).not.toBeInTheDocument();
+    await expect.element(dialog.getByRole("button", { name: "Add source" })).toBeDisabled();
+    await userEvent.type(dialog.getByLabelText("Admin API key"), "sk-admin-test{Enter}");
+
+    expect(updateSettings).toHaveBeenCalledOnce();
+    const saved = updateSettings.mock.calls[0]?.[0]?.usageLimitSources as Record<string, unknown>;
+    const [savedId] = Object.keys(saved);
+    expect(savedId).toMatch(/^openaiApi-[a-f0-9-]{32,}$/);
+    expect(saved[savedId!]).toEqual({
+      kind: "openaiApi",
+      url: "https://api.openai.com/v1/organization/costs",
+      managementKey: "sk-admin-test",
+      enabled: true,
+    });
+  });
+
+  it("renders saved OMP, Kimi, Z.ai, OpenRouter, Copilot, Ollama, and OpenAI API rows", async () => {
     await using _screen = await render(
       <UsageProviderSettings
         environmentId={EnvironmentId.make("local")}
@@ -270,6 +356,30 @@ describe("AddUsageLimitSourceDialog", () => {
             managementKey: "••••••",
             enabled: true,
           },
+          [UsageLimitSourceId.make("openrouter-1")]: {
+            kind: "openrouter",
+            url: "https://openrouter.ai",
+            managementKey: "••••••",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("copilot-1")]: {
+            kind: "copilot",
+            url: "https://api.github.com/copilot_internal/user",
+            managementKey: "••••••",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("ollama-default")]: {
+            kind: "ollama",
+            url: "ollama://default",
+            managementKey: "",
+            enabled: true,
+          },
+          [UsageLimitSourceId.make("openaiApi-1")]: {
+            kind: "openaiApi",
+            url: "https://api.openai.com/v1/organization/costs",
+            managementKey: "••••••",
+            enabled: true,
+          },
         }}
       />,
     );
@@ -277,5 +387,54 @@ describe("AddUsageLimitSourceDialog", () => {
     await expect.element(page.getByText("OMP local cache", { exact: true })).toBeVisible();
     await expect.element(page.getByText("Kimi Personal")).toBeVisible();
     await expect.element(page.getByText("Z.ai / BigModel", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("OpenRouter", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("GitHub Copilot", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Ollama Cloud", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("OpenAI API", { exact: true })).toBeVisible();
+  });
+
+  it("resets draft state and blocks saving an external source when capabilities downgrade while open", async () => {
+    updateSettings.mockClear();
+    await using screen = await render(
+      <AddUsageLimitSourceDialog
+        open
+        kind="openrouter"
+        onOpenChange={vi.fn()}
+        environmentId={EnvironmentId.make("local")}
+        environmentLabel="This Mac"
+        sources={{}}
+        supportsExtendedSources
+        supportsExternalSources
+      />,
+    );
+
+    const dialog = page.getByRole("dialog");
+    await userEvent.type(dialog.getByLabelText("API key"), "sk-or-temp-secret");
+    await expect.element(dialog.getByRole("button", { name: "Add source" })).toBeEnabled();
+
+    await screen.rerender(
+      <AddUsageLimitSourceDialog
+        open
+        kind="openrouter"
+        onOpenChange={vi.fn()}
+        environmentId={EnvironmentId.make("local")}
+        environmentLabel="This Mac"
+        sources={{}}
+        supportsExtendedSources
+        supportsExternalSources={false}
+      />,
+    );
+
+    const downgradedDialog = page.getByRole("dialog");
+    await expect.element(downgradedDialog.getByLabelText("Endpoint URL")).toBeVisible();
+    await expect
+      .element(downgradedDialog.getByLabelText("Bearer token (optional)"))
+      .toHaveValue("");
+    await expect
+      .element(downgradedDialog.getByRole("button", { name: "Add source" }))
+      .toBeDisabled();
+    await userEvent.click(downgradedDialog.getByLabelText("Source type"));
+    await expect.element(page.getByRole("option", { name: "OpenRouter" })).not.toBeInTheDocument();
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,8 @@ export const SETTINGS_SECRET_REFERENCES_CAPABILITY = "settingsSecretReferences";
 export const HTTP_USAGE_LIMIT_SOURCES_CAPABILITY = "httpUsageLimitSources";
 /** Usage limit sources may also be of kind "omp", "kimi", or "zai" (with optional region). */
 export const EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY = "extendedUsageLimitSources";
+/** fork: Usage limit sources may also be OpenRouter, Copilot, Ollama Cloud, or OpenAI API. */
+export const EXTERNAL_USAGE_LIMIT_SOURCES_CAPABILITY = "externalUsageLimitSources";
 
 export const ExecutionEnvironmentPlatformOs = Schema.Literals([
   "darwin",
@@ -134,6 +136,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Accepts "omp", "kimi", and "zai" usage limit sources; older servers only accept "cliproxy" and "http". */
   extendedUsageLimitSources: Schema.optionalKey(Schema.Boolean),
+  /** fork: Accepts OpenRouter, Copilot, Ollama Cloud, and OpenAI API usage limit sources. */
+  externalUsageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Honors `workspaceSnapshotsOnDemand`; older servers send every snapshot and drop them in the stream. */
   providerWorkspaceSnapshotsOnDemand: Schema.optionalKey(Schema.Boolean),
   /** Honors `modelCatalogOnly`; older servers drop the field and probe every provider. */

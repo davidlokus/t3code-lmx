@@ -4,14 +4,14 @@ import type {
   ResetTimelineEntry,
   ResetTimelineGroup,
 } from "@t3tools/shared/usageLimitsIntelligence";
-import { msg, T, useGT, useMessages } from "gt-react";
+import { msg, T, useGT, useLocale, useMessages } from "gt-react";
 import { ClockIcon, GlobeIcon } from "lucide-react";
 
 import { ProviderInstanceIcon } from "~/components/chat/ProviderInstanceIcon";
 import { providerClients } from "~/components/settings/providerDriverMeta";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
-import { formatUpcomingTimestamp } from "~/timestampFormat";
+import { formatUpcomingOrBareUtcDate } from "~/timestampFormat";
 import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
 import type { UsageQuotaDisplayMode, UsageResetTimeMode } from "./usageOptionsStore";
 
@@ -64,6 +64,7 @@ export function UsageLimitsResetsView({
   readonly resetTimeMode: UsageResetTimeMode;
 }) {
   const gt = useGT();
+  const locale = useLocale();
   const m = useMessages();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
 
@@ -114,13 +115,7 @@ export function UsageLimitsResetsView({
                 const countdown = formatResetsIn(window, now, m, "in") || null;
                 const exactTime =
                   window.resetsAt && window.resetsAtMs !== null
-                    ? formatUpcomingTimestamp(
-                        window.resetsAt,
-                        timestampFormat,
-                        now,
-                        undefined,
-                        m,
-                      ) || null
+                    ? formatUpcomingOrBareUtcDate(window.resetsAt, timestampFormat, now, locale, m)
                     : null;
                 const primaryTime =
                   resetTimeMode === "exact" ? (exactTime ?? countdown) : (countdown ?? exactTime);

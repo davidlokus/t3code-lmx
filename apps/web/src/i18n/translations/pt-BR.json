@@ -7576,17 +7576,27 @@
   "d506ce8b0300061c": "Cache local do OMP",
   "1b4eb0f933274892": "Kimi Code",
   "0765824fc86ac61e": "Z.ai / BigModel",
+  "9a14df7925cee3fb": "OpenRouter",
+  "4e6abdb5add5cfb6": "GitHub Copilot",
+  "46633c0e6cb2fbf0": "Ollama Cloud",
+  "9b1b6ae7cdf64293": "OpenAI API",
   "4ca61d42a50cb12f": "Global (api.kimi.ai)",
   "991aa1a77c649a96": "China (api.kimi.com)",
   "7860eb75df697e4a": "China (open.bigmodel.cn)",
   "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Token Bearer (opcional)",
   "84eb2878dc17d3eb": "Chave de gerenciamento",
+  "a8904d6e4f4801e5": "Token do GitHub",
+  "83ea7ed7618a7166": "Chave API de administrador",
   "cad38c8893ab98e4": "Chave de API",
   "7ac196c1e8175928": "Usa o nome do host do hub por padrão",
   "c3bb1b02f759513c": "Padrão: cache local do OMP",
   "758fd105d61f060c": "Padrão: Kimi Code",
   "a1c1d25aa3c703e4": "Padrão: Z.ai",
+  "162835fc07090edc": "Padrão: OpenRouter",
+  "c767e81d003f64fc": "Padrão: GitHub Copilot",
+  "803a1242c1affaa2": "Padrão: Ollama Cloud",
+  "dc8fbccb6cf7dd36": "Padrão: OpenAI API",
   "4809220aa17c66b5": "Padrão: nome do host do endpoint",
   "05d145b2961446c2": "Tipo de fonte",
   "9440f5a5a9b8d8f9": "Região",
@@ -7595,6 +7605,10 @@
   "1007886c2c1a36de": "Adicionar cache local do OMP",
   "b0c43dd75ca0d6b7": "Adicionar cota do Kimi Code",
   "2faf1206960bad9c": "Adicionar cota do Z.ai / BigModel",
+  "60ff9604ff0e518b": "Adicionar cota do OpenRouter",
+  "af6b3c1a4f4ec6ba": "Adicionar cota do GitHub Copilot",
+  "b324f57e3c5edd17": "Adicionar cota do Ollama Cloud",
+  "dfc5399c76b40d98": "Adicionar custos da OpenAI API",
   "432e85a50e2e7964": [
     "Mostra a cota de cada conta agrupada pelo hub, ao lado dos provedores em",
     " ",
@@ -7641,9 +7655,46 @@
     },
     ". A chave de API permanece nesse servidor."
   ],
+  "53a884349cf1faca": [
+    "Lê créditos, limites de chave e gastos por período do OpenRouter em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". A chave API permanece nesse servidor."
+  ],
+  "fca0cd85d66686af": [
+    "Lê instantâneos de cota e uso excedente do GitHub Copilot em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". O token permanece nesse servidor."
+  ],
+  "4e87fed14f3566fe": [
+    "Assina solicitações somente leitura de saldo do Ollama Cloud usando a chave Ed25519 local em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". A chave privada nunca sai desse host."
+  ],
+  "3187ae810ee11182": [
+    "Lê gastos da API da organização OpenAI em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " usando uma chave Admin da organização. Nunca lê OPENAI_API_KEY nem Codex OAuth."
+  ],
   "915324a100de587d": "Tipo de fonte",
   "b56c8c003c79841d": "Região",
   "bf2c160f8212e4f5": "Caminho do banco de dados (opcional)",
+  "074575109bd1da8b": "Caminho da chave de assinatura (opcional)",
   "2324770ba91371ac": "URL do endpoint",
   "556a695b117565ac": "URL do hub",
   "f1b3d0634ec035cb": "Rótulo (opcional)",
@@ -13139,6 +13190,10 @@
   "6e26d9e1ed75423a": "Cache OMP",
   "e23aca0e0c5d8a2f": "Kimi Code",
   "dcd6ef5faf4761b9": "Z.ai",
+  "6d17c10025909493": "OpenRouter",
+  "6c854ccb39db36e8": "GitHub Copilot",
+  "f97599c51089cf8a": "Ollama Cloud",
+  "9d78a459700eeb5e": "OpenAI API",
   "b14eb83f4f7aa041": "Editar detalhes",
   "8a59ab765ff886ef": "Registrar renovação",
   "97f160e15a8dca18": "Próximas 24 horas",

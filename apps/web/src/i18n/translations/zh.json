@@ -7590,17 +7590,27 @@
   "d506ce8b0300061c": "OMP 本地缓存",
   "1b4eb0f933274892": "Kimi Code",
   "0765824fc86ac61e": "Z.ai / 智谱 BigModel",
+  "9a14df7925cee3fb": "OpenRouter",
+  "4e6abdb5add5cfb6": "GitHub Copilot",
+  "46633c0e6cb2fbf0": "Ollama Cloud",
+  "9b1b6ae7cdf64293": "OpenAI API",
   "4ca61d42a50cb12f": "国际区 (api.kimi.ai)",
   "991aa1a77c649a96": "中国区 (api.kimi.com)",
   "7860eb75df697e4a": "中国区 (open.bigmodel.cn)",
   "c2d9abbaa482f204": "国际区 (api.z.ai)",
   "65300794c1edb929": "Bearer 令牌（可选）",
   "84eb2878dc17d3eb": "管理密钥",
+  "a8904d6e4f4801e5": "GitHub 令牌",
+  "83ea7ed7618a7166": "管理员 API 密钥",
   "cad38c8893ab98e4": "API 密钥",
   "7ac196c1e8175928": "默认使用中转站的主机名",
   "c3bb1b02f759513c": "默认使用 OMP 本地缓存",
   "758fd105d61f060c": "默认使用 Kimi Code",
   "a1c1d25aa3c703e4": "默认使用 Z.ai",
+  "162835fc07090edc": "默认为 OpenRouter",
+  "c767e81d003f64fc": "默认为 GitHub Copilot",
+  "803a1242c1affaa2": "默认为 Ollama Cloud",
+  "dc8fbccb6cf7dd36": "默认为 OpenAI API",
   "4809220aa17c66b5": "默认使用端点主机名",
   "05d145b2961446c2": "来源类型",
   "9440f5a5a9b8d8f9": "区域",
@@ -7609,6 +7619,10 @@
   "1007886c2c1a36de": "添加 OMP 本地缓存",
   "b0c43dd75ca0d6b7": "添加 Kimi Code 额度",
   "2faf1206960bad9c": "添加 Z.ai / 智谱额度",
+  "60ff9604ff0e518b": "添加 OpenRouter 额度",
+  "af6b3c1a4f4ec6ba": "添加 GitHub Copilot 额度",
+  "b324f57e3c5edd17": "添加 Ollama Cloud 额度",
+  "dfc5399c76b40d98": "添加 OpenAI API 花费",
   "432e85a50e2e7964": [
     "在",
     " ",
@@ -7655,9 +7669,46 @@
     },
     " 上读取 GLM Coding Plan 额度与续费日期。API 密钥仅保存在该服务器上。"
   ],
+  "53a884349cf1faca": [
+    "在 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 上读取 OpenRouter 积分、密钥限额和周期花费。API 密钥仅保留在该服务器上。"
+  ],
+  "fca0cd85d66686af": [
+    "在 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 上读取 GitHub Copilot 配额快照和超额用量。令牌仅保留在该服务器上。"
+  ],
+  "4e87fed14f3566fe": [
+    "使用 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 上的本地 Ed25519 密钥对只读 Ollama Cloud 余额请求签名。私钥绝不离开该主机。"
+  ],
+  "3187ae810ee11182": [
+    "使用组织管理员密钥在 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 上读取 OpenAI 组织 API 花费。绝不读取 OPENAI_API_KEY 或 Codex OAuth。"
+  ],
   "915324a100de587d": "来源类型",
   "b56c8c003c79841d": "区域",
   "bf2c160f8212e4f5": "数据库路径（可选）",
+  "074575109bd1da8b": "签名密钥路径（可选）",
   "2324770ba91371ac": "端点 URL",
   "556a695b117565ac": "中转站 URL",
   "f1b3d0634ec035cb": "标签（可选）",
@@ -13153,6 +13204,10 @@
   "6e26d9e1ed75423a": "OMP 缓存",
   "e23aca0e0c5d8a2f": "Kimi Code",
   "dcd6ef5faf4761b9": "Z.ai",
+  "6d17c10025909493": "OpenRouter",
+  "6c854ccb39db36e8": "GitHub Copilot",
+  "f97599c51089cf8a": "Ollama Cloud",
+  "9d78a459700eeb5e": "OpenAI API",
   "b14eb83f4f7aa041": "编辑信息",
   "8a59ab765ff886ef": "记录续费",
   "97f160e15a8dca18": "未来 24 小时",

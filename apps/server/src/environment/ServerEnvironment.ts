@@ -256,6 +256,8 @@ export const make = Effect.gen(function* () {
       environmentThemes: true,
       usageLimitSources: true,
       extendedUsageLimitSources: true,
+      // fork: advertise Wave 3 external quota source support to clients
+      externalUsageLimitSources: true,
       providerWorkspaceSnapshotsOnDemand: true,
       modelCatalogRefresh: true,
       usagePriceOverrides: true,

@@ -23,6 +23,8 @@ import {
   exhaustedUsageWindow,
   paceOf,
   paceRemainingPercent,
+  parseUsageLimitTimestampMs,
+  resetCountdown,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
@@ -2051,5 +2053,24 @@ describe("ChatGPT sharing presentation", () => {
         auth: { status: "unauthenticated", subscriptionSharing: true },
       }),
     ).toBe(false);
+  });
+});
+
+describe("parseUsageLimitTimestampMs", () => {
+  it("rejects JS-normalizable calendar rollovers before countdowns or timelines derive from them", () => {
+    const feb27 = Date.parse("2099-02-27T00:00:00.000Z");
+    expect(parseUsageLimitTimestampMs("2099-02-30")).toBeNull();
+    expect(parseUsageLimitTimestampMs("2099-02-30T12:00:00.000Z")).toBeNull();
+    expect(parseUsageLimitTimestampMs("2099-02-30t12:00:00z")).toBeNull();
+    expect(parseUsageLimitTimestampMs("+002099-02-30T12:00:00.000Z")).toBeNull();
+    expect(parseUsageLimitTimestampMs("2099-13-01")).toBeNull();
+    expect(parseUsageLimitTimestampMs("2099-07-01")).toBe(Date.parse("2099-07-01T00:00:00.000Z"));
+    expect(parseUsageLimitTimestampMs("0099-07-01")).toBe(Date.parse("0099-07-01T00:00:00.000Z"));
+    expect(resetCountdown({ ...window, resetsAt: "2099-02-30" }, feb27)).toBeNull();
+    expect(resetCountdown({ ...window, resetsAt: "2099-02-30t12:00:00z" }, feb27)).toBeNull();
+    expect(resetCountdown({ ...window, resetsAt: "2099-03-02" }, feb27)).toEqual({
+      kind: "in",
+      ms: 3 * 24 * 60 * 60 * 1000,
+    });
   });
 });

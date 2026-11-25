@@ -599,6 +599,11 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.extendedUsageLimitSources === true,
   );
+  // fork: Hide openrouter/copilot/ollama/openaiApi source options when connected to an older server.
+  const supportsExternalUsageLimitSources = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.externalUsageLimitSources === true,
+  );
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1157,6 +1162,7 @@ export function EnvironmentProviderSettings({
         sources={settings.usageLimitSources}
         readOnly={readOnly}
         supportsExtendedSources={supportsExtendedUsageLimitSources}
+        supportsExternalSources={supportsExternalUsageLimitSources}
       />
 
       {/* The server drops text generators under a provider allow-list. */}

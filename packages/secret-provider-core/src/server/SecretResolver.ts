@@ -27,6 +27,8 @@ export class SecretResolver extends Context.Service<
     readonly invalidate: (references?: ReadonlyArray<SecretReference>) => Effect.Effect<void>;
     /** Monotonic cache revision for one reference; bumps when its cached value/binding changes or invalidates. */
     readonly revision?: (reference: SecretReference) => Effect.Effect<string>;
+    /** fork: Synchronous cache revision lookup for zero-yield final publication checks. */
+    readonly revisionSync?: (reference: SecretReference) => string;
     /** The name the user gave a secret provider, or its id when it has none or is gone. */
     readonly label: (provider: SecretReference["provider"]) => Effect.Effect<string>;
   }
@@ -178,10 +180,10 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       }),
     );
 
-  const revision = (reference: SecretReference) =>
-    Effect.sync(
-      () => `${globalInvalidationRevision}:${referenceRevisions.get(cacheKey(reference)) ?? 0}`,
-    );
+  const revisionSync = (reference: SecretReference) =>
+    `${globalInvalidationRevision}:${referenceRevisions.get(cacheKey(reference)) ?? 0}`;
+
+  const revision = (reference: SecretReference) => Effect.sync(() => revisionSync(reference));
 
   const label: SecretResolver["Service"]["label"] = (provider) =>
     options.secretProviders.pipe(
@@ -192,7 +194,7 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
       ),
     );
 
-  return SecretResolver.of({ read, invalidate, revision, label });
+  return SecretResolver.of({ read, invalidate, revision, revisionSync, label });
 });
 
 export const layer = (options: Parameters<typeof make>[0]) =>

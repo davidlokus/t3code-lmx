@@ -32,7 +32,7 @@ describe("orchestration protocol compatibility", () => {
       String(ORCHESTRATION_PROTOCOL_VERSION),
     );
     expect(socketUrl.searchParams.get("clientCapabilities")).toBe(
-      "settingsSecretReferences,httpUsageLimitSources,extendedUsageLimitSources",
+      "settingsSecretReferences,httpUsageLimitSources,extendedUsageLimitSources,externalUsageLimitSources",
     );
     expect(socketUrl.searchParams.get("wsTicket")).toBe("secret");
     expect(socketUrl.searchParams.get("connectionMethod")).toBe("relay");
