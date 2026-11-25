@@ -23,6 +23,7 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
+import { UsageLimitSourceKind } from "./providerUsageLimits.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
@@ -948,8 +949,12 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+export const UsageLimitSourceRegion = Schema.Literals(["cn", "global"]);
+export type UsageLimitSourceRegion = typeof UsageLimitSourceRegion.Type;
+
 export const UsageLimitSourceConfig = Schema.Struct({
-  kind: Schema.Literals(["cliproxy", "http"]),
+  kind: UsageLimitSourceKind,
+  region: Schema.optional(UsageLimitSourceRegion),
   label: Schema.optional(TrimmedNonEmptyString),
   url: TrimmedNonEmptyString,
   managementKey: SettingsSecretValue.pipe(

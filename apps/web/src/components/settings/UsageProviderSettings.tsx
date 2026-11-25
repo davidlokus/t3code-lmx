@@ -1,4 +1,4 @@
-import type { EnvironmentId, UnifiedSettings } from "@t3tools/contracts";
+import type { EnvironmentId, UnifiedSettings, UsageLimitSourceKind } from "@t3tools/contracts";
 import { T, useGT, Var } from "gt-react";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
@@ -15,6 +15,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { AddUsageLimitSourceDialog } from "./AddUsageLimitSourceDialog";
+import { displayUsageLimitSourceTarget } from "./AddUsageLimitSourceDialog.logic";
 import { useSearchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 
@@ -25,17 +26,34 @@ export function UsageProviderSettings({
   environmentLabel,
   sources,
   readOnly,
+  supportsExtendedSources = true,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly sources: UnifiedSettings["usageLimitSources"];
   readonly readOnly: boolean;
+  readonly supportsExtendedSources?: boolean;
 }) {
   const gt = useGT();
   const searchableSetting = useSearchableSetting();
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
-  const [adding, setAdding] = useState<"cliproxy" | "http" | null>(null);
+  const [adding, setAdding] = useState<UsageLimitSourceKind | null>(null);
   const entries = Object.entries(sources);
+
+  const kindLabel = (kind: UsageLimitSourceKind) => {
+    switch (kind) {
+      case "cliproxy":
+        return CLI_PROXY_NAME;
+      case "http":
+        return gt("HTTP quota source");
+      case "omp":
+        return gt("OMP local cache");
+      case "kimi":
+        return gt("Kimi Code");
+      case "zai":
+        return gt("Z.ai / BigModel");
+    }
+  };
 
   return (
     <>
@@ -48,9 +66,13 @@ export function UsageProviderSettings({
                 <PlusIcon className="size-3" aria-hidden />
                 <T>Add hub</T>
               </Button>
-              <Button size="xs" variant="outline" onClick={() => setAdding("http")}>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => setAdding(supportsExtendedSources ? "omp" : "http")}
+              >
                 <PlusIcon className="size-3" aria-hidden />
-                <T>Add HTTP source</T>
+                <T>Add source</T>
               </Button>
             </div>
           ) : null
@@ -60,18 +82,25 @@ export function UsageProviderSettings({
           <SettingsRow title={gt("No usage sources configured.")} />
         ) : (
           entries.map(([id, source]) => {
-            const kindLabel = source.kind === "http" ? gt("HTTP quota source") : CLI_PROXY_NAME;
-            const label = source.label?.trim() || source.url;
+            const typeLabel = kindLabel(source.kind);
+            const target = displayUsageLimitSourceTarget(source);
+            const label =
+              source.label?.trim() ||
+              (source.kind === "omp" || source.kind === "kimi" || source.kind === "zai"
+                ? typeLabel
+                : target);
+            const statusLabel = source.enabled
+              ? typeLabel
+              : gt("{name} · Disabled", { name: typeLabel });
+            const description =
+              source.enabled && label === typeLabel
+                ? target
+                : `${statusLabel}${label !== target ? ` · ${target}` : ""}`;
             return (
               <SettingsRow
                 key={id}
                 title={label}
-                description={
-                  <span className="break-all">
-                    {source.enabled ? kindLabel : gt("{name} · Disabled", { name: kindLabel })}
-                    {label !== source.url ? ` · ${source.url}` : ""}
-                  </span>
-                }
+                description={<span className="break-all">{description}</span>}
                 control={
                   !readOnly ? (
                     <RemoveUsageProviderButton
@@ -89,6 +118,7 @@ export function UsageProviderSettings({
         <AddUsageLimitSourceDialog
           open
           kind={adding}
+          supportsExtendedSources={supportsExtendedSources}
           onOpenChange={(open) => {
             if (!open) setAdding(null);
           }}

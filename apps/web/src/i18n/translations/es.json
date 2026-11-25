@@ -7571,20 +7571,30 @@
   "dc87902396b8ade4": "Letras, dígitos, '-' o '_'.",
   "251dfec07b7c3612": "Este driver no tiene configuración obligatoria. Puedes añadir la instancia ahora.",
   "08fe32f007e788f1": "Configurar manualmente",
+  "17ccef4ee78377e1": "Hub de CLIProxyAPI",
+  "dbd877abdc2c7c81": "Fuente de cuotas HTTP",
+  "d506ce8b0300061c": "Caché local de OMP",
+  "1b4eb0f933274892": "Kimi Code",
+  "0765824fc86ac61e": "Z.ai / BigModel",
+  "4ca61d42a50cb12f": "Global (api.kimi.ai)",
+  "991aa1a77c649a96": "China (api.kimi.com)",
+  "7860eb75df697e4a": "China (open.bigmodel.cn)",
+  "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Token de portador (opcional)",
   "84eb2878dc17d3eb": "Clave de gestión",
+  "cad38c8893ab98e4": "Clave de API",
   "7ac196c1e8175928": "Por defecto, el nombre de host del hub",
-  "0c026221dcd2820b": "Añadir una fuente de cuotas HTTP",
+  "c3bb1b02f759513c": "Por defecto, caché local de OMP",
+  "758fd105d61f060c": "Por defecto, Kimi Code",
+  "a1c1d25aa3c703e4": "Por defecto, Z.ai",
+  "4809220aa17c66b5": "Por defecto, el nombre de host del punto final",
+  "05d145b2961446c2": "Tipo de fuente",
+  "9440f5a5a9b8d8f9": "Región",
   "e3548407052e9e12": "Añadir un hub de CLIProxyAPI",
-  "d185c750156b2121": [
-    "Consulta las cuotas desde un punto de conexión en ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
+  "0c026221dcd2820b": "Añadir una fuente de cuotas HTTP",
+  "1007886c2c1a36de": "Añadir caché local de OMP",
+  "b0c43dd75ca0d6b7": "Añadir cuota de Kimi Code",
+  "2faf1206960bad9c": "Añadir cuota de Z.ai / BigModel",
   "432e85a50e2e7964": [
     "Muestra la cuota de cada cuenta que agrupa el hub, junto a los proveedores en",
     " ",
@@ -7595,13 +7605,50 @@
     },
     ". La clave se queda en ese servidor."
   ],
+  "d185c750156b2121": [
+    "Consulta las cuotas desde un punto de conexión en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "029ce2453100e651": [
+    "Leer informes de cuota en caché en modo solo lectura desde agent.db en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Nunca lee credenciales OAuth ni actualiza tokens."
+  ],
+  "4cbe9f07f5f23631": [
+    "Leer cuotas del plan Kimi Code y saldo Booster en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La clave API permanece en ese servidor."
+  ],
+  "e89b5c7acd38f7a9": [
+    "Leer cuotas del GLM Coding Plan y fecha de renovación en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La clave API permanece en ese servidor."
+  ],
+  "915324a100de587d": "Tipo de fuente",
+  "b56c8c003c79841d": "Región",
+  "bf2c160f8212e4f5": "Ruta de la base de datos (opcional)",
   "2324770ba91371ac": "URL del punto de conexión",
   "556a695b117565ac": "URL del hub",
-  "e4e5b75bba51396c": "Token de portador (opcional)",
-  "e62cedcbcdbafc75": "Clave de gestión",
   "f1b3d0634ec035cb": "Etiqueta (opcional)",
-  "b35256ca61016104": "Añadir origen",
   "52814dd6f7d0a15c": "Añadir hub",
+  "b35256ca61016104": "Añadir origen",
   "27b770d3402abfa2": "Avanzado",
   "584595dfcadab699": "Ilustración",
   "7df1a31c9019f5ff": "Ilustración de Nightly",
@@ -7978,7 +8025,6 @@
   "c8361c16c47d5fb5": "Buscar modelos de transcripción",
   "d72eccdd92d4f989": "No se pudo guardar este cambio. Comprueba tu conexión y vuelve a intentarlo.",
   "ef5fef499da688e8": "Reemplazar clave de API",
-  "cad38c8893ab98e4": "Clave de API",
   "42ec8bbd6819af00": "Clave de API de {company}",
   "03d751a890780a70": "Referencia de la clave de API de {company}",
   "2db595fcf95d3ff6": "Introduce la clave de API",
@@ -11613,9 +11659,7 @@
     }
   ],
   "39f64d971ba424b5": "No hay fuentes de uso configuradas.",
-  "dbd877abdc2c7c81": "Fuente de cuotas HTTP",
   "4cf6a373a7535324": "{name} · Deshabilitado",
-  "c792e744936dbe1b": "Añadir fuente HTTP",
   "4032a03ee5301037": "La conexión guardada y sus credenciales se eliminan de este entorno.",
   "0424112d5a0ecd71": "Automático",
   "3f0e1b77e45d53a9": "Toca para alternar, mantén para hablar",
@@ -13087,6 +13131,9 @@
   "66f86e32e382911d": "Por debajo del ritmo",
   "844bcaadbf7e217f": "Al ritmo",
   "c2e3c47bd3aaa4f6": "Fuente HTTP",
+  "6e26d9e1ed75423a": "Caché OMP",
+  "e23aca0e0c5d8a2f": "Kimi Code",
+  "dcd6ef5faf4761b9": "Z.ai",
   "b14eb83f4f7aa041": "Editar detalles",
   "8a59ab765ff886ef": "Registrar renovación",
   "97f160e15a8dca18": "Próximas 24 horas",

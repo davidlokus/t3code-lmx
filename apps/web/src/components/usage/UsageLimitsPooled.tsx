@@ -901,6 +901,22 @@ export function UsageLimitsPooled({
                     </div>
                   );
                 })}
+                {account.balances?.map((balance) => {
+                  const unit = balance.unit.trim();
+                  const formatted =
+                    unit.toUpperCase() === "USD"
+                      ? `$${balance.remaining.toFixed(2)}`
+                      : `${Number.isInteger(balance.remaining) ? String(balance.remaining) : balance.remaining.toFixed(2)} ${unit}`;
+                  return (
+                    <div
+                      key={balance.id}
+                      className="flex justify-between gap-3 text-sm text-muted-foreground"
+                    >
+                      <span>{balance.label}</span>
+                      <span>{formatted}</span>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </section>

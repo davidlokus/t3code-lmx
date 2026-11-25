@@ -520,6 +520,19 @@ export function UsageLimitsSection({
                   </View>
                 );
               })}
+              {account.balances?.map((balance) => {
+                const unit = balance.unit.trim();
+                const formatted =
+                  unit.toUpperCase() === "USD"
+                    ? `$${balance.remaining.toFixed(2)}`
+                    : `${Number.isInteger(balance.remaining) ? String(balance.remaining) : balance.remaining.toFixed(2)} ${unit}`;
+                return (
+                  <View key={balance.id} className="flex-row justify-between gap-3">
+                    <Text className="shrink text-sm text-foreground-muted">{balance.label}</Text>
+                    <Text className="text-sm text-foreground-muted">{formatted}</Text>
+                  </View>
+                );
+              })}
             </View>
           ))}
         </View>

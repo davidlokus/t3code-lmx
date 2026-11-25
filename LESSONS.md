@@ -1,4 +1,4 @@
-<!-- reviewed-through: c4c32288b0 (2026-11-25) -->
+<!-- reviewed-through: 7eb4478701 (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -116,3 +116,11 @@
 - **铁证**：`feat/usage-limits-intelligence` 在 `ego-browser` 真机 QA 中捕获 PST 时区 `2026-12-31` 渲染为 `Dec 30, 2026`，并在 4 轮跨模型只读 Review 内存探针中先后复现跨环境过滤丢续费、跨单位 `credits → USD` 串数、旧探针复活 `balances: []` 以及跨周期 `primary` 吞掉 `window-exhausted` 告警，补齐统一守卫后全部闭环。
 - **代码守卫**：`packages/shared/src/usageLimitsIntelligence.test.ts`、`packages/provider-core/src/server/usageLimits.test.ts`、`apps/web/src/fork/usage/usageDashboard.logic.test.ts`、`apps/web/src/fork/usage/usageLimitsIntelligence.browser.test.tsx`。
 - **Seen**：1（2026-11-25，`feat/usage-limits-intelligence`）
+
+## 14. 扩展设置枚举须双向能力协商，且带 Secret 引用的轮询服务须做 header/trace 防泄与可见态/缓存解耦围栏
+
+- **规则**：① 扩展持久化设置的联合类型（如 `UsageLimitSourceConfig.kind`）必须做**双向能力协商**：客户端通过 `clientCapabilities` 声明支持位，服务端 `redactServerSettingsForClient` 对旧客户端按能力裁剪，避免旧客户端整包解码 `ServerSettings` 失败；同时服务端在 `ExecutionEnvironmentCapabilities` 广播支持位，前端连接旧服时隐藏不支持的新增选项。共享固定端点的独立账号源须分配非复用随机 ID，避免双标签页并发覆盖或删重添后继承旧手动覆写；切换带 `SecretSourceInput` 的类型时必须用 `key` 重挂组件清空内部未提交 picker 状态。② 带凭证的出站配额请求在进入 Fetch `Headers` 构造前必须校验禁止控制字符与非 ISO-8859-1 字节，并用 `Effect.withTracerEnabled(false)` 阻断底层 HTTP 子 span 导出含密钥的传输异常。③ 含 `SecretResolver` 引用的轮询服务必须把**可见快照**与**按 `endpoint + authIdentity`（区分 `key:<sha256>`、`none`、`unresolved`）索引的 last-good 缓存**分离；异步解析与 digest 放在设置写锁外，最终验证有效配置、provider 绑定与 `SecretResolver.revision` 并发布放在 `settingsService.withSettingsSnapshot` 原子段内，且其他写者（如 `consumeResetCredit`）不可用缓存集合覆盖可见快照。
+- **原因**：① 仅扩展服务端枚举而不协商新能力位会让旧 mobile/desktop/remote-web 无法解码 `ServerSettings`；② 含换行符的 resolved key 在 native `Headers` 抛出的异常会在外层 `orElseSucceed` 捕获前进入 `makeLocalFileTracer` 导出文件；③ 把可见快照与 last-good 缓存混为一谈会导致：未验证读数不能 fail-closed 隐藏，或隐藏时误删同 key 故障恢复缓存，或无关核销操作把隐藏条目重新推上前端。
+- **铁证**：Wave 2 PR 3a（`feat/usage-sources-omp-cn`）在 8 轮跨模型只读 Review（`gpt-6.2-sol:max`）内存探针中先后复现上述 3 类真实缺口（换行 key 进入 trace sink、旧 `httpUsageLimitSources` 客户端解码失败、以及 `secretProviders` 换绑 / `{ fresh: true }` 轮换 / 晚 `invalidate` / 核销重推的并发交错），全部补齐代码与确定性并发回归测试后通过 Round 8 终审。
+- **代码守卫**：`apps/server/src/usage/UsageLimitSources.test.ts`、`apps/server/src/serverSettings.test.ts`、`packages/client-runtime/src/connection/{compatibility,resolver}.test.ts`、`apps/web/src/components/settings/AddUsageLimitSourceDialog.{logic,browser}.test.*`。
+- **Seen**：1（2026-11-25，Wave 2 `feat/usage-sources-omp-cn`）

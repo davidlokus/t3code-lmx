@@ -7570,20 +7570,30 @@
   "dc87902396b8ade4": "Buchstaben, Ziffern, '-' oder '_'.",
   "251dfec07b7c3612": "Dieser Treiber erfordert keine Konfiguration. Du kannst die Instanz jetzt hinzufügen.",
   "08fe32f007e788f1": "Manuell konfigurieren",
+  "17ccef4ee78377e1": "CLIProxyAPI-Hub",
+  "dbd877abdc2c7c81": "HTTP-Kontingentquelle",
+  "d506ce8b0300061c": "Lokaler OMP-Cache",
+  "1b4eb0f933274892": "Kimi Code",
+  "0765824fc86ac61e": "Z.ai / BigModel",
+  "4ca61d42a50cb12f": "Global (api.kimi.ai)",
+  "991aa1a77c649a96": "China (api.kimi.com)",
+  "7860eb75df697e4a": "China (open.bigmodel.cn)",
+  "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Bearer-Token (optional)",
   "84eb2878dc17d3eb": "Verwaltungsschlüssel",
+  "cad38c8893ab98e4": "API-Schlüssel",
   "7ac196c1e8175928": "Standardmäßig der Hostname des Hubs",
-  "0c026221dcd2820b": "HTTP-Kontingentquelle hinzufügen",
+  "c3bb1b02f759513c": "Standardmäßig lokaler OMP-Cache",
+  "758fd105d61f060c": "Standardmäßig Kimi Code",
+  "a1c1d25aa3c703e4": "Standardmäßig Z.ai",
+  "4809220aa17c66b5": "Standardmäßig der Hostname des Endpunkts",
+  "05d145b2961446c2": "Quellentyp",
+  "9440f5a5a9b8d8f9": "Region",
   "e3548407052e9e12": "CLIProxyAPI-Hub hinzufügen",
-  "d185c750156b2121": [
-    "Kontingente von einem Endpunkt auf ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " abrufen."
-  ],
+  "0c026221dcd2820b": "HTTP-Kontingentquelle hinzufügen",
+  "1007886c2c1a36de": "Lokalen OMP-Cache hinzufügen",
+  "b0c43dd75ca0d6b7": "Kimi-Code-Kontingent hinzufügen",
+  "2faf1206960bad9c": "Z.ai-/BigModel-Kontingent hinzufügen",
   "432e85a50e2e7964": [
     "Zeige das Kontingent jedes Kontos, das der Hub bündelt, neben den Anbietern auf",
     " ",
@@ -7594,13 +7604,50 @@
     },
     ". Der Schlüssel bleibt auf diesem Server."
   ],
+  "d185c750156b2121": [
+    "Kontingente von einem Endpunkt auf ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " abrufen."
+  ],
+  "029ce2453100e651": [
+    "Zwischengespeicherte Kontingentberichte schreibgeschützt aus agent.db auf ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lesen. Liest niemals OAuth-Zugangsdaten und aktualisiert keine Token."
+  ],
+  "4cbe9f07f5f23631": [
+    "Kimi-Code-Plankontingente und Booster-Guthaben auf ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lesen. Der API-Schlüssel bleibt auf diesem Server."
+  ],
+  "e89b5c7acd38f7a9": [
+    "GLM-Coding-Plan-Kontingente und Verlängerungsdatum auf ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lesen. Der API-Schlüssel bleibt auf diesem Server."
+  ],
+  "915324a100de587d": "Quellentyp",
+  "b56c8c003c79841d": "Region",
+  "bf2c160f8212e4f5": "Datenbankpfad (optional)",
   "2324770ba91371ac": "Endpunkt-URL",
   "556a695b117565ac": "Hub-URL",
-  "e4e5b75bba51396c": "Bearer-Token (optional)",
-  "e62cedcbcdbafc75": "Verwaltungsschlüssel",
   "f1b3d0634ec035cb": "Bezeichnung (optional)",
-  "b35256ca61016104": "Quelle hinzufügen",
   "52814dd6f7d0a15c": "Hub hinzufügen",
+  "b35256ca61016104": "Quelle hinzufügen",
   "27b770d3402abfa2": "Erweitert",
   "584595dfcadab699": "Artwork",
   "7df1a31c9019f5ff": "Nightly-Artwork",
@@ -7979,7 +8026,6 @@
   "c8361c16c47d5fb5": "Transkriptionsmodelle durchsuchen",
   "d72eccdd92d4f989": "Diese Änderung konnte nicht gespeichert werden. Prüfe deine Verbindung und versuche es erneut.",
   "ef5fef499da688e8": "API-Schlüssel ersetzen",
-  "cad38c8893ab98e4": "API-Schlüssel",
   "42ec8bbd6819af00": "{company}-API-Schlüssel",
   "03d751a890780a70": "Referenz auf {company}-API-Schlüssel",
   "2db595fcf95d3ff6": "API-Schlüssel eingeben",
@@ -11619,9 +11665,7 @@
     " wechseln"
   ],
   "39f64d971ba424b5": "Keine Nutzungsquellen konfiguriert.",
-  "dbd877abdc2c7c81": "HTTP-Kontingentquelle",
   "4cf6a373a7535324": "{name} · Deaktiviert",
-  "c792e744936dbe1b": "HTTP-Quelle hinzufügen",
   "4032a03ee5301037": "Die gespeicherte Verbindung und ihre Zugangsdaten werden aus dieser Umgebung entfernt.",
   "0424112d5a0ecd71": "Automatisch",
   "3f0e1b77e45d53a9": "Tippen zum Umschalten, halten zum Sprechen",
@@ -13094,6 +13138,9 @@
   "66f86e32e382911d": "Unter Tempo",
   "844bcaadbf7e217f": "Im Plan",
   "c2e3c47bd3aaa4f6": "HTTP-Quelle",
+  "6e26d9e1ed75423a": "OMP-Cache",
+  "e23aca0e0c5d8a2f": "Kimi Code",
+  "dcd6ef5faf4761b9": "Z.ai",
   "b14eb83f4f7aa041": "Details bearbeiten",
   "8a59ab765ff886ef": "Verlängerung verfolgen",
   "97f160e15a8dca18": "Nächste 24 Stunden",

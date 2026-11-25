@@ -23,7 +23,7 @@ An enabled `omp` usage limit source SHALL open the configured SQLite database (`
 #### Scenario: Native-driver cached rows deduplicate against native and CLIProxyAPI routes
 
 - **WHEN** `agent.db` contains `usage_cache:report:*` rows for providers T3 Lab natively supports (`openai-codex`, `cursor`, `xai-oauth`, `muse-code`, `opencode-go`, `google-antigravity`, `anthropic`)
-- **THEN** the `omp` source emits them in `snapshot.accounts[]` with the mapped T3 `driver` and reported `email`/`workspaceId` so `collectLimitsIntelligence` and `collectLimitAccounts` merge them by canonical identity without attaching CLIProxyAPI reset-credit redemption
+- **THEN** rows with a verified `email` are emitted in `snapshot.accounts[]` with the mapped T3 `driver` and reported `email`/`workspaceId` so `collectLimitsIntelligence` and `collectLimitAccounts` merge them by canonical identity without attaching CLIProxyAPI reset-credit redemption, while email-less rows (e.g. `api_key|secret:*` or workspace-only entries) stay explicitly separated in `snapshot.quotaAccounts[]` so they never create unverified duplicate native rows
 
 #### Scenario: Non-native cached providers surface as rich quota accounts
 
@@ -75,7 +75,7 @@ An enabled `zai` usage limit source SHALL query `https://api.z.ai` (`region: "gl
 
 ### Requirement: Last-Good Quota Preservation and Intelligence Projection
 
-`UsageLimitSources` SHALL retain the previous valid `quotaAccounts` when a transient refresh returns an error for the same configured source identity, and shared projections SHALL surface all `quotaAccounts` across `/usage` Pools, Matrix, Resets, Alerts, Expiries, notices, and thread details.
+`UsageLimitSources` SHALL retain the previous valid `quotaAccounts` when a transient refresh returns an error for the same configured source identity, and shared projections SHALL surface all `quotaAccounts` across `/usage` Pools, Matrix, Resets, Alerts, Expiries, and notices, while thread details SHALL surface `quotaAccounts` from any source kind only when explicitly bound via `providerInstanceId` (never attaching unbound independent sources to unrelated threads).
 
 #### Scenario: Transient Kimi or Z.ai outage keeps last good quota readings
 

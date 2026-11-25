@@ -441,6 +441,28 @@ const HUB_PROVIDERS = new Map<string, HubProvider>([
   ],
 ]);
 
+/**
+ * Normalizes a CLIProxyAPI hub URL so the wire endpoint, cache identity, and management API
+ * requests target the same path (stripping a trailing `/management.html` and trailing slashes).
+ */
+export function normalizeCliproxyHubUrl(rawUrl: string): {
+  readonly origin: string;
+  readonly endpoint: string;
+  readonly managementBase: URL;
+} | null {
+  const url = URL.parse(rawUrl);
+  if (!url || !/^https?:$/.test(url.protocol) || url.username || url.password) return null;
+  url.hash = "";
+  const trimmedPath = url.pathname.replace(/(\/management\.html)?\/*$/i, "");
+  const managementBase = new URL(url.href);
+  managementBase.pathname = `${trimmedPath}/`;
+  return {
+    origin: url.origin,
+    endpoint: `${url.origin}${trimmedPath}`,
+    managementBase,
+  };
+}
+
 export const makeCliproxyApi = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const digest = yield* Digest.Digest;
@@ -452,15 +474,11 @@ export const makeCliproxyApi = Effect.gen(function* () {
     path: string,
     body?: unknown,
   ) {
-    const url = yield* Effect.try({
-      try: () => {
-        const base = new URL(hub.url);
-        // Users often paste the hub's web panel URL, which ends in management.html.
-        base.pathname = base.pathname.replace(/(\/management\.html)?\/?$/i, "/");
-        return new URL(`v0/management/${path}`, base).toString();
-      },
-      catch: () => new UsageLimitSourceError({ detail: "The hub URL is not valid." }),
-    });
+    const normalized = normalizeCliproxyHubUrl(hub.url);
+    if (!normalized) {
+      return yield* new UsageLimitSourceError({ detail: "The hub URL is not valid." });
+    }
+    const url = new URL(`v0/management/${path}`, normalized.managementBase).toString();
     const request = (
       body === undefined ? HttpClientRequest.get(url) : HttpClientRequest.post(url)
     ).pipe(HttpClientRequest.setHeader("Authorization", `Bearer ${hub.managementKey}`));

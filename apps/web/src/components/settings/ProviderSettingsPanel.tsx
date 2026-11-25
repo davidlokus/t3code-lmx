@@ -594,6 +594,11 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.projectProviderInstanceOverrides === true,
   );
+  // Hide omp/kimi/zai source options when connected to an older server that only decodes cliproxy/http.
+  const supportsExtendedUsageLimitSources = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.extendedUsageLimitSources === true,
+  );
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1151,6 +1156,7 @@ export function EnvironmentProviderSettings({
         environmentLabel={environmentLabel}
         sources={settings.usageLimitSources}
         readOnly={readOnly}
+        supportsExtendedSources={supportsExtendedUsageLimitSources}
       />
 
       {/* The server drops text generators under a provider allow-list. */}

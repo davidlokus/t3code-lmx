@@ -52,17 +52,15 @@ export function resolveThreadHttpQuotas(
 ) {
   if (providerInstanceId === null) return [];
   return sources.flatMap((source) =>
-    source.kind === "http"
-      ? (source.quotaAccounts ?? []).flatMap((account) =>
-          account.providerInstanceId === providerInstanceId
-            ? account.windows.map((window) => ({
-                key: JSON.stringify([source.id, account.id, window.id]),
-                accountLabel: account.label,
-                window,
-              }))
-            : [],
-        )
-      : [],
+    (source.quotaAccounts ?? []).flatMap((account) =>
+      account.providerInstanceId === providerInstanceId
+        ? account.windows.map((window) => ({
+            key: JSON.stringify([source.id, account.id, window.id]),
+            accountLabel: account.label,
+            window,
+          }))
+        : [],
+    ),
   );
 }
 

@@ -21,6 +21,8 @@ export const CLIENT_CAPABILITIES_QUERY_PARAM = "clientCapabilities";
 export const SETTINGS_SECRET_REFERENCES_CAPABILITY = "settingsSecretReferences";
 /** Usage limit sources may be of kind "http", not only "cliproxy". */
 export const HTTP_USAGE_LIMIT_SOURCES_CAPABILITY = "httpUsageLimitSources";
+/** Usage limit sources may also be of kind "omp", "kimi", or "zai" (with optional region). */
+export const EXTENDED_USAGE_LIMIT_SOURCES_CAPABILITY = "extendedUsageLimitSources";
 
 export const ExecutionEnvironmentPlatformOs = Schema.Literals([
   "darwin",
@@ -130,6 +132,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Every protocol-2 server sends this; older mobile builds still read it. */
   environmentThemes: Schema.optionalKey(Schema.Boolean),
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
+  /** Accepts "omp", "kimi", and "zai" usage limit sources; older servers only accept "cliproxy" and "http". */
+  extendedUsageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Honors `workspaceSnapshotsOnDemand`; older servers send every snapshot and drop them in the stream. */
   providerWorkspaceSnapshotsOnDemand: Schema.optionalKey(Schema.Boolean),
   /** Honors `modelCatalogOnly`; older servers drop the field and probe every provider. */

@@ -7571,20 +7571,30 @@
   "dc87902396b8ade4": "Letras, dígitos, '-' ou '_'.",
   "251dfec07b7c3612": "Este driver não exige configuração. Você pode adicionar a instância agora.",
   "08fe32f007e788f1": "Configurar manualmente",
+  "17ccef4ee78377e1": "Hub CLIProxyAPI",
+  "dbd877abdc2c7c81": "Fonte de cotas HTTP",
+  "d506ce8b0300061c": "Cache local do OMP",
+  "1b4eb0f933274892": "Kimi Code",
+  "0765824fc86ac61e": "Z.ai / BigModel",
+  "4ca61d42a50cb12f": "Global (api.kimi.ai)",
+  "991aa1a77c649a96": "China (api.kimi.com)",
+  "7860eb75df697e4a": "China (open.bigmodel.cn)",
+  "c2d9abbaa482f204": "Global (api.z.ai)",
   "65300794c1edb929": "Token Bearer (opcional)",
   "84eb2878dc17d3eb": "Chave de gerenciamento",
+  "cad38c8893ab98e4": "Chave de API",
   "7ac196c1e8175928": "Usa o nome do host do hub por padrão",
-  "0c026221dcd2820b": "Adicionar uma fonte de cotas HTTP",
+  "c3bb1b02f759513c": "Padrão: cache local do OMP",
+  "758fd105d61f060c": "Padrão: Kimi Code",
+  "a1c1d25aa3c703e4": "Padrão: Z.ai",
+  "4809220aa17c66b5": "Padrão: nome do host do endpoint",
+  "05d145b2961446c2": "Tipo de fonte",
+  "9440f5a5a9b8d8f9": "Região",
   "e3548407052e9e12": "Adicionar um hub CLIProxyAPI",
-  "d185c750156b2121": [
-    "Consulte as cotas em um endpoint em ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
+  "0c026221dcd2820b": "Adicionar uma fonte de cotas HTTP",
+  "1007886c2c1a36de": "Adicionar cache local do OMP",
+  "b0c43dd75ca0d6b7": "Adicionar cota do Kimi Code",
+  "2faf1206960bad9c": "Adicionar cota do Z.ai / BigModel",
   "432e85a50e2e7964": [
     "Mostra a cota de cada conta agrupada pelo hub, ao lado dos provedores em",
     " ",
@@ -7595,13 +7605,50 @@
     },
     ". A chave fica nesse servidor."
   ],
+  "d185c750156b2121": [
+    "Consulte as cotas em um endpoint em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "029ce2453100e651": [
+    "Ler relatórios de cota em cache em modo somente leitura do agent.db em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Nunca lê credenciais OAuth nem renova tokens."
+  ],
+  "4cbe9f07f5f23631": [
+    "Ler cotas do plano Kimi Code e saldo Booster em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". A chave de API permanece nesse servidor."
+  ],
+  "e89b5c7acd38f7a9": [
+    "Ler cotas do GLM Coding Plan e data de renovação em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". A chave de API permanece nesse servidor."
+  ],
+  "915324a100de587d": "Tipo de fonte",
+  "b56c8c003c79841d": "Região",
+  "bf2c160f8212e4f5": "Caminho do banco de dados (opcional)",
   "2324770ba91371ac": "URL do endpoint",
   "556a695b117565ac": "URL do hub",
-  "e4e5b75bba51396c": "Token Bearer (opcional)",
-  "e62cedcbcdbafc75": "Chave de gerenciamento",
   "f1b3d0634ec035cb": "Rótulo (opcional)",
-  "b35256ca61016104": "Adicionar fonte",
   "52814dd6f7d0a15c": "Adicionar hub",
+  "b35256ca61016104": "Adicionar fonte",
   "27b770d3402abfa2": "Avançado",
   "584595dfcadab699": "Arte",
   "7df1a31c9019f5ff": "Arte do Nightly",
@@ -7978,7 +8025,6 @@
   "c8361c16c47d5fb5": "Pesquisar modelos de transcrição",
   "d72eccdd92d4f989": "Não foi possível salvar esta alteração. Verifique sua conexão e tente novamente.",
   "ef5fef499da688e8": "Substituir chave de API",
-  "cad38c8893ab98e4": "Chave de API",
   "42ec8bbd6819af00": "Chave de API da {company}",
   "03d751a890780a70": "Referência da chave de API da {company}",
   "2db595fcf95d3ff6": "Informe a chave de API",
@@ -11618,9 +11664,7 @@
     }
   ],
   "39f64d971ba424b5": "Nenhuma fonte de uso configurada.",
-  "dbd877abdc2c7c81": "Fonte de cotas HTTP",
   "4cf6a373a7535324": "{name} · Desativado",
-  "c792e744936dbe1b": "Adicionar fonte HTTP",
   "4032a03ee5301037": "A conexão salva e suas credenciais são removidas deste ambiente.",
   "0424112d5a0ecd71": "Automático",
   "3f0e1b77e45d53a9": "Toque para alternar, segure para falar",
@@ -13092,6 +13136,9 @@
   "66f86e32e382911d": "Abaixo do ritmo",
   "844bcaadbf7e217f": "No ritmo",
   "c2e3c47bd3aaa4f6": "Fonte HTTP",
+  "6e26d9e1ed75423a": "Cache OMP",
+  "e23aca0e0c5d8a2f": "Kimi Code",
+  "dcd6ef5faf4761b9": "Z.ai",
   "b14eb83f4f7aa041": "Editar detalhes",
   "8a59ab765ff886ef": "Registrar renovação",
   "97f160e15a8dca18": "Próximas 24 horas",
