@@ -1,3 +1,4 @@
+import type { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
@@ -307,6 +308,7 @@ export function UsageDashboard() {
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshingRef = useRef(false);
+  const modalActionsRef = useRef<DialogPrimitive.Root.Actions | null>(null);
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
   const [inspectedSession, setInspectedSession] = useState<MergedSessionTotals | null>(null);
@@ -551,6 +553,12 @@ export function UsageDashboard() {
       return;
     }
     const command = resolveUsageShortcut(event, keybindings);
+    if (command === "usage.open") {
+      event.preventDefault();
+      event.stopPropagation();
+      modalActionsRef.current?.close();
+      return;
+    }
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
     const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
     if (!metricOption && !periodOption) return;
@@ -775,7 +783,7 @@ export function UsageDashboard() {
   ).eligible;
 
   return (
-    <AppRouteModal label={gt("Usage")}>
+    <AppRouteModal label={gt("Usage")} actionsRef={modalActionsRef}>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <UsageTopbar
           view={view}
