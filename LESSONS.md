@@ -1,4 +1,4 @@
-<!-- reviewed-through: e58a3d9e34 (2026-11-25) -->
+<!-- reviewed-through: 4c52a1435c (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -100,3 +100,11 @@
 - **铁证**：PR #15（`e745f9705e`，同步 512 个上游提交）在单机 `Fork CI` Run `45556033883` 第 15 分钟因 596 文件超时被杀、Run `45558482027` 跑满 35m11s；改为分片双模式后 Run `45565260782` 11 分钟内直接揪出 PR #12 遗留的 `UsageProviderChart.test.ts`（缺 `omp`）与 `pi_output.ts`（缺 `cost`/`reasoningOutputTokens`）以及上游新增的 `McpAppFrame.browser.test.tsx`（硬编码 `"T3 Code"`），修齐后 Run `45567482753` 全部 13 个分片在 ~9 分钟绿灯通过。
 - **代码守卫**：`.github/workflows/fork-ci.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`apps/web/src/components/chat/McpAppFrame.browser.test.tsx`、`apps/web/src/components/usage/UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`。
 - **Seen**：1（2026-11-25，PR #15）
+
+## 12. `Fork Release` 不可用局部 `--filter` 安装配根级 `vp test run`，且 macOS 打包 Runner 须对齐 Xcode 26 (`macos-26`)
+
+- **规则**：① `.github/workflows/fork-release.yml` 的 `preflight` 作业从仓库根执行 `vp test run packages/shared/src/forkIdentity.guard.test.ts` 时，必须使用完整工作区安装（复用 `Fork CI` 缓存的 `pnpm-full-v1-*` store），严禁传 `--filter=@t3tools/shared...`。② `build_mac_arm64` 作业必须运行在 `macos-26`（默认 Xcode 26），满足上游 `apps/desktop/scripts/build-apple-speech.mjs` 对 `-target arm64-apple-macos26.0` 的硬性编译要求，并显式安装 `--filter=@t3tools/web...` 与保存 macOS pnpm store 缓存。
+- **原因**：根目录 `vite.config.ts` 在 `process.cwd() === import.meta.dirname` 时会自动加载 `TEST_CONFIG_PACKAGES`（含 `apps/web/vite.config.ts` 与 `apps/mobile/vite.config.ts`），`--filter=@t3tools/shared...` 缺少 `@vitejs/plugin-react` 和 `@babel/core` 会直接报 `ERR_MODULE_NOT_FOUND`；同时上游在同步后要求打包期编译 `t3-apple-speech` helper，`macos-15` 默认 Xcode 16 会直接失败。
+- **铁证**：`v0.1.12-lab.5` 首次触发 `Fork Release`（Run `45572850935`）在 `Preflight -> Run Fork invariant guard` 第 48 秒因缺少 `@vitejs/plugin-react` 和 `@babel/core` 失败；排查 `build_mac_arm64` 时同时检出 `macos-15` 与 `build-apple-speech.mjs` 的 Xcode 26 硬性要求冲突。
+- **代码守卫**：`.github/workflows/fork-release.yml`、`packages/shared/src/forkIdentity.guard.test.ts`。
+- **Seen**：1（2026-11-25，`v0.1.12-lab.5`）

@@ -146,6 +146,16 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
       assert.include(forkCi, "test_server:");
       assert.include(forkCi, "!/.repos/");
       assert.notInclude(forkCi, "persist-credentials: false");
+
+      const forkRelease = yield* readRepoFile(".github/workflows/fork-release.yml");
+      assert.include(forkRelease, "runs-on: macos-26");
+      assert.include(forkRelease, "!/.repos/");
+      assert.notInclude(forkRelease, "persist-credentials: false");
+      assert.notInclude(
+        forkRelease,
+        "--filter=@t3tools/shared...",
+        "preflight runs root `vp test run`, which loads all workspace vite configs",
+      );
     }),
   );
 
