@@ -18,7 +18,11 @@ describe("parseCodexLine", () => {
   const sessionMeta = JSON.stringify({
     type: "session_meta",
     timestamp: "2026-08-01T05:17:41.289Z",
-    payload: { type: "session_meta", id: "019fbbc1-b12c-7360-a685-28c181f0025f" },
+    payload: {
+      type: "session_meta",
+      id: "019fbbc1-b12c-7360-a685-28c181f0025f",
+      cwd: "/work/main",
+    },
   });
   const turnContext = JSON.stringify({
     type: "turn_context",
@@ -63,12 +67,17 @@ describe("parseCodexLine", () => {
   it("attributes usage to the model from the preceding turn context", () => {
     const state = initialCodexScanState();
     parseCodexLine(sessionMeta, state);
+    codexUsageFormat.parseProjected(
+      { type: "session_meta", payload: { id: "copied-parent", cwd: "/work/parent" } },
+      state,
+    );
     parseCodexLine(turnContext, state);
     const record = parseCodexLine(tokenCount(19239, 11008, 299, 116), state);
 
     expect(record?.provider).toBe("codex");
     expect(record?.model).toBe("gpt-5.6-sol");
     expect(record?.sessionId).toBe("019fbbc1-b12c-7360-a685-28c181f0025f");
+    expect(record?.cwd).toBe("/work/main");
     expect(record?.totals.uncachedInputTokens).toBe(19239 - 11008);
     expect(record?.totals.cachedInputTokens).toBe(11008);
     expect(record?.totals.reasoningTokens).toBe(116);

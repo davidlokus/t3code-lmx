@@ -70,6 +70,8 @@ export const UsageBucket = Schema.Struct({
   /** Absent from older servers; merges then estimate it from the unpriced record share. */
   unpricedTokens: Schema.optional(NonNegativeInt),
   sessions: NonNegativeInt,
+  // fork: Exact reported spend even when this bucket also contains estimated records.
+  providerReportedCostUsd: Schema.optional(Schema.Number),
 });
 export type UsageBucket = typeof UsageBucket.Type;
 
@@ -134,6 +136,61 @@ export const UsageModelFilter = Schema.Struct({
 });
 export type UsageModelFilter = typeof UsageModelFilter.Type;
 
+// fork: Project and session attribution is optional on the wire for pre-dashboard servers.
+export const UNATTRIBUTED_USAGE_PROJECT_KEY = "__unattributed__" as const;
+
+export const UsageProjectFilter = Schema.Struct({ projectKey: TrimmedNonEmptyString });
+export type UsageProjectFilter = typeof UsageProjectFilter.Type;
+
+export const UsageProjectTopModel = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  costUsd: Schema.Number,
+  totalTokens: NonNegativeInt,
+});
+
+export const UsageProjectBucket = Schema.Struct({
+  projectKey: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  t3ProjectId: Schema.optional(TrimmedNonEmptyString),
+  worktreeCount: NonNegativeInt,
+  worktreeRoots: Schema.optional(ForwardCompatibleArray(TrimmedNonEmptyString)),
+  unattributed: Schema.optional(Schema.Literal(true)),
+  provider: UsageProviderKind,
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
+  totals: UsageTokenTotals,
+  costUsd: Schema.Number,
+  providerReportedCostUsd: Schema.optional(Schema.Number),
+  cacheSavingsUsd: Schema.Number,
+  records: NonNegativeInt,
+  unpricedRecords: NonNegativeInt,
+  sessions: NonNegativeInt,
+  topModels: Schema.optional(ForwardCompatibleArray(UsageProjectTopModel)),
+});
+export type UsageProjectBucket = typeof UsageProjectBucket.Type;
+
+export const UsageSessionSummary = Schema.Struct({
+  sessionId: TrimmedNonEmptyString,
+  provider: UsageProviderKind,
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
+  title: Schema.optional(TrimmedNonEmptyString),
+  t3ThreadId: Schema.optional(TrimmedNonEmptyString),
+  t3ProjectId: Schema.optional(TrimmedNonEmptyString),
+  projectKey: TrimmedNonEmptyString,
+  projectLabel: TrimmedNonEmptyString,
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  primaryModel: TrimmedNonEmptyString,
+  models: ForwardCompatibleArray(TrimmedNonEmptyString),
+  totals: UsageTokenTotals,
+  costUsd: Schema.Number,
+  providerReportedCostUsd: Schema.optional(Schema.Number),
+  records: NonNegativeInt,
+  unpricedRecords: NonNegativeInt,
+  firstTimestampMs: Schema.Number,
+  lastTimestampMs: Schema.Number,
+});
+export type UsageSessionSummary = typeof UsageSessionSummary.Type;
+
 export const UsageSummaryInput = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
@@ -146,6 +203,8 @@ export const UsageSummaryInput = Schema.Struct({
   /** Accept an immediate answer from the last scan; its sources are marked refreshing. */
   provisional: Schema.optional(Schema.Boolean),
   modelFilter: Schema.optional(UsageModelFilter),
+  projectFilter: Schema.optional(UsageProjectFilter),
+  providers: Schema.optional(Schema.Array(UsageProviderKind)),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
@@ -161,6 +220,9 @@ export const UsageSummary = Schema.Struct({
   scanDurationMs: NonNegativeInt,
   /** The filter the server applied; absent means unfiltered, including servers that predate filters. */
   modelFilter: Schema.optional(UsageModelFilter),
+  projects: Schema.optional(ForwardCompatibleArray(UsageProjectBucket)),
+  topSessions: Schema.optional(ForwardCompatibleArray(UsageSessionSummary)),
+  projectFilter: Schema.optional(UsageProjectFilter),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 

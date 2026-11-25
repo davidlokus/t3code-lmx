@@ -1,6 +1,7 @@
 import type { ClaudeSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
@@ -15,19 +16,25 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 // Claude Code uses this model for local placeholders that never reached the API.
 export const CLAUDE_SYNTHETIC_MODEL = "<synthetic>";
 
+const ClaudeScanState = Schema.Struct({
+  titles: Schema.mutableKey(Schema.optionalKey(Schema.Record(Schema.String, Schema.String))),
+  customTitles: Schema.mutableKey(Schema.optionalKey(Schema.Record(Schema.String, Schema.String))),
+});
+type ClaudeScanState = typeof ClaudeScanState.Type;
+
 /**
  * Claude Code repeats a message's `dedupeKey` for each assistant content block.
  * Subagent blocks can progress from stream-start to final usage, so callers
  * must count each key once using the maximum of each token channel.
  */
-export function parseClaudeLine(line: string): readonly UsageRecord[] {
+export function parseClaudeLine(line: string, state?: ClaudeScanState): readonly UsageRecord[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
     return [];
   }
-  return parseClaudeRecord(parsed);
+  return parseClaudeRecord(parsed, state);
 }
 
 function cacheCreation1h(usage: Record<string, unknown>): { cacheCreation1hTokens?: number } {
@@ -37,11 +44,23 @@ function cacheCreation1h(usage: Record<string, unknown>): { cacheCreation1hToken
   return tokens > 0 ? { cacheCreation1hTokens: tokens } : {};
 }
 
-function parseClaudeRecord(parsed: unknown): readonly UsageRecord[] {
+function parseClaudeRecord(parsed: unknown, state?: ClaudeScanState): readonly UsageRecord[] {
   if (typeof parsed !== "object" || parsed === null) return [];
 
   const record = parsed as Record<string, unknown>;
-  if (record["type"] !== "assistant") return [];
+  const type = record["type"];
+  const sessionId = typeof record["sessionId"] === "string" ? record["sessionId"] : "";
+  if (type === "ai-title" || type === "custom-title") {
+    const value = record[type === "custom-title" ? "customTitle" : "aiTitle"];
+    const title = typeof value === "string" ? value.trim() : "";
+    if (state !== undefined && sessionId && title) {
+      if (type === "custom-title")
+        state.customTitles = { ...state.customTitles, [sessionId]: title };
+      else state.titles = { ...state.titles, [sessionId]: title };
+    }
+    return [];
+  }
+  if (type !== "assistant") return [];
 
   const message = record["message"];
   if (typeof message !== "object" || message === null) return [];
@@ -63,12 +82,14 @@ function parseClaudeRecord(parsed: unknown): readonly UsageRecord[] {
     messageId === null && requestId === null ? null : `${messageId ?? ""}:${requestId ?? ""}`;
 
   const cost = record["costUSD"];
+  const cwd = typeof record["cwd"] === "string" ? record["cwd"].trim() : "";
 
   const executor: UsageRecord = {
     provider: "claude",
     timestampMs,
     model,
-    sessionId: typeof record["sessionId"] === "string" ? record["sessionId"] : "",
+    sessionId,
+    ...(cwd ? { cwd } : {}),
     totals: {
       uncachedInputTokens: tokenCount(usageRecord["input_tokens"]),
       cachedInputTokens: tokenCount(usageRecord["cache_read_input_tokens"]),
@@ -102,6 +123,7 @@ function parseClaudeRecord(parsed: unknown): readonly UsageRecord[] {
       timestampMs,
       model: advisorModel,
       sessionId: executor.sessionId,
+      ...(cwd ? { cwd } : {}),
       totals: {
         uncachedInputTokens: tokenCount(advisor["input_tokens"]),
         cachedInputTokens: tokenCount(advisor["cache_read_input_tokens"]),
@@ -118,18 +140,24 @@ function parseClaudeRecord(parsed: unknown): readonly UsageRecord[] {
   return records;
 }
 
-export const claudeUsageFormat: TranscriptUsageFormat<void> = {
+export const claudeUsageFormat: TranscriptUsageFormat<ClaudeScanState> = {
   selectFields: {
     type: true,
     timestamp: true,
     requestId: true,
     sessionId: true,
+    cwd: true,
+    aiTitle: true,
+    customTitle: true,
     costUSD: true,
     message: { id: true, model: true, usage: true },
   },
-  usageMarkers: ['"usage"'],
-  parseLine: (line) => parseClaudeLine(line),
-  parseProjected: (projected) => parseClaudeRecord(projected),
+  usageMarkers: ['"usage"', '"ai-title"', '"custom-title"'],
+  parseLine: parseClaudeLine,
+  parseProjected: parseClaudeRecord,
+  state: { initial: () => ({}), schema: ClaudeScanState },
+  // Claude can append regenerated AI metadata after a user's rename.
+  readSessionTitles: (state) => new Map(Object.entries({ ...state.titles, ...state.customTitles })),
 };
 
 export const claudeUsageReader: ProviderUsageReader<ClaudeSettings, Path.Path> = {

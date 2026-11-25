@@ -225,6 +225,7 @@ import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAccountReader";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as UsageMetadataIndex from "./usage/UsageMetadataIndex.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
@@ -332,6 +333,13 @@ const layerUsage = UsageService.layer.pipe(
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
+  // fork: Attribute usage against the same project and SQLite projections as orchestration.
+  Layer.provide(
+    UsageMetadataIndex.layer.pipe(
+      Layer.provide(ProjectStore.layer),
+      Layer.provide(SqlitePersistence.layerConfig),
+    ),
+  ),
 );
 
 const layerResourceDiagnostics = Layer.mergeAll(

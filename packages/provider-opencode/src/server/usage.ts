@@ -2,6 +2,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
   totalTokens,
   type ProviderUsageReader,
+  type ProviderUsageScan,
   type UsageRecord,
 } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -70,12 +71,14 @@ function parseOpenCodeMessage(
   const cost = message.cost;
   const prefix = LITELLM_PREFIXES.get(providerId);
   const free = OPENCODE_GATEWAYS.has(providerId) && model.endsWith("-free");
+  const cwd = text(object(message.path).cwd).trim();
   return {
     provider: "opencode",
     timestampMs,
     model,
     ...(prefix !== undefined && !model.includes("/") ? { rateModel: `${prefix}/${model}` } : {}),
     sessionId: fallback.sessionId || text(message.sessionID),
+    ...(cwd ? { cwd } : {}),
     totals,
     // OpenCode records zero for unknown rates and paid subscriptions alike, so only its own
     // gateways' free models report zero; shared pricing estimates every other zero.
@@ -89,7 +92,7 @@ function parseOpenCodeMessage(
 }
 
 export interface OpenCodeUsageReadResult {
-  readonly files: readonly { readonly path: string; readonly records: readonly UsageRecord[] }[];
+  readonly files: NonNullable<ProviderUsageScan["files"]>;
   readonly missing: boolean;
   readonly error: boolean;
 }
@@ -133,19 +136,20 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
 ): Effect.fn.Return<OpenCodeUsageReadResult, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const files: { path: string; records: UsageRecord[] }[] = [];
+  const files: Array<NonNullable<ProviderUsageScan["files"]>[number]> = [];
   const seen = new Set<string>();
   let found = false;
   let error = false;
   let databaseRows = 0;
   let databasePages = 0;
   const append = (records: UsageRecord[], record: UsageRecord | null) => {
-    if (record === null || record.timestampMs < sinceMs) return;
+    if (record === null || record.timestampMs < sinceMs) return false;
     if (record.dedupeKey !== null) {
-      if (seen.has(record.dedupeKey)) return;
+      if (seen.has(record.dedupeKey)) return false;
       seen.add(record.dedupeKey);
     }
     records.push(record);
+    return true;
   };
 
   const databases = yield* fileSystem.readDirectory(root).pipe(
@@ -176,7 +180,11 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
   );
   for (const name of databases) {
     found = true;
-    const file = { path: path.join(root, name), records: [] as UsageRecord[] };
+    const file = {
+      path: path.join(root, name),
+      records: [] as UsageRecord[],
+      sessionTitles: new Map<string, string>(),
+    };
     files.push(file);
     // Taken before the snapshot opens, so a write that races the scan invalidates its rows.
     const [main, wal] = yield* Effect.forEach([file.path, `${file.path}-wal`], (target) =>
@@ -208,6 +216,26 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         sql
           .unsafe<{ readonly name: unknown }>(`PRAGMA table_info(${table})`)
           .pipe(Effect.map((rows) => new Set(rows.map((row) => row.name))));
+      const sessions = new Map<string, { cwd: string; title: string }>();
+      for (const table of ["session", "session_v2"] as const) {
+        if (!tables.has(table)) continue;
+        const columns = yield* columnsOf(table);
+        if (!columns.has("id") || (!columns.has("directory") && !columns.has("title"))) continue;
+        const directory = columns.has("directory") ? "directory" : "NULL";
+        const title = columns.has("title") ? "title" : "NULL";
+        const rows = yield* sql.unsafe<{ id: unknown; directory: unknown; title: unknown }>(
+          `SELECT id, ${directory} AS directory, ${title} AS title FROM ${table}`,
+        );
+        for (const row of rows) {
+          const id = text(row.id);
+          if (!id) continue;
+          const previous = sessions.get(id);
+          sessions.set(id, {
+            cwd: text(row.directory).trim() || previous?.cwd || "",
+            title: text(row.title).trim() || previous?.title || "",
+          });
+        }
+      }
       // A fork copies its parent's messages through the boundary under new ids, keeping
       // seq, creation time and data. Resolve each fork to its last copied seq so a copy
       // names its original as (session, seq). A fork whose boundary is gone keeps its usage.
@@ -325,7 +353,8 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
                  'tokens', data -> '$.tokens', 'cost', data -> '$.cost',
                  'model', data -> '$.model', 'modelID', data -> '$.modelID',
                  'providerID', data -> '$.providerID',
-                 'time', data -> '$.time', 'id', data -> '$.id', 'sessionID', data -> '$.sessionID'
+                 'time', data -> '$.time', 'id', data -> '$.id', 'sessionID', data -> '$.sessionID',
+                 'path', json_object('cwd', data -> '$.path.cwd')
                ) AS data
                FROM ${table}
                WHERE rowid IN (${page.map(() => "?").join(", ")}) AND ${validAssistant}
@@ -362,7 +391,15 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
             if (originals.has(copyOf)) continue;
             originals.add(copyOf);
           }
-          append(file.records, record);
+          if (record === null) continue;
+          const session = sessions.get(record.sessionId);
+          const cwd = session?.cwd;
+          if (
+            append(file.records, cwd && cwd !== record.cwd ? { ...record, cwd } : record) &&
+            session?.title
+          ) {
+            file.sessionTitles.set(record.sessionId, session.title);
+          }
         }
         // Rows before this window were not listed; keep them for a wider window until retention.
         for (const [rowId, entry] of reusable ?? []) {

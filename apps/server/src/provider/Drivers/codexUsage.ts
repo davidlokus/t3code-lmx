@@ -137,6 +137,7 @@ export const CodexScanState = Schema.Struct({
   model: Schema.mutableKey(Schema.String),
   speed: Schema.mutableKey(CodexSpeed),
   sessionId: Schema.mutableKey(Schema.String),
+  cwd: Schema.mutableKey(Schema.optionalKey(Schema.String)),
   lastUsageSignature: Schema.mutableKey(Schema.NullOr(Schema.String)),
   lastCumulativeUsage: Schema.mutableKey(Schema.NullOr(CodexTokenUsage)),
   // Optional so scan states cached before these fields existed stay valid.
@@ -232,6 +233,8 @@ function parseCodexRecord(parsed: unknown, state: CodexScanState): readonly Usag
     state.sawSessionMeta = true;
     const id = payloadRecord["id"] ?? payloadRecord["session_id"];
     if (typeof id === "string") state.sessionId = id;
+    const cwd = typeof payloadRecord["cwd"] === "string" ? payloadRecord["cwd"].trim() : "";
+    if (cwd) state.cwd = cwd;
     if (typeof payloadRecord["model_provider"] === "string") {
       state.modelProvider = payloadRecord["model_provider"];
     }
@@ -468,6 +471,7 @@ function codexRequestRecord(
     timestampMs,
     model,
     sessionId: state.sessionId,
+    ...(state.cwd === undefined ? {} : { cwd: state.cwd }),
     totals,
     reportedCostUsd: null,
     speed,
@@ -496,6 +500,7 @@ export const codexUsageFormat: TranscriptUsageFormat<CodexScanState> = {
       type: true,
       id: true,
       session_id: true,
+      cwd: true,
       model_provider: true,
       turn_id: true,
       response_id: true,

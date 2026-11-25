@@ -56,4 +56,74 @@ describe("UsageModelDialog", () => {
         .toBeVisible();
     }
   });
+
+  it("normalizes project contribution shares against the model full total when more than 8 projects exist", async () => {
+    const tokens = {
+      uncachedInputTokens: 100,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+    };
+    const projects = Array.from({ length: 10 }, (_, index) => ({
+      projectKey: `path:/work/p-${index}`,
+      label: `Project ${index}`,
+      workspaceRoot: `/work/p-${index}`,
+      providers: ["claude" as const],
+      worktreeCount: 1,
+      providerReportedCostUsd: 1,
+      cacheSavingsUsd: 0,
+      sessions: 1,
+      totals: tokens,
+      totalTokens: 100,
+      costUsd: 1,
+      records: 1,
+      unpricedRecords: 0,
+      topModel: "claude-sonnet-4-5",
+      modelContributions: [
+        {
+          provider: "claude" as const,
+          model: "claude-sonnet-4-5",
+          costUsd: 1,
+          totalTokens: 100,
+        },
+      ],
+      costShare: 0.1,
+      tokenShare: 0.1,
+    }));
+
+    await using _screen = await render(
+      <UsageModelDialog
+        model={{
+          model: "claude-sonnet-4-5",
+          provider: "claude",
+          costUsd: 10,
+          totalTokens: 1000,
+          tokens,
+          records: 10,
+          unpricedRecords: 0,
+          unpricedTokens: 0,
+          costShare: 1,
+          tokenShare: 1,
+        }}
+        environments={[]}
+        projects={projects}
+        metric="cost"
+        chartWindow={{
+          days: [],
+          hours: [],
+          resolution: "day",
+          timeZone: "UTC",
+          referenceTime: undefined,
+          hour12: false,
+        }}
+        onSetPrice={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    const dialog = page.getByRole("dialog");
+    // Each of the 10 projects has $1 out of $10 full model total -> 10% (not 1/8 = 12.5%)
+    await expect.element(dialog.getByText("$1.00 · 10%", { exact: true }).first()).toBeVisible();
+  });
 });

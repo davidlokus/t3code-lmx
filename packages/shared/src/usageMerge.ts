@@ -2,7 +2,10 @@ import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
+  type UsageProjectBucket,
   type UsageProviderKind,
+  type UsageProjectTopModel,
+  type UsageSessionSummary,
   type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
@@ -13,6 +16,7 @@ export interface EnvironmentUsage {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly summary: UsageSummary;
+  readonly isConnected?: boolean;
 }
 
 export interface ProviderTotals {
@@ -86,8 +90,29 @@ export interface UsageContractMismatch {
   readonly contractVersion: number;
 }
 
+export interface MergedProjectTotals extends Omit<
+  UsageProjectBucket,
+  "provider" | "sourcePath" | "topModels" | "providerReportedCostUsd" | "worktreeRoots"
+> {
+  readonly totalTokens: number;
+  readonly providerReportedCostUsd: number;
+  readonly providers: readonly UsageProviderKind[];
+  readonly topModel: string | null;
+  readonly modelContributions: readonly (typeof UsageProjectTopModel.Type & {
+    readonly provider: UsageProviderKind;
+  })[];
+  readonly costShare: number;
+  readonly tokenShare: number;
+}
+
+export interface MergedSessionTotals extends UsageSessionSummary {
+  readonly environmentId: EnvironmentId;
+  readonly totalTokens: number;
+}
+
 export interface MergedUsage {
   readonly costUsd: number;
+  readonly providerReportedCostUsd: number;
   readonly uncachedInputTokens: number;
   readonly cachedInputTokens: number;
   readonly cacheCreationTokens: number;
@@ -98,6 +123,12 @@ export interface MergedUsage {
   readonly sessions: number;
   readonly providers: readonly ProviderTotals[];
   readonly models: readonly ModelTotals[];
+  readonly projects: readonly MergedProjectTotals[];
+  readonly topSessions: readonly MergedSessionTotals[];
+  readonly hasProjectAttribution: boolean;
+  readonly hasSessionAttribution: boolean;
+  readonly partialProjectAttribution: boolean;
+  readonly partialSessionAttribution: boolean;
   readonly daily: readonly DailyTotals[];
   readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
@@ -159,19 +190,21 @@ function bucketKey(bucket: UsageBucket): string {
   return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
 }
 
+interface OwnedUsageSource {
+  readonly environment: EnvironmentUsage;
+  readonly source: UsageSource;
+}
+
 function claimSources(
   environments: readonly EnvironmentUsage[],
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
 ): {
-  readonly ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>;
+  readonly ownerScanByFingerprint: ReadonlyMap<string, OwnedUsageSource>;
   readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, ReadonlySet<UsageBucket>>;
   readonly sessionsByFingerprint: ReadonlyMap<string, number>;
   readonly duplicates: readonly string[];
 } {
-  const ownerScanByFingerprint = new Map<
-    string,
-    { environment: EnvironmentUsage; source: UsageSource }
-  >();
+  const ownerScanByFingerprint = new Map<string, OwnedUsageSource>();
   const seenBucketKeysByFingerprint = new Map<string, Set<string>>();
   const supplementalBucketsByEnvironment = new Map<EnvironmentId, Set<UsageBucket>>();
   const sessionsByFingerprint = new Map<string, number>();
@@ -208,6 +241,8 @@ function claimSources(
       if (
         owner?.source.status !== "ok" ||
         Date.parse(environment.summary.readAt) <= Date.parse(owner.environment.summary.readAt) ||
+        environment.summary.projectFilter?.projectKey !==
+          owner.environment.summary.projectFilter?.projectKey ||
         JSON.stringify(environment.summary.modelFilter) !==
           JSON.stringify(owner.environment.summary.modelFilter)
       ) {
@@ -247,13 +282,14 @@ function claimSources(
 
 function ownedContribution(
   environment: EnvironmentUsage,
-  ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>,
+  ownerScanByFingerprint: ReadonlyMap<string, OwnedUsageSource>,
   supplementalBuckets: ReadonlySet<UsageBucket>,
   sessionsByFingerprint: ReadonlyMap<string, number>,
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
+  readonly owns: (entry: Pick<UsageBucket, "provider" | "sourcePath">) => boolean;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
   const ownedSources = new Set<string>();
@@ -261,9 +297,9 @@ function ownedContribution(
   for (const source of environment.summary.sources) {
     if (source.status === "missing") continue;
     const key = sourceKey(source.fingerprint);
-    // By source, not environment: one server can reach a directory through two
-    // mounts, and only the winning reading may count.
-    if (ownerScanByFingerprint.get(key)?.source === source) {
+    // One environment can reach a directory through two mounts; only the winning source counts.
+    const owner = ownerScanByFingerprint.get(key);
+    if (owner?.environment === environment && owner.source === source) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
       ownedSources.add(`${provider}\u0000${source.fingerprint.resolvedHomePath}`);
@@ -275,25 +311,158 @@ function ownedContribution(
       );
     }
   }
+  const owns = ({ provider, sourcePath }: Pick<UsageBucket, "provider" | "sourcePath">) =>
+    sourcePath === undefined
+      ? ownedProviders.has(provider)
+      : ownedSources.has(`${provider}\u0000${sourcePath}`);
   return {
     buckets: environment.summary.buckets.filter(
-      (bucket) =>
-        supplementalBuckets.has(bucket) ||
-        (bucket.sourcePath === undefined
-          ? ownedProviders.has(bucket.provider)
-          : ownedSources.has(`${bucket.provider}\u0000${bucket.sourcePath}`)),
+      (bucket) => supplementalBuckets.has(bucket) || owns(bucket),
     ),
+    owns,
     sessionsByProvider,
   };
 }
 
-function bucketTokens(bucket: UsageBucket): number {
-  // reasoningTokens is a subset of outputTokens and must not be added again.
+function countTokens(totals: UsageTokenTotals): number {
   return (
-    bucket.totals.uncachedInputTokens +
-    bucket.totals.cachedInputTokens +
-    bucket.totals.cacheCreationTokens +
-    bucket.totals.outputTokens
+    totals.uncachedInputTokens +
+    totals.cachedInputTokens +
+    totals.cacheCreationTokens +
+    totals.outputTokens
+  );
+}
+
+type ProjectModel = {
+  -readonly [
+    Key in keyof MergedProjectTotals["modelContributions"][number]
+  ]: MergedProjectTotals["modelContributions"][number][Key];
+};
+
+function accumulateProject(projects: Map<string, ProjectContribution>, bucket: UsageProjectBucket) {
+  let project = projects.get(bucket.projectKey);
+  if (project === undefined) {
+    project = {
+      label: bucket.label,
+      projectKey: bucket.projectKey,
+      ...(bucket.workspaceRoot === undefined ? {} : { workspaceRoot: bucket.workspaceRoot }),
+      ...(bucket.t3ProjectId === undefined ? {} : { t3ProjectId: bucket.t3ProjectId }),
+      ...(bucket.unattributed === undefined ? {} : { unattributed: bucket.unattributed }),
+      totals: {
+        uncachedInputTokens: 0,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+      },
+      costUsd: 0,
+      providerReportedCostUsd: 0,
+      cacheSavingsUsd: 0,
+      records: 0,
+      unpricedRecords: 0,
+      sessions: 0,
+      worktreeCount: 0,
+      worktreeRoots: new Set(),
+      providers: new Set(),
+      models: new Map(),
+    };
+    projects.set(bucket.projectKey, project);
+  }
+  const totals = project.totals;
+  totals.uncachedInputTokens += bucket.totals.uncachedInputTokens;
+  totals.cachedInputTokens += bucket.totals.cachedInputTokens;
+  totals.cacheCreationTokens += bucket.totals.cacheCreationTokens;
+  totals.outputTokens += bucket.totals.outputTokens;
+  totals.reasoningTokens += bucket.totals.reasoningTokens;
+  project.costUsd += bucket.costUsd;
+  project.providerReportedCostUsd += bucket.providerReportedCostUsd ?? 0;
+  project.cacheSavingsUsd += bucket.cacheSavingsUsd;
+  project.records += bucket.records;
+  project.unpricedRecords += bucket.unpricedRecords;
+  project.sessions += bucket.sessions;
+  if (bucket.worktreeRoots !== undefined) {
+    for (const root of bucket.worktreeRoots) project.worktreeRoots.add(root);
+  } else {
+    project.worktreeCount = Math.max(project.worktreeCount, bucket.worktreeCount);
+  }
+  project.providers.add(bucket.provider);
+  for (const model of bucket.topModels ?? []) {
+    const key = `${bucket.provider}\u0000${model.model}`;
+    const held = project.models.get(key);
+    if (held === undefined) {
+      project.models.set(key, { ...model, provider: bucket.provider });
+    } else {
+      held.costUsd += model.costUsd;
+      held.totalTokens += model.totalTokens;
+    }
+  }
+}
+
+type ProjectContribution = Omit<
+  {
+    -readonly [Key in keyof MergedProjectTotals]: MergedProjectTotals[Key];
+  },
+  | "topModel"
+  | "modelContributions"
+  | "providers"
+  | "totalTokens"
+  | "costShare"
+  | "tokenShare"
+  | "totals"
+> & {
+  totals: { -readonly [Key in keyof UsageTokenTotals]: number };
+  worktreeRoots: Set<string>;
+  providers: Set<UsageProviderKind>;
+  models: Map<string, ProjectModel>;
+};
+
+function compareUsageRank(
+  a: { readonly costUsd: number; readonly totalTokens: number },
+  b: { readonly costUsd: number; readonly totalTokens: number },
+) {
+  return b.costUsd - a.costUsd || b.totalTokens - a.totalTokens;
+}
+
+function finishProjects(
+  projects: ReadonlyMap<string, ProjectContribution>,
+  costUsd: number,
+  totalTokens: number,
+): readonly MergedProjectTotals[] {
+  return [...projects.values()]
+    .map(({ models, providers, worktreeRoots, ...project }) => {
+      const modelContributions = [...models.values()].sort(compareUsageRank);
+      const tokens = countTokens(project.totals);
+      return {
+        ...project,
+        worktreeCount: Math.max(project.worktreeCount, worktreeRoots.size),
+        providers: [...providers].sort(),
+        modelContributions,
+        topModel: modelContributions[0]?.model ?? null,
+        totalTokens: tokens,
+        costShare: costUsd === 0 ? 0 : project.costUsd / costUsd,
+        tokenShare: totalTokens === 0 ? 0 : tokens / totalTokens,
+      };
+    })
+    .sort((a, b) => compareUsageRank(a, b) || a.projectKey.localeCompare(b.projectKey));
+}
+
+function compareSessions(a: MergedSessionTotals, b: MergedSessionTotals): number {
+  return (
+    compareUsageRank(a, b) ||
+    b.lastTimestampMs - a.lastTimestampMs ||
+    a.provider.localeCompare(b.provider) ||
+    a.sessionId.localeCompare(b.sessionId)
+  );
+}
+
+function preferSessionCopy(candidate: MergedSessionTotals, held: MergedSessionTotals): boolean {
+  // Aggregated copies can overlap; adding both cannot safely reconstruct the original records.
+  return (
+    (held.records - candidate.records ||
+      held.lastTimestampMs - candidate.lastTimestampMs ||
+      Number(held.t3ThreadId !== undefined) - Number(candidate.t3ThreadId !== undefined) ||
+      compareSessions(candidate, held) ||
+      candidate.environmentId.localeCompare(held.environmentId)) < 0
   );
 }
 
@@ -303,6 +472,7 @@ export function isCompatibleUsageContractVersion(version: number, expected: numb
 
 const EMPTY_MERGED: MergedUsage = {
   costUsd: 0,
+  providerReportedCostUsd: 0,
   uncachedInputTokens: 0,
   cachedInputTokens: 0,
   cacheCreationTokens: 0,
@@ -313,6 +483,12 @@ const EMPTY_MERGED: MergedUsage = {
   sessions: 0,
   providers: [],
   models: [],
+  projects: [],
+  topSessions: [],
+  hasProjectAttribution: false,
+  hasSessionAttribution: false,
+  partialProjectAttribution: false,
+  partialSessionAttribution: false,
   daily: [],
   hourly: [],
   costQuality: {
@@ -362,6 +538,7 @@ export function mergeUsage(
   } = claimSources(current, sourceKey);
 
   let costUsd = 0;
+  let providerReportedCostUsd = 0;
   let uncachedInputTokens = 0;
   let cachedInputTokens = 0;
   let cacheCreationTokens = 0;
@@ -409,10 +586,53 @@ export function mergeUsage(
       byProvider: Map<UsageProviderKind, { costUsd: number; totalTokens: number }>;
     }
   >();
+  const projectAccumulator = new Map<string, ProjectContribution>();
+  const sessionAccumulator = new Map<string, MergedSessionTotals>();
+  const linkedSessionMetadata = new Map<
+    string,
+    {
+      readonly environmentId: EnvironmentId;
+      readonly t3ThreadId: string;
+      readonly t3ProjectId?: string;
+      readonly title?: string;
+      readonly isConnected: boolean;
+      readonly readAtMs: number;
+    }
+  >();
+  let projectAttributionCount = 0;
+  let sessionAttributionCount = 0;
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(
+    const readAtMs = Date.parse(environment.summary.readAt) || 0;
+    const isConnected = environment.isConnected !== false;
+    for (const session of environment.summary.topSessions ?? []) {
+      if (session.t3ThreadId === undefined) continue;
+      const key = `${session.provider}\u0000${session.sessionId}`;
+      const existing = linkedSessionMetadata.get(key);
+      const preferCandidate =
+        existing === undefined ||
+        (isConnected && !existing.isConnected) ||
+        (isConnected === existing.isConnected &&
+          (readAtMs > existing.readAtMs ||
+            (readAtMs === existing.readAtMs &&
+              environment.environmentId.localeCompare(existing.environmentId) < 0)));
+      if (preferCandidate) {
+        linkedSessionMetadata.set(key, {
+          environmentId: environment.environmentId,
+          t3ThreadId: session.t3ThreadId,
+          ...(session.t3ProjectId === undefined ? {} : { t3ProjectId: session.t3ProjectId }),
+          ...(session.title === undefined ? {} : { title: session.title }),
+          isConnected,
+          readAtMs,
+        });
+      }
+    }
+  }
+
+  for (const environment of current) {
+    const ownerConnected = environment.isConnected !== false;
+    const { buckets, owns, sessionsByProvider } = ownedContribution(
       environment,
       ownerScanByFingerprint,
       supplementalBucketsByEnvironment.get(environment.environmentId) ?? new Set(),
@@ -420,6 +640,42 @@ export function mergeUsage(
       sourceKey,
     );
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
+    const { projects, topSessions } = environment.summary;
+    if (projects !== undefined) {
+      projectAttributionCount += 1;
+      for (const project of projects) {
+        if (owns(project)) accumulateProject(projectAccumulator, project);
+      }
+    }
+    if (topSessions !== undefined) {
+      sessionAttributionCount += 1;
+      for (const session of topSessions) {
+        if (!owns(session)) continue;
+        const key = `${session.provider}\u0000${session.sessionId}`;
+        const bestLinked = linkedSessionMetadata.get(key);
+        const shouldBorrowLink =
+          bestLinked !== undefined &&
+          (session.t3ThreadId === undefined || (!ownerConnected && bestLinked.isConnected));
+        const linked = shouldBorrowLink ? bestLinked : undefined;
+        const candidate: MergedSessionTotals = {
+          ...session,
+          ...(linked === undefined
+            ? {}
+            : {
+                t3ThreadId: linked.t3ThreadId,
+                ...(linked.t3ProjectId === undefined ? {} : { t3ProjectId: linked.t3ProjectId }),
+                // Prefer the live T3 thread title over an unlinked scanner's native CLI title.
+                ...(linked.title !== undefined ? { title: linked.title } : {}),
+              }),
+          totalTokens: countTokens(session.totals),
+          environmentId: linked?.environmentId ?? environment.environmentId,
+        };
+        const held = sessionAccumulator.get(key);
+        if (held === undefined || preferSessionCopy(candidate, held)) {
+          sessionAccumulator.set(key, candidate);
+        }
+      }
+    }
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
       sessions += providerSessions;
@@ -435,9 +691,12 @@ export function mergeUsage(
     }
 
     for (const bucket of buckets) {
-      const tokens = bucketTokens(bucket);
+      const tokens = countTokens(bucket.totals);
 
       costUsd += bucket.costUsd;
+      providerReportedCostUsd +=
+        bucket.providerReportedCostUsd ??
+        (bucket.costSource === "providerReported" ? bucket.costUsd : 0);
       cacheSavingsUsd += bucket.cacheSavingsUsd;
       uncachedInputTokens += bucket.totals.uncachedInputTokens;
       cachedInputTokens += bucket.totals.cachedInputTokens;
@@ -579,8 +838,21 @@ export function mergeUsage(
     a.hourStart.localeCompare(b.hourStart),
   );
 
+  const unpricedShare = records === 0 ? 0 : unpricedRecords / records;
+  const pricedRecords = Math.max(0, records - unpricedRecords);
+  // Keep spend provenance (fraction of priced USD) on its own denominator, separate from unpriced record share.
+  const providerReportedShare =
+    costUsd > 0
+      ? Math.min(1, Math.max(0, providerReportedCostUsd / costUsd))
+      : pricedRecords > 0
+        ? providerReportedRecords / pricedRecords
+        : 0;
+  const modelPricedShare =
+    costUsd > 0 || pricedRecords > 0 ? Math.max(0, 1 - providerReportedShare) : 0;
+
   return {
     costUsd,
+    providerReportedCostUsd,
     uncachedInputTokens,
     cachedInputTokens,
     cacheCreationTokens,
@@ -591,13 +863,20 @@ export function mergeUsage(
     sessions,
     providers,
     models,
+    projects: finishProjects(projectAccumulator, costUsd, totalTokens),
+    topSessions: [...sessionAccumulator.values()].sort(compareSessions).slice(0, 50),
+    hasProjectAttribution: projectAttributionCount > 0,
+    hasSessionAttribution: sessionAttributionCount > 0,
+    partialProjectAttribution:
+      projectAttributionCount > 0 && projectAttributionCount < current.length,
+    partialSessionAttribution:
+      sessionAttributionCount > 0 && sessionAttributionCount < current.length,
     daily,
     hourly,
     costQuality: {
-      providerReportedShare: records === 0 ? 0 : providerReportedRecords / records,
-      unpricedShare: records === 0 ? 0 : unpricedRecords / records,
-      modelPricedShare:
-        records === 0 ? 0 : (records - providerReportedRecords - unpricedRecords) / records,
+      providerReportedShare,
+      unpricedShare,
+      modelPricedShare,
       cacheSavingsUsd,
     },
     categoryCost: {

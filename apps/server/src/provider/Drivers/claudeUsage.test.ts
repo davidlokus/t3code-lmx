@@ -38,6 +38,7 @@ describe("parseClaudeLine", () => {
     expect(record).toBeDefined();
     expect(record?.provider).toBe("claude");
     expect(record?.model).toBe("claude-fable-5");
+    expect(record?.cwd).toBe("/home/theo/project");
     expect(record?.totals).toEqual({
       uncachedInputTokens: 2,
       cachedInputTokens: 1000,
@@ -79,12 +80,32 @@ describe("parseClaudeLine", () => {
         },
       }),
     ];
-    expect(claudeUsageFormat.parseLine(JSON.stringify(projected), undefined)).toEqual(expected);
-    expect(claudeUsageFormat.parseProjected(projected, undefined)).toEqual(expected);
+    expect(claudeUsageFormat.parseLine(JSON.stringify(projected), {})).toEqual(expected);
+    expect(claudeUsageFormat.parseProjected(projected, {})).toEqual(expected);
 
     const synthetic = { ...projected, message: { ...projected.message, model: "<synthetic>" } };
-    expect(claudeUsageFormat.parseLine(JSON.stringify(synthetic), undefined)).toEqual([]);
-    expect(claudeUsageFormat.parseProjected(synthetic, undefined)).toEqual([]);
+    expect(claudeUsageFormat.parseLine(JSON.stringify(synthetic), {})).toEqual([]);
+    expect(claudeUsageFormat.parseProjected(synthetic, {})).toEqual([]);
+  });
+
+  it("finds a post-message rename and retains it over subsequent AI titles", () => {
+    const state = {};
+    const [usage] = claudeUsageFormat.parseLine(
+      claudeLine({ messageId: "m1", contentType: "text" }),
+      state,
+    );
+    const sessionId = usage?.sessionId;
+    claudeUsageFormat.parseProjected({ type: "ai-title", aiTitle: "Generated", sessionId }, state);
+    expect(claudeUsageFormat.readSessionTitles?.(state).get(sessionId ?? "")).toBe("Generated");
+    claudeUsageFormat.parseLine(
+      JSON.stringify({ type: "custom-title", customTitle: "User rename", sessionId }),
+      state,
+    );
+    claudeUsageFormat.parseProjected(
+      { type: "ai-title", aiTitle: "New generated", sessionId },
+      state,
+    );
+    expect(claudeUsageFormat.readSessionTitles?.(state).get(sessionId ?? "")).toBe("User rename");
   });
 });
 
@@ -135,7 +156,7 @@ describe("Claude advisor iterations", () => {
     ...advisorTurn,
     message: { ...advisorTurn.message, usage: { ...advisorTurn.message.usage, iterations } },
   });
-  const parse = (turn: unknown) => claudeUsageFormat.parseLine(JSON.stringify(turn), undefined);
+  const parse = (turn: unknown) => claudeUsageFormat.parseLine(JSON.stringify(turn), {});
 
   it("reports the advisor model's tokens as their own record beside the unchanged executor record", () => {
     const executor = {
@@ -172,7 +193,7 @@ describe("Claude advisor iterations", () => {
     ];
 
     expect(parse(advisorTurn)).toEqual(expected);
-    expect(claudeUsageFormat.parseProjected(advisorTurn, undefined)).toEqual(expected);
+    expect(claudeUsageFormat.parseProjected(advisorTurn, {})).toEqual(expected);
   });
 
   it("keys the advisor record apart from the executor and the same across a message's content blocks", () => {
@@ -198,12 +219,9 @@ describe("Claude advisor iterations", () => {
     );
 
     expect(parse(withIterations(executorIterations))).toHaveLength(1);
-    expect(claudeUsageFormat.parseProjected(withIterations([]), undefined)).toHaveLength(1);
+    expect(claudeUsageFormat.parseProjected(withIterations([]), {})).toHaveLength(1);
     expect(
-      claudeUsageFormat.parseLine(
-        claudeLine({ messageId: "msg_3", contentType: "text" }),
-        undefined,
-      ),
+      claudeUsageFormat.parseLine(claudeLine({ messageId: "msg_3", contentType: "text" }), {}),
     ).toHaveLength(1);
   });
 

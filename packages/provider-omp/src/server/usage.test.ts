@@ -13,11 +13,13 @@ describe("ompUsageFormat", () => {
     const state = ompUsageFormat.state?.initial();
     if (!state) return assert.fail("expected ompUsageFormat state");
 
+    ompUsageFormat.parseLine('{"type":"title","title":"Runtime attribution"}', state);
     assert.deepEqual(
       ompUsageFormat.parseLine(
         JSON.stringify({
           type: "session",
           id: "sess-omp-1",
+          cwd: "/work/fork",
           timestamp: "2026-11-24T04:14:27.559Z",
         }),
         state,
@@ -54,6 +56,7 @@ describe("ompUsageFormat", () => {
         model: "openai-codex/gpt-6.1-terra",
         rateModel: "gpt-6.1-terra",
         sessionId: "sess-omp-1",
+        cwd: "/work/fork",
         totals: {
           uncachedInputTokens: 28528,
           cachedInputTokens: 1200,
@@ -95,6 +98,11 @@ describe("ompUsageFormat", () => {
     assert.equal(auxiliaryRecords[0]?.rateModel, "jev-1.14.0");
     assert.equal(auxiliaryRecords[0]?.reportedCostUsd, 0.000108108);
     assert.equal(auxiliaryRecords[0]?.sessionId, "sess-omp-1");
+    assert.equal(auxiliaryRecords[0]?.cwd, "/work/fork");
+    assert.deepStrictEqual(
+      ompUsageFormat.readSessionTitles?.(state),
+      new Map([["sess-omp-1", "Runtime attribution"]]),
+    );
   });
 
   it("treats zero-cost omp models as unpriced (null reportedCostUsd) and handles compaction", () => {

@@ -38,6 +38,7 @@ export interface TranscriptParseResult {
   readonly tailRecords: readonly UsageRecord[];
   /** Timestamps, including tentative tail diagnostics; position.state only includes committed lines. */
   readonly malformedRecords: readonly number[];
+  readonly sessionTitles?: ReadonlyMap<string, string>;
   readonly position: TranscriptParsePosition;
   readonly resumed: boolean;
 }
@@ -452,6 +453,7 @@ export async function readTranscriptRecords<State>(
     const tailState =
       decodeState === undefined ? state : Option.getOrThrow(decodeState(encodedState));
     finish(tailState, tailRecords);
+    const sessionTitles = format.readSessionTitles?.(tailState);
 
     const guardLength = compressed ? 0 : Math.min(GUARD_LENGTH, resumeOffset);
     let guardHash = 0;
@@ -465,6 +467,7 @@ export async function readTranscriptRecords<State>(
       records,
       tailRecords,
       malformedRecords: format.readMalformedRecords?.(tailState) ?? [],
+      ...(sessionTitles?.size ? { sessionTitles } : {}),
       position: {
         resumeOffset: compressed ? 0 : resumeOffset,
         guardLength,

@@ -16,7 +16,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { PiSettings } from "../settings.ts";
 import { PI_ARGUMENTS_WITH_VALUES, resolvePiLaunchArgs } from "./mcpInjection.ts";
 
-const PiScanState = Schema.Struct({ sessionId: Schema.mutableKey(Schema.String) });
+const PiScanState = Schema.Struct({
+  sessionId: Schema.mutableKey(Schema.String),
+  cwd: Schema.mutableKey(Schema.optionalKey(Schema.String)),
+  titles: Schema.mutableKey(Schema.optionalKey(Schema.Record(Schema.String, Schema.String))),
+});
 const Usage = Schema.Struct({
   input: Schema.optional(Schema.Unknown),
   output: Schema.optional(Schema.Unknown),
@@ -28,7 +32,12 @@ const Usage = Schema.Struct({
 const Identity = { id: Schema.NonEmptyString, timestamp: Schema.String };
 const Model = { provider: Schema.NonEmptyString, model: Schema.NonEmptyString };
 const Entry = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("session"), id: Schema.NonEmptyString }),
+  Schema.Struct({
+    type: Schema.Literal("session"),
+    id: Schema.NonEmptyString,
+    cwd: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({ type: Schema.Literal("session_info"), name: Schema.String }),
   Schema.Struct({
     ...Identity,
     type: Schema.Literal("message"),
@@ -57,6 +66,20 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
   const entry = decoded.value;
   if (entry.type === "session") {
     state.sessionId = entry.id;
+    if (typeof entry.cwd === "string" && entry.cwd.trim()) state.cwd = entry.cwd.trim();
+    else delete state.cwd;
+    return [];
+  }
+  if (entry.type === "session_info") {
+    if (state.sessionId) {
+      const name = entry.name.trim();
+      if (name) state.titles = { ...state.titles, [state.sessionId]: name };
+      else if (state.titles !== undefined && Object.hasOwn(state.titles, state.sessionId)) {
+        const titles = { ...state.titles };
+        delete titles[state.sessionId];
+        state.titles = titles;
+      }
+    }
     return [];
   }
   const timestampMs = parseTimestampMs(entry.timestamp);
@@ -92,6 +115,7 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
       model,
       ...(rateModel === undefined ? {} : { rateModel }),
       sessionId: state.sessionId,
+      ...(state.cwd === undefined ? {} : { cwd: state.cwd }),
       totals,
       reportedCostUsd,
       speed: "standard",
@@ -105,13 +129,15 @@ export const piUsageFormat: TranscriptUsageFormat<typeof PiScanState.Type> = {
   selectFields: {
     type: true,
     id: true,
+    cwd: true,
+    name: true,
     timestamp: true,
     provider: true,
     model: true,
     usage: true,
     message: { role: true, provider: true, model: true, responseModel: true, usage: true },
   },
-  usageMarkers: ['"usage"', '"session"'],
+  usageMarkers: ['"usage"', '"session"', '"session_info"'],
   parseLine: (line, state) => {
     let parsed: unknown;
     try {
@@ -122,6 +148,7 @@ export const piUsageFormat: TranscriptUsageFormat<typeof PiScanState.Type> = {
     return parseRecord(parsed, state);
   },
   parseProjected: parseRecord,
+  readSessionTitles: (state) => new Map(Object.entries(state.titles ?? {})),
   state: { initial: () => ({ sessionId: "" }), schema: PiScanState },
 };
 

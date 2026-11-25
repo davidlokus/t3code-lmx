@@ -7,6 +7,7 @@ import {
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
+import { OmpDriver } from "@t3tools/provider-omp/server";
 
 import { TEST_FORMAT_MAP } from "./usageTestFormats.ts";
 import { initialCodexScanState, parseCodexLine } from "../provider/Drivers/codexUsage.ts";
@@ -66,7 +67,7 @@ describe("scan cache round trip", () => {
         "/a.jsonl",
         100,
         [
-          record(),
+          record({ cwd: "/work/repo" }),
           record({
             dedupeKey: "msg_2:",
             model: "claude-opus-5-5",
@@ -150,7 +151,8 @@ describe("scan cache round trip", () => {
 
     original.set("/a.jsonl", {
       ...original.get("/a.jsonl")!,
-      tailRecords: [record({ dedupeKey: "msg_tail:" })],
+      tailRecords: [record({ dedupeKey: "msg_tail:", cwd: "/work/repo" })],
+      sessionTitles: new Map([["session-a", "Renamed conversation"]]),
     });
     const claude = original.get("/a.jsonl")!;
     const cached = new Map(original);
@@ -167,6 +169,7 @@ describe("scan cache round trip", () => {
     expect(restored.size).toBe(4);
     expect(restored).toEqual(original);
     const encoded = parse(makeScanCacheWriter()(original, {}));
+    expect(encoded.cwds).toEqual(["/work/repo"]);
     const { mt: _dates, ...undated } = encoded.files["/codex.jsonl"]!;
     const reparsed = decodeScanCache(
       { ...encoded, files: { ...encoded.files, "/codex.jsonl": undated } },
@@ -179,7 +182,7 @@ describe("scan cache round trip", () => {
   });
 
   it.each([5, 6, 7, 8, 10, 11, 12, 13])(
-    "retains v%s history and compatible positions but invalidates obsolete state",
+    "retains v%s history while replacing obsolete transcript positions",
     (version) => {
       const original = cacheWith([["/gone.jsonl", 100, [record({ speed: "fast" })]]]);
       original.set("/gone-codex.jsonl", {
@@ -235,15 +238,11 @@ describe("scan cache round trip", () => {
       };
 
       const restored = decodeScanCache(JSON.parse(JSON.stringify(legacy)), TEST_FORMAT_MAP);
-      expect(restored.get("/gone.jsonl")).toEqual(
-        version >= 13
-          ? original.get("/gone.jsonl")
-          : {
-              ...original.get("/gone.jsonl"),
-              size: -1,
-              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
-            },
-      );
+      expect(restored.get("/gone.jsonl")).toEqual({
+        ...original.get("/gone.jsonl"),
+        size: -1,
+        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+      });
       expect(restored.get("/gone-codex.jsonl")).toEqual({
         ...original.get("/gone-codex.jsonl"),
         size: -1,
@@ -254,19 +253,15 @@ describe("scan cache round trip", () => {
         size: -1,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
-      expect(restored.get("/gone-pi.jsonl")).toEqual(
-        version >= 6
-          ? original.get("/gone-pi.jsonl")
-          : {
-              ...original.get("/gone-pi.jsonl"),
-              size: -1,
-              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
-            },
-      );
+      expect(restored.get("/gone-pi.jsonl")).toEqual({
+        ...original.get("/gone-pi.jsonl"),
+        size: -1,
+        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+      });
     },
   );
 
-  it("re-parses a v14 Codex entry that skipped records and restarts a clean one when it grows", () => {
+  it("retains both clean and skipped v14 Codex usage when migrated entries are saved again", () => {
     const codex = (malformedRecords: readonly number[]): CachedFile => ({
       size: 10,
       mtimeMs: 100,
@@ -290,9 +285,9 @@ describe("scan cache round trip", () => {
       size: -1,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
-    // Served while unchanged, but its state predates the latest snapshot time, so it cannot resume.
     expect(restored.get("/clean-codex.jsonl")).toEqual({
       ...codex([]),
+      size: -1,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
     // The migrated entries persist without a state and load again under the current version.
@@ -301,7 +296,7 @@ describe("scan cache round trip", () => {
     );
   });
 
-  it("restarts a grown v15 Codex entry, whose baseline time can be older than its totals", () => {
+  it("restarts v15 Codex parsing but keeps a current incremental baseline", () => {
     const request = {
       input_tokens: 100,
       cached_input_tokens: 0,
@@ -332,6 +327,7 @@ describe("scan cache round trip", () => {
       decodeScanCache({ ...current, version: 15 }, TEST_FORMAT_MAP).get("/codex.jsonl"),
     ).toEqual({
       ...entry,
+      size: -1,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
     expect(decodeScanCache(current, TEST_FORMAT_MAP).get("/codex.jsonl")).toEqual(entry);
@@ -347,6 +343,44 @@ describe("scan cache round trip", () => {
       size: -1,
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
+  });
+
+  it("retains v17 usage with no cwd or titles while re-parsing only metadata-capable formats", () => {
+    const providers = ["claude", "codex", "omp", "pi", "grok"] as const;
+    const v17 = {
+      version: 17,
+      models: ["test-model"],
+      sessions: ["session-a"],
+      files: Object.fromEntries(
+        providers.map((provider) => [
+          provider,
+          {
+            s: 400,
+            m: 200,
+            p: provider,
+            r: [[1_786_000_000_000, 0, 0, 2, 3, 4, 5, 1, null, 0.02, 0]],
+            t: [],
+            o: 200,
+            gl: 64,
+            gh: 0xdeadbeef,
+            cs: null,
+          },
+        ]),
+      ),
+    };
+    const formats = new Map(TEST_FORMAT_MAP);
+    const reader = OmpDriver.usage;
+    if (reader?.kind !== "transcripts") throw new Error("Expected the omp transcript reader");
+    formats.set("omp", reader.format);
+    const restored = decodeScanCache(v17, formats);
+    expect([...restored.keys()]).toEqual(providers);
+    for (const provider of providers) {
+      const cached = restored.get(provider);
+      expect(cached?.size).toBe(provider === "grok" ? 400 : -1);
+      expect(cached?.position.resumeOffset).toBe(provider === "grok" ? 200 : 0);
+      expect(cached?.records[0]?.totals.outputTokens).toBe(5);
+      expect(cached?.records[0]?.cwd).toBeUndefined();
+    }
   });
 
   it.each(["s:p:grok-4.5", "s:p:1786000000000:grok-4.5"])(

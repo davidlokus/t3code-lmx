@@ -10,7 +10,7 @@ import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import { mergeUsageCopies } from "./usageAggregation.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-const USAGE_SCAN_CACHE_VERSION = 17 as const;
+const USAGE_SCAN_CACHE_VERSION = 18 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
@@ -18,8 +18,9 @@ const SPEED_COMPATIBLE_SINCE_VERSION = 4;
  * replace it, dropping saved usage for deleted transcripts. Separate files keep
  * the newer one; older files are removed once it is saved.
  */
-export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v17.json";
+export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v18.json";
 export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+  "usage-scan-cache-v17.json",
   "usage-scan-cache-v16.json",
   "usage-scan-cache-v15.json",
   "usage-scan-cache-v14.json",
@@ -46,6 +47,7 @@ export interface CachedFile {
   readonly tailRecords: readonly UsageRecord[];
   /** Whole-file timestamps, including diagnostics from the tentative tail. */
   readonly malformedRecords: readonly number[];
+  readonly sessionTitles?: ReadonlyMap<string, string>;
   readonly position: TranscriptParsePosition;
 }
 
@@ -66,6 +68,7 @@ type SerializedRecord = readonly [
   rateModelIndex?: number | null,
   unresolvedServiceTierTurnId?: string | null,
   cacheCreation1hTokens?: number,
+  cwdIndex?: number | null,
 ];
 
 interface SerializedFile {
@@ -76,6 +79,7 @@ interface SerializedFile {
   readonly t: readonly SerializedRecord[];
   readonly mr: number;
   readonly mt?: readonly number[];
+  readonly st?: Readonly<Record<string, string>>;
   readonly o: number;
   readonly gl: number;
   readonly gh: number;
@@ -86,18 +90,28 @@ interface SerializedCache {
   readonly version: number;
   readonly models: readonly string[];
   readonly sessions: readonly string[];
+  readonly cwds?: readonly string[];
   readonly files: Readonly<Record<string, SerializedFile>>;
 }
 
 interface InternTables {
   readonly models: string[];
   readonly sessions: string[];
+  readonly cwds: string[];
   readonly modelIndex: Map<string, number>;
   readonly sessionIndex: Map<string, number>;
+  readonly cwdIndex: Map<string, number>;
 }
 
 function makeInternTables(): InternTables {
-  return { models: [], sessions: [], modelIndex: new Map(), sessionIndex: new Map() };
+  return {
+    models: [],
+    sessions: [],
+    cwds: [],
+    modelIndex: new Map(),
+    sessionIndex: new Map(),
+    cwdIndex: new Map(),
+  };
 }
 
 function intern(table: string[], index: Map<string, number>, value: string): number {
@@ -125,11 +139,17 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     record.rateModel === undefined
       ? null
       : intern(tables.models, tables.modelIndex, record.rateModel),
-    ...(record.cacheCreation1hTokens !== undefined
-      ? ([record.unresolvedServiceTierTurnId ?? null, record.cacheCreation1hTokens] as const)
-      : record.unresolvedServiceTierTurnId !== undefined
-        ? ([record.unresolvedServiceTierTurnId] as const)
-        : ([] as const)),
+    ...(record.cwd !== undefined
+      ? ([
+          record.unresolvedServiceTierTurnId ?? null,
+          record.cacheCreation1hTokens ?? 0,
+          intern(tables.cwds, tables.cwdIndex, record.cwd),
+        ] as const)
+      : record.cacheCreation1hTokens !== undefined
+        ? ([record.unresolvedServiceTierTurnId ?? null, record.cacheCreation1hTokens] as const)
+        : record.unresolvedServiceTierTurnId !== undefined
+          ? ([record.unresolvedServiceTierTurnId] as const)
+          : ([] as const)),
   ];
   return {
     s: entry.size,
@@ -139,6 +159,7 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     t: entry.tailRecords.map(serializeRecord),
     mr: entry.malformedRecords.length,
     ...(entry.malformedRecords.length === 0 ? {} : { mt: entry.malformedRecords }),
+    ...(entry.sessionTitles?.size ? { st: Object.fromEntries(entry.sessionTitles) } : {}),
     o: entry.position.resumeOffset,
     gl: entry.position.guardLength,
     gh: entry.position.guardHash,
@@ -163,6 +184,7 @@ export function makeScanCacheWriter(): (
       version: USAGE_SCAN_CACHE_VERSION,
       models: tables.models,
       sessions: tables.sessions,
+      ...(tables.cwds.length === 0 ? {} : { cwds: tables.cwds }),
     });
     yield `},${tail.slice(1)}`;
   }
@@ -195,9 +217,16 @@ export function decodeScanCache(
   if (typeof root.files !== "object" || root.files === null) return cache;
 
   if (!root.models.every((value) => typeof value === "string")) return cache;
+  if (
+    root.cwds !== undefined &&
+    (!isRecordArray(root.cwds) || !root.cwds.every((value) => typeof value === "string"))
+  ) {
+    return cache;
+  }
   if (!root.sessions.every((value) => typeof value === "string")) return cache;
   const models = root.models as readonly string[];
   const sessions = root.sessions as readonly string[];
+  const cwds = root.cwds;
 
   // Reject entire corrupt entries; partial survivors would appear warm and hide usage until the file changes.
   const decodeRecords = (
@@ -222,11 +251,13 @@ export function decodeScanCache(
         rateModelIndex,
         unresolvedServiceTierTurnId,
         cacheCreation1h = 0,
+        cwdIndex,
       ] = row as SerializedRecord;
       const speed = typeof speedIndex === "number" ? SPEEDS[speedIndex] : undefined;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
       const rateModel = typeof rateModelIndex === "number" ? models[rateModelIndex] : undefined;
+      const cwd = typeof cwdIndex === "number" ? cwds?.[cwdIndex] : undefined;
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
@@ -234,6 +265,7 @@ export function decodeScanCache(
         (unresolvedServiceTierTurnId != null && typeof unresolvedServiceTierTurnId !== "string") ||
         !Number.isFinite(cacheCreation1h) ||
         (rateModelIndex != null && rateModel === undefined) ||
+        (cwdIndex != null && cwd === undefined) ||
         !Number.isFinite(uncached) ||
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
@@ -254,6 +286,7 @@ export function decodeScanCache(
         model,
         ...(rateModel === undefined ? {} : { rateModel }),
         sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
+        ...(cwd === undefined ? {} : { cwd }),
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -321,27 +354,31 @@ export function decodeScanCache(
       continue;
     }
     // Keep history for deleted rollouts, but re-parse incompatible reducer state.
-    // v13 adds Claude 1-hour cache writes; v14 uses Codex request ledgers.
-    // v15 repairs skipped Codex requests whose counters rewound; clean v14 entries stay served.
     // v17 keys Grok turns by time, restoring turns previously dropped as repeats.
+    // v18 re-reads transcript headers and trailing titles, preserving rows for deleted files.
     const legacy =
-      (entry.p === "claude" && version < 13) ||
+      (version < 18 &&
+        (entry.p === "claude" || entry.p === "codex" || entry.p === "omp" || entry.p === "pi")) ||
       (entry.p === "grok" && version < 17) ||
-      (format.state !== undefined &&
-        (version < 6 ||
-          (entry.p === "codex" && (version < 14 || (version < 15 && malformedCount > 0)))));
+      (format.state !== undefined && version < 6);
     // A corrupt state disqualifies the entry: resuming with it would attach
     // appended usage to the wrong model or replay fork-copied history.
     if (!legacy && !isValidState.get(entry.p)?.(entry.cs)) continue;
-    // Before v16 a Codex baseline can lack the time of its latest move, or carry an older one,
-    // and that time keeps a re-emitted older snapshot from billing twice. A grown file re-parses
-    // whole instead of resuming.
-    const resumable = !legacy && !undated && !(entry.p === "codex" && version < 16);
+    const resumable = !legacy && !undated;
 
     const provider = entry.p;
     const records = decodeRecords(entry.r, provider);
     const tailRecords = decodeRecords(entry.t, provider);
     if (records === null || tailRecords === null) continue;
+    const sessionTitles =
+      typeof entry.st === "object" && entry.st !== null && !Array.isArray(entry.st)
+        ? new Map(
+            Object.entries(entry.st).filter(
+              ([id, title]) =>
+                id.length > 0 && typeof title === "string" && title.trim().length > 0,
+            ),
+          )
+        : undefined;
 
     cache.set(path, {
       size: legacy || undated ? -1 : entry.s,
@@ -350,6 +387,7 @@ export function decodeScanCache(
       records,
       tailRecords,
       malformedRecords: malformedRecords ?? [],
+      ...(sessionTitles?.size ? { sessionTitles } : {}),
       position: resumable
         ? {
             resumeOffset: entry.o,

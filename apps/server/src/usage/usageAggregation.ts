@@ -5,12 +5,22 @@ import type {
   UsageDay,
   UsageModelFilter,
   UsageModelSelector,
+  UsageProjectBucket,
+  UsageProjectFilter,
   UsageResolution,
+  UsageSessionSummary,
   UsageTokenTotals,
 } from "@t3tools/contracts";
 
-import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/usage";
-import { cacheSavingsUsd, lookupRate, priceUsage, type RateTable } from "./usagePricing.ts";
+import { EMPTY_TOTALS, totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usage";
+import {
+  cacheSavingsUsd,
+  lookupRate,
+  priceUsage,
+  type PricedUsage,
+  type RateTable,
+} from "./usagePricing.ts";
+import type { UsageProjectResolution } from "./usageProjectResolution.ts";
 
 // en-CA gives ISO-ordered parts in the requested zone; Date getters are host-local.
 function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
@@ -48,19 +58,97 @@ function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
 const QUARTER_HOUR_MS = 15 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
-interface MutableBucket {
+type ExactWindow = { readonly sinceTimeMs: number; readonly untilTimeMs: number };
+
+interface MutableSpend {
   totals: { -readonly [K in keyof UsageTokenTotals]: number };
   costUsd: number;
+  providerReportedCostUsd: number;
+  records: number;
+  unpricedRecords: number;
+}
+
+interface MutableBucket extends MutableSpend {
   cacheSavingsUsd: number;
   categoryCostUsd: UsageCategoryCost | null;
   fastCostUsd: number;
   ultrafastCostUsd: number;
   speedPremiumUsd: number;
-  records: number;
-  unpricedRecords: number;
   unpricedTokens: number;
   providerReportedRecords: number;
   sessions: Set<string>;
+}
+
+interface ModelSpend {
+  readonly model: string;
+  costUsd: number;
+  totalTokens: number;
+}
+
+interface MutableProject extends MutableSpend {
+  readonly project: UsageProjectResolution["project"];
+  readonly provider: UsageRecord["provider"];
+  readonly source: string;
+  readonly sessions: Set<string>;
+  readonly worktrees: Set<string>;
+  readonly models: Map<string, ModelSpend>;
+  cacheSavingsUsd: number;
+}
+
+interface MutableSession extends MutableSpend {
+  readonly sessionId: string;
+  readonly provider: UsageRecord["provider"];
+  readonly source: string;
+  readonly models: Map<string, ModelSpend>;
+  firstTimestampMs: number;
+  lastTimestampMs: number;
+  totalTokens: number;
+  attribution: UsageProjectResolution;
+  nativeTitle: string | undefined;
+}
+
+function emptySpend(): MutableSpend {
+  return {
+    totals: { ...EMPTY_TOTALS },
+    costUsd: 0,
+    providerReportedCostUsd: 0,
+    records: 0,
+    unpricedRecords: 0,
+  };
+}
+
+function accumulateSpend(spend: MutableSpend, tokens: UsageTokenTotals, priced: PricedUsage): void {
+  const totals = spend.totals;
+  totals.uncachedInputTokens += tokens.uncachedInputTokens;
+  totals.cachedInputTokens += tokens.cachedInputTokens;
+  totals.cacheCreationTokens += tokens.cacheCreationTokens;
+  totals.outputTokens += tokens.outputTokens;
+  totals.reasoningTokens += tokens.reasoningTokens;
+  spend.costUsd += priced.costUsd;
+  spend.records += 1;
+  if (priced.costSource === "providerReported") spend.providerReportedCostUsd += priced.costUsd;
+  if (priced.costSource === "unpriced") spend.unpricedRecords += 1;
+}
+
+function accumulateModel(
+  models: Map<string, ModelSpend>,
+  model: string,
+  cost: number,
+  tokens: number,
+) {
+  const held = models.get(model);
+  if (held === undefined) models.set(model, { model, costUsd: cost, totalTokens: tokens });
+  else {
+    held.costUsd += cost;
+    held.totalTokens += tokens;
+  }
+}
+
+function rankModels(models: ReadonlyMap<string, ModelSpend>) {
+  return [...models.values()].sort(
+    (a, b) =>
+      b.costUsd - a.costUsd || b.totalTokens - a.totalTokens || a.model.localeCompare(b.model),
+  );
 }
 
 export interface AggregateOptions {
@@ -72,6 +160,9 @@ export interface AggregateOptions {
   readonly modelAliases?: ReadonlyMap<string, string>;
   readonly rateModel?: (provider: UsageRecord["provider"], model: string) => string | undefined;
   readonly modelFilter?: UsageModelFilter;
+  readonly projectFilter?: UsageProjectFilter;
+  readonly providers?: ReadonlySet<UsageRecord["provider"]>;
+  readonly resolveProject?: (record: UsageRecord) => UsageProjectResolution;
   readonly resolution?: UsageResolution;
   readonly sinceTimeMs?: number;
   readonly untilTimeMs?: number;
@@ -154,6 +245,8 @@ export function canonicalModelFilter(
 
 export interface AggregateResult {
   readonly buckets: readonly UsageBucket[];
+  readonly projects: readonly UsageProjectBucket[];
+  readonly topSessions: readonly UsageSessionSummary[];
   readonly duplicatesDropped: number;
   readonly outOfWindow: number;
 }
@@ -169,6 +262,7 @@ export function mergeUsageCopies(held: UsageRecord, copy: UsageRecord): UsageRec
     held.reportedCostUsd === null || copy.reportedCostUsd === null
       ? (held.reportedCostUsd ?? copy.reportedCostUsd)
       : Math.max(held.reportedCostUsd, copy.reportedCostUsd);
+  const cwd = held.cwd ?? (held.sessionId === copy.sessionId ? copy.cwd : undefined);
   if (
     b.uncachedInputTokens <= a.uncachedInputTokens &&
     b.cachedInputTokens <= a.cachedInputTokens &&
@@ -176,7 +270,8 @@ export function mergeUsageCopies(held: UsageRecord, copy: UsageRecord): UsageRec
     b.outputTokens <= a.outputTokens &&
     b.reasoningTokens <= a.reasoningTokens &&
     (copy.cacheCreation1hTokens ?? 0) <= (held.cacheCreation1hTokens ?? 0) &&
-    reportedCostUsd === held.reportedCostUsd
+    reportedCostUsd === held.reportedCostUsd &&
+    cwd === held.cwd
   ) {
     return held;
   }
@@ -186,6 +281,7 @@ export function mergeUsageCopies(held: UsageRecord, copy: UsageRecord): UsageRec
   );
   return {
     ...held,
+    ...(cwd === undefined ? {} : { cwd }),
     ...(cacheCreation1hTokens > 0 ? { cacheCreation1hTokens } : {}),
     totals: {
       uncachedInputTokens: Math.max(a.uncachedInputTokens, b.uncachedInputTokens),
@@ -224,16 +320,21 @@ function smallestGrokCopy(held: UsageRecord, copy: UsageRecord): UsageRecord {
 
 interface Contribution {
   record: UsageRecord;
-  /** Null when the first copy fell outside the window. */
-  readonly bucket: MutableBucket | null;
+  readonly bucket: MutableBucket;
+  readonly source: string;
+  readonly attribution: UsageProjectResolution | undefined;
+  nativeTitle: string | undefined;
 }
 
 /** Deduplicates across the whole scan; Claude copies records into resumed/forked transcripts. */
 export class UsageAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
-  readonly #seen = new Map<string, Contribution>();
+  readonly #seen = new Map<string, Contribution | null>();
+  readonly #projects = new Map<string, MutableProject>();
+  readonly #sessions = new Map<string, MutableSession>();
   readonly #toDay: (timestampMs: number) => string;
-  readonly #hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
+  readonly #exactWindow: ExactWindow | null;
+  readonly #hourlyWindow: ExactWindow | null;
   readonly #options: AggregateOptions;
   #lastBucket: {
     readonly day: string;
@@ -249,60 +350,74 @@ export class UsageAggregator {
   constructor(options: AggregateOptions) {
     this.#options = options;
     this.#toDay = makeDayFormatter(options.timeZone);
-    if (options.resolution === "hour") {
-      if (options.sinceTimeMs === undefined || options.untilTimeMs === undefined) {
-        throw new Error("Hourly usage aggregation requires exact time bounds");
-      }
-      this.#hourlyWindow = {
-        sinceTimeMs: options.sinceTimeMs,
-        untilTimeMs: options.untilTimeMs,
-      };
-    } else {
-      this.#hourlyWindow = null;
+    this.#exactWindow =
+      options.sinceTimeMs === undefined || options.untilTimeMs === undefined
+        ? null
+        : { sinceTimeMs: options.sinceTimeMs, untilTimeMs: options.untilTimeMs };
+    this.#hourlyWindow = options.resolution === "hour" ? this.#exactWindow : null;
+    if (options.resolution === "hour" && this.#hourlyWindow === null) {
+      throw new Error("Hourly usage aggregation requires exact time bounds");
     }
   }
 
-  add(input: UsageRecord, sourcePath?: string): boolean {
+  add(input: UsageRecord, sourcePath?: string, nativeTitle?: string): boolean {
+    if (this.#options.providers !== undefined && !this.#options.providers.has(input.provider)) {
+      return false;
+    }
     if (!keepsUsageRecord(this.#options.modelFilter, input)) return false;
     const record = this.#mapModel(input);
     if (record.dedupeKey !== null) {
       const held = this.#seen.get(record.dedupeKey);
       if (held !== undefined) {
         this.#duplicatesDropped += 1;
-        if (held.bucket !== null) {
+        if (held !== null) {
           held.record =
             record.provider === "grok"
               ? smallestGrokCopy(held.record, record)
               : mergeUsageCopies(held.record, record);
+          if (held.record.sessionId === record.sessionId && nativeTitle)
+            held.nativeTitle ??= nativeTitle;
         }
         return false;
       }
     }
 
-    const bucket = this.#placeInWindow(record, sourcePath ?? "");
-    if (record.dedupeKey !== null) this.#seen.set(record.dedupeKey, { record, bucket });
+    const attribution = this.#options.resolveProject?.(record);
+    if (
+      this.#options.projectFilter !== undefined &&
+      this.#options.projectFilter.projectKey !== attribution?.project.projectKey
+    ) {
+      // Forked copies cannot pull the first copy's usage into a different project.
+      if (record.dedupeKey !== null) this.#seen.set(record.dedupeKey, null);
+      return false;
+    }
+    const source = sourcePath ?? "";
+    const bucket = this.#placeInWindow(record, source);
     if (bucket === null) {
+      if (record.dedupeKey !== null) this.#seen.set(record.dedupeKey, null);
       this.#outOfWindow += 1;
       return false;
     }
     // Keyed usage is counted in finish(), once all its copies are merged.
-    if (record.dedupeKey === null) this.#accumulate(bucket, record);
+    if (record.dedupeKey === null)
+      this.#accumulate(bucket, record, source, attribution, nativeTitle);
+    else this.#seen.set(record.dedupeKey, { record, bucket, source, attribution, nativeTitle });
     if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
     return true;
   }
 
   #placeInWindow(record: UsageRecord, source: string): MutableBucket | null {
     if (
-      this.#hourlyWindow !== null &&
-      (record.timestampMs < this.#hourlyWindow.sinceTimeMs ||
-        record.timestampMs >= this.#hourlyWindow.untilTimeMs)
+      this.#exactWindow !== null &&
+      (record.timestampMs < this.#exactWindow.sinceTimeMs ||
+        record.timestampMs >= this.#exactWindow.untilTimeMs)
     ) {
       return null;
     }
 
     const day = this.#toDay(record.timestampMs);
     if (
-      this.#hourlyWindow === null &&
+      this.#exactWindow === null &&
       (day < this.#options.sinceDay || day > this.#options.untilDay)
     ) {
       return null;
@@ -315,16 +430,16 @@ export class UsageAggregator {
     return this.#bucketFor(day, hourIndex, record.provider, record.model, source);
   }
 
-  #accumulate(bucket: MutableBucket, record: UsageRecord): void {
+  #accumulate(
+    bucket: MutableBucket,
+    record: UsageRecord,
+    source: string,
+    attribution: UsageProjectResolution | undefined,
+    nativeTitle: string | undefined,
+  ): void {
     const priced = priceUsage(this.#options.rates, record, this.#options.priceOverrides);
 
-    const totals = bucket.totals;
-    totals.uncachedInputTokens += record.totals.uncachedInputTokens;
-    totals.cachedInputTokens += record.totals.cachedInputTokens;
-    totals.cacheCreationTokens += record.totals.cacheCreationTokens;
-    totals.outputTokens += record.totals.outputTokens;
-    totals.reasoningTokens += record.totals.reasoningTokens;
-    bucket.costUsd += priced.costUsd;
+    accumulateSpend(bucket, record.totals, priced);
     if (priced.categoryCostUsd !== null) {
       const sum = bucket.categoryCostUsd;
       const add = priced.categoryCostUsd;
@@ -341,21 +456,89 @@ export class UsageAggregator {
     if (record.speed === "fast") bucket.fastCostUsd += priced.costUsd;
     if (record.speed === "ultrafast") bucket.ultrafastCostUsd += priced.costUsd;
     bucket.speedPremiumUsd += priced.speedPremiumUsd;
-    bucket.cacheSavingsUsd += cacheSavingsUsd(
-      this.#options.rates,
-      record,
-      this.#options.priceOverrides,
-    );
-    bucket.records += 1;
-    if (priced.costSource === "unpriced") {
-      bucket.unpricedRecords += 1;
-      bucket.unpricedTokens +=
-        record.totals.uncachedInputTokens +
-        record.totals.cachedInputTokens +
-        record.totals.cacheCreationTokens +
-        record.totals.outputTokens;
-    }
+    const savings = cacheSavingsUsd(this.#options.rates, record, this.#options.priceOverrides);
+    bucket.cacheSavingsUsd += savings;
+    const tokens = totalTokens(record.totals);
+    if (priced.costSource === "unpriced") bucket.unpricedTokens += tokens;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
+    if (attribution !== undefined) {
+      this.#accumulateAttribution(
+        record,
+        source,
+        attribution,
+        nativeTitle,
+        priced,
+        savings,
+        tokens,
+      );
+    }
+  }
+
+  #accumulateAttribution(
+    record: UsageRecord,
+    source: string,
+    attribution: UsageProjectResolution,
+    nativeTitle: string | undefined,
+    priced: PricedUsage,
+    savings: number,
+    tokens: number,
+  ): void {
+    const { project, worktreePath } = attribution;
+    const { provider, model } = record;
+    const sessionId = record.sessionId.trim();
+    const projectBucketKey = `${project.projectKey}\u0000${provider}\u0000${source}`;
+    let bucket = this.#projects.get(projectBucketKey);
+    if (bucket === undefined) {
+      bucket = {
+        ...emptySpend(),
+        project,
+        provider,
+        source,
+        cacheSavingsUsd: 0,
+        sessions: new Set(),
+        worktrees: new Set(),
+        models: new Map(),
+      };
+      this.#projects.set(projectBucketKey, bucket);
+    }
+    accumulateSpend(bucket, record.totals, priced);
+    bucket.cacheSavingsUsd += savings;
+    accumulateModel(bucket.models, model, priced.costUsd, tokens);
+    if (worktreePath !== undefined) {
+      bucket.worktrees.add(worktreePath);
+    }
+    if (!sessionId) return;
+    bucket.sessions.add(sessionId);
+
+    const sessionKey = `${provider}\u0000${sessionId}\u0000${source}`;
+    let session = this.#sessions.get(sessionKey);
+    if (session === undefined) {
+      session = {
+        ...emptySpend(),
+        sessionId,
+        provider,
+        source,
+        models: new Map(),
+        firstTimestampMs: record.timestampMs,
+        lastTimestampMs: record.timestampMs,
+        totalTokens: 0,
+        attribution,
+        nativeTitle,
+      };
+      this.#sessions.set(sessionKey, session);
+    } else {
+      session.firstTimestampMs = Math.min(session.firstTimestampMs, record.timestampMs);
+      if (record.timestampMs >= session.lastTimestampMs) {
+        session.lastTimestampMs = record.timestampMs;
+        session.attribution = attribution;
+        session.nativeTitle = nativeTitle ?? session.nativeTitle;
+      } else {
+        session.nativeTitle ??= nativeTitle;
+      }
+    }
+    accumulateSpend(session, record.totals, priced);
+    session.totalTokens += tokens;
+    accumulateModel(session.models, model, priced.costUsd, tokens);
   }
 
   // Aliases use the target's rate. Only an unpriced target goes through the provider's own rate naming.
@@ -396,15 +579,12 @@ export class UsageAggregator {
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
       bucket = {
-        totals: { ...EMPTY_TOTALS },
-        costUsd: 0,
+        ...emptySpend(),
         cacheSavingsUsd: 0,
         categoryCostUsd: null,
         fastCostUsd: 0,
         ultrafastCostUsd: 0,
         speedPremiumUsd: 0,
-        records: 0,
-        unpricedRecords: 0,
         unpricedTokens: 0,
         providerReportedRecords: 0,
         sessions: new Set<string>(),
@@ -416,8 +596,10 @@ export class UsageAggregator {
   }
 
   finish(): AggregateResult {
-    for (const { record, bucket } of this.#seen.values()) {
-      if (bucket !== null) this.#accumulate(bucket, record);
+    for (const item of this.#seen.values()) {
+      if (item !== null) {
+        this.#accumulate(item.bucket, item.record, item.source, item.attribution, item.nativeTitle);
+      }
     }
     this.#seen.clear();
     const buckets: UsageBucket[] = [];
@@ -436,6 +618,7 @@ export class UsageAggregator {
         ...(sourcePath === "" ? {} : { sourcePath }),
         totals: { ...bucket.totals },
         costUsd: bucket.costUsd,
+        providerReportedCostUsd: bucket.providerReportedCostUsd,
         cacheSavingsUsd: bucket.cacheSavingsUsd,
         ...(category === null
           ? {}
@@ -465,8 +648,64 @@ export class UsageAggregator {
         a.model.localeCompare(b.model),
     );
 
+    const projects: UsageProjectBucket[] = [];
+    for (const bucket of this.#projects.values()) {
+      const worktreeRoots = [...bucket.worktrees].sort();
+      projects.push({
+        ...bucket.project,
+        provider: bucket.provider,
+        ...(bucket.source ? { sourcePath: bucket.source } : {}),
+        worktreeCount: worktreeRoots.length,
+        ...(worktreeRoots.length > 0 ? { worktreeRoots } : {}),
+        totals: bucket.totals,
+        costUsd: bucket.costUsd,
+        providerReportedCostUsd: bucket.providerReportedCostUsd,
+        cacheSavingsUsd: bucket.cacheSavingsUsd,
+        records: bucket.records,
+        unpricedRecords: bucket.unpricedRecords,
+        sessions: bucket.sessions.size,
+        topModels: rankModels(bucket.models),
+      });
+    }
+    const topSessions: UsageSessionSummary[] = [...this.#sessions.values()]
+      .sort(
+        (a, b) =>
+          b.costUsd - a.costUsd ||
+          b.totalTokens - a.totalTokens ||
+          b.lastTimestampMs - a.lastTimestampMs ||
+          a.sessionId.localeCompare(b.sessionId),
+      )
+      .slice(0, 50)
+      .map((session) => {
+        const { project, t3ThreadId, t3Title, cwd } = session.attribution;
+        const title = t3Title ?? session.nativeTitle;
+        const models = rankModels(session.models).map(({ model }) => model);
+        return {
+          sessionId: session.sessionId,
+          provider: session.provider,
+          ...(session.source ? { sourcePath: session.source } : {}),
+          ...(title ? { title } : {}),
+          ...(t3ThreadId === undefined ? {} : { t3ThreadId }),
+          ...(project.t3ProjectId === undefined ? {} : { t3ProjectId: project.t3ProjectId }),
+          projectKey: project.projectKey,
+          projectLabel: project.label,
+          ...(cwd === undefined ? {} : { cwd }),
+          primaryModel: models[0]!,
+          models,
+          totals: session.totals,
+          costUsd: session.costUsd,
+          providerReportedCostUsd: session.providerReportedCostUsd,
+          records: session.records,
+          unpricedRecords: session.unpricedRecords,
+          firstTimestampMs: session.firstTimestampMs,
+          lastTimestampMs: session.lastTimestampMs,
+        };
+      });
+
     return {
       buckets,
+      projects,
+      topSessions,
       duplicatesDropped: this.#duplicatesDropped,
       outOfWindow: this.#outOfWindow,
     };

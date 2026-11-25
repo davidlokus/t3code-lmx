@@ -10,17 +10,18 @@
 
 ### 1.1 真实载荷字段真值矩阵
 
-| Provider | 磁盘存储位置 | `cwd` 真值字段 | 原生标题真值字段 | `sessionId` 真值字段 | T3 `nativeThreadRef.nativeId` 形态 | `reportedCostUsd` / `reasoningTokens` |
-| --- | --- | --- | --- | --- | --- | --- |
-| **`omp`** | `~/.omp/agent/sessions/**/*.jsonl` | 第 2 行 `type:"session"` → `cwd: string` | **第 1 行** `type:"title"` → `title: string`（先于 `session` 出现！） | `type:"session"` → `id: string` | **绝对文件路径**（`..._<uuid>.jsonl`） | `usage.cost.total` / `usage.reasoningTokens ?? usage.reasoning` |
-| **`pi`** | `~/.pi/agent/sessions/**/*.jsonl` | 第 1 行 `type:"session"` → `cwd: string` | 后续 `type:"session_info"` → `name: string` | `type:"session"` → `id: string` | **绝对文件路径**（`..._<uuid>.jsonl`） | `usage.cost.total` / `usage.reasoning` |
-| **`claude`** | `~/.claude/projects/**/*.jsonl` | `type:"assistant"` 行顶层 **`cwd: string`** | 后续 `type:"ai-title"` → `aiTitle` / `type:"custom-title"` → `customTitle`（后于消息出现！） | `sessionId: string` | **会话 UUID**（与 `sessionId` 相同） | `costUSD` / `0`（Anthropic 未拆出思考） |
-| **`codex`** | `~/.codex/sessions/**/*.jsonl` | `type:"session_meta"` → **`payload.cwd: string`** | 无内置标题（优先取 T3 线程标题，兜底短 ID） | `payload.id ?? payload.session_id` | **会话 UUID**（与 `payload.id` 相同） | `null`（走表定价）/ `reasoning_output_tokens` |
-| **`opencode`** | `~/.local/share/opencode/opencode.db` + `storage/message/` | SQLite `session.directory` / `session_v2.directory`（遗留 JSON `path.cwd`） | SQLite `session.title` / `session_v2.title` | `session_id` / `sessionID` | **会话 ID** | `cost`（非零实报）/ `tokens.reasoning` |
-| **`grok`** | `~/.grok/sessions/*/updates.jsonl` | 日志中无 `cwd`（依赖 T3 `UsageMetadataIndex` 反查，否则未归属） | 同左 | `params.sessionId` | **会话 ID** | `costUsdTicks / 1e10` / `reasoningTokens` |
-| **`muse` / `antigravity` / `cursor`** | 各自日志/账单 | 无直接 `cwd`（`muse`/`antigravity` 尝试按 `sessionId` 反查 T3，`cursor` 恒为未归属） | 同左 | `stream.id` / 会话 ID / 无 | 会话 ID / 无 | 见既有解析器 |
+| Provider                              | 磁盘存储位置                                               | `cwd` 真值字段                                                                       | 原生标题真值字段                                                                             | `sessionId` 真值字段               | T3 `nativeThreadRef.nativeId` 形态     | `reportedCostUsd` / `reasoningTokens`                           |
+| ------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- | ---------------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| **`omp`**                             | `~/.omp/agent/sessions/**/*.jsonl`                         | 第 2 行 `type:"session"` → `cwd: string`                                             | **第 1 行** `type:"title"` → `title: string`（先于 `session` 出现！）                        | `type:"session"` → `id: string`    | **绝对文件路径**（`..._<uuid>.jsonl`） | `usage.cost.total` / `usage.reasoningTokens ?? usage.reasoning` |
+| **`pi`**                              | `~/.pi/agent/sessions/**/*.jsonl`                          | 第 1 行 `type:"session"` → `cwd: string`                                             | 后续 `type:"session_info"` → `name: string`                                                  | `type:"session"` → `id: string`    | **绝对文件路径**（`..._<uuid>.jsonl`） | `usage.cost.total` / `usage.reasoning`                          |
+| **`claude`**                          | `~/.claude/projects/**/*.jsonl`                            | `type:"assistant"` 行顶层 **`cwd: string`**                                          | 后续 `type:"ai-title"` → `aiTitle` / `type:"custom-title"` → `customTitle`（后于消息出现！） | `sessionId: string`                | **会话 UUID**（与 `sessionId` 相同）   | `costUSD` / `0`（Anthropic 未拆出思考）                         |
+| **`codex`**                           | `~/.codex/sessions/**/*.jsonl`                             | `type:"session_meta"` → **`payload.cwd: string`**                                    | 无内置标题（优先取 T3 线程标题，兜底短 ID）                                                  | `payload.id ?? payload.session_id` | **会话 UUID**（与 `payload.id` 相同）  | `null`（走表定价）/ `reasoning_output_tokens`                   |
+| **`opencode`**                        | `~/.local/share/opencode/opencode.db` + `storage/message/` | SQLite `session.directory` / `session_v2.directory`（遗留 JSON `path.cwd`）          | SQLite `session.title` / `session_v2.title`                                                  | `session_id` / `sessionID`         | **会话 ID**                            | `cost`（非零实报）/ `tokens.reasoning`                          |
+| **`grok`**                            | `~/.grok/sessions/*/updates.jsonl`                         | 日志中无 `cwd`（依赖 T3 `UsageMetadataIndex` 反查，否则未归属）                      | 同左                                                                                         | `params.sessionId`                 | **会话 ID**                            | `costUsdTicks / 1e10` / `reasoningTokens`                       |
+| **`muse` / `antigravity` / `cursor`** | 各自日志/账单                                              | 无直接 `cwd`（`muse`/`antigravity` 尝试按 `sessionId` 反查 T3，`cursor` 恒为未归属） | 同左                                                                                         | `stream.id` / 会话 ID / 无         | 会话 ID / 无                           | 见既有解析器                                                    |
 
 > **关键设计发现（实测防踩坑）**：
+>
 > 1. **`omp` 的 `title` 行在 `session` 行之前**（line 0 是 `type:"title"`，line 1 才是 `type:"session"`），`ompUsageFormat` 的状态机需暂存 `pendingTitle`，遇到 `session.id` 后绑定并保留到 `readSessionTitles(state)`。
 > 2. **`claude` 的 `ai-title`/`custom-title` 出现在消息之后**，因此标题必须由格式状态机 `readSessionTitles(state)`（文件级映射 `sessionId -> title`）收集，而不能依赖单条 `UsageRecord` 写入顺序。
 > 3. **Pi / `omp` 在 T3 中的 `nativeThreadRef.nativeId` 存的是会话文件路径而非 UUID**（`packages/provider-pi/src/server/adapter.ts:2301`），因此 `UsageMetadataIndex` 必须同时索引 `nativeId` 原值（匹配文件路径或 UUID）与从 `..._<uuid>.jsonl` 文件名提取的 UUID 后缀，才能让 `omp`/Pi 会话 100% 关联到 T3 线程并支持一键跳转！
@@ -30,12 +31,14 @@
 ## 2. Goals / Non-Goals
 
 **Goals:**
+
 1. **向后兼容协议扩展**：在不提升 `USAGE_CONTRACT_VERSION`（保持 `6` 且兼容 `USAGE_MERGE_COMPATIBLE_SINCE = 4`）的前提下，通过可选字段交付项目聚合、Top 50 会话、项目下钻筛选及实报费用拆分，确保 Mobile 与旧版/上游远程服务端零报错。
 2. **严格 WebSocket 体积控制**：项目桶按 `(projectKey, provider, sourcePath)` 聚合（典型 5–30 条），`topSessions` 在服务端截断为 Top 50，避免推送海量明细。
 3. **高内聚低冲突架构**：新增服务端元数据与项目归并模块独立成文件；新增 Web UI、Store、逻辑与导出全部收敛在 `apps/web/src/fork/usage/*`，上游 `UsagePage.tsx` 仅保留最小 `// fork:` 分派钩子。
 4. **严格遵守 Fork 静态门禁**：零未用生产导出（`knip:check:exports`）、零裸 Tailwind 调色板（`shadcn/no-raw-colors`）、零原生 `title` 属性（`t3code/no-native-title-tooltip`）、零嵌套 `<Popover>`（Lesson #7）、无持续重绘动画、10 语言全量 `i18n:check`。
 
 **Non-Goals:**
+
 - 不改造 `apps/mobile` UI。
 - 不修改 `apps/desktop` 独立打包入口（`boot.ts` / `compileCache.ts` / `serverCompileCache.ts` / `preload.ts` 零改动，但仍执行本地 macOS 真机打包试装验收）。
 - 不新增独立自定义日期选择器与汇率换算。
@@ -49,6 +52,7 @@
 **决策：全部采用向后兼容可选字段 + 保留 `provider` / `sourcePath` 粒度以支持多环境去重和前端 Provider 过滤。**
 
 1. **`packages/contracts/src/usage.ts` 新增可选类型与字段**：
+
    ```ts
    export const UNATTRIBUTED_USAGE_PROJECT_KEY = "__unattributed__" as const;
 
@@ -173,7 +177,9 @@
 > **强制导出纪律（`knip:check:exports`）**：仅导出下列标注 `PUBLIC` 的符号；所有内部辅助函数与未跨文件消费的常量 **严禁 `export`**。
 
 #### A. `apps/web/src/fork/usage/usageOptionsStore.ts`
+
 **PUBLIC Exports：**
+
 ```ts
 export const USAGE_UI_OPTIONS_STORAGE_KEY = "t3lab:usage-ui:v1";
 
@@ -219,13 +225,16 @@ export function readPersistedUsageUiOptions(
 export function isDefaultUsageUiOptions(options: UsageUiOptions): boolean;
 export const useUsageOptionsStore: UseBoundStore<StoreApi<UsageOptionsStoreState>>;
 ```
+
 - **Defaults（INTERNAL）**：`{ view: "overview", metric: "cost", period: "30d", chartMode: "stacked-bar", showQuotaStrip: true, showShareBars: true, showComparison: true, showBudget: true, dailyBudgetUsd: null, monthlyBudgetUsd: null, budgetScope: "all", hiddenProviders: [] }`。
 - 首次从旧版 `t3code:usage-page-preferences:v1` 迁移时仅继承 `hiddenProviders`（不继承旧版默认 `metric: "limits"`，确保首屏默认落 `overview`）。
 
 #### B. `apps/web/src/fork/usage/usageDashboard.logic.ts`
+
 纯函数模块，所有时间均通过 `now: Date` / `nowMs: number` 显式注入，保证单测 100% 确定性。
 
 **PUBLIC Exports：**
+
 ```ts
 export interface UsageWindowPair {
   readonly current: UsageSummaryInput;
@@ -292,10 +301,7 @@ export interface UsageKpiSnapshot {
   readonly providerReportedCostUsd: number;
 }
 
-export function deriveUsageKpis(
-  merged: MergedUsage,
-  resolution: "day" | "hour",
-): UsageKpiSnapshot;
+export function deriveUsageKpis(merged: MergedUsage, resolution: "day" | "hour"): UsageKpiSnapshot;
 
 export function quotaRiskTone(remainingPercent: number): UsageRiskTone;
 
@@ -374,6 +380,7 @@ apps/web/src/components/usage/UsagePage.tsx (// fork: 薄壳入口，挂载 fork
 ```
 
 **关键 UI 守卫**：
+
 - **语义色 Token（严格通过 `shadcn/no-raw-colors`）**：
   - 占比条：`Input` → `var(--info)`，`Cache read` → `var(--success)`，`Cache write` → `var(--warning)`，`Output` → `var(--guest)`，`Reasoning` → `var(--update)`，`Other` → `var(--muted-foreground)`。
   - 风险分级（Quota / Soft Budget）：Normal → `bg-success` / `text-success-foreground`；Warning → `bg-warning` / `text-warning-foreground`；Critical → `bg-error` / `text-error-foreground`。

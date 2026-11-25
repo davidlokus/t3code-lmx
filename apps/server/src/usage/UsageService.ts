@@ -58,6 +58,8 @@ import {
   readPhysicalSourceId,
   readTranscriptRecords,
 } from "./usageTranscriptReader.ts";
+import * as UsageMetadataIndex from "./UsageMetadataIndex.ts";
+import { makeUsageProjectResolver } from "./usageProjectResolution.ts";
 import {
   decodeScanCache,
   dedupeWithinFile,
@@ -177,6 +179,8 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const hostEnvironment = yield* HostProcess.Environment;
   const hostPlatform = yield* HostProcess.Platform;
+  const metadataIndex = yield* UsageMetadataIndex.UsageMetadataIndex;
+  const prepareProjectResolution = yield* makeUsageProjectResolver;
   const hostScope = hostEnvironment[DESKTOP_HOST_SCOPE_ENV]?.trim();
   // A mount or a directory's on-disk name does not change under a running server.
   // A miss is not cached: the directory may not exist yet.
@@ -571,6 +575,7 @@ export const make = Effect.gen(function* () {
   ): Effect.fn.Return<{
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: readonly number[];
+    readonly sessionTitles?: ReadonlyMap<string, string>;
     readonly failed?: true;
     readonly update?: { readonly entry: CachedFile; readonly replaces: CachedFile | undefined };
   }> {
@@ -589,6 +594,7 @@ export const make = Effect.gen(function* () {
             ? cached.records
             : [...cached.records, ...cached.tailRecords],
         malformedRecords: cached.malformedRecords,
+        ...(cached.sessionTitles === undefined ? {} : { sessionTitles: cached.sessionTitles }),
       };
     }
 
@@ -606,6 +612,9 @@ export const make = Effect.gen(function* () {
       return {
         records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
         malformedRecords: cached?.provider === provider ? cached.malformedRecords : [],
+        ...(cached?.provider === provider && cached.sessionTitles !== undefined
+          ? { sessionTitles: cached.sessionTitles }
+          : {}),
         failed: true,
       };
 
@@ -639,7 +648,8 @@ export const make = Effect.gen(function* () {
           corrected !== undefined &&
           corrected.unresolvedServiceTierTurnId === undefined
         ) {
-          resolvedRecords.set(record, corrected);
+          const { unresolvedServiceTierTurnId: _turnId, ...rest } = record;
+          resolvedRecords.set(record, { ...rest, speed: corrected.speed });
         }
       }
     }
@@ -655,17 +665,21 @@ export const make = Effect.gen(function* () {
           corrected.unresolvedServiceTierTurnId === undefined &&
           identity(record) === identity(corrected)
         ) {
-          resolvedRecords.set(record, corrected);
+          const { unresolvedServiceTierTurnId: _turnId, ...rest } = record;
+          resolvedRecords.set(record, { ...rest, speed: corrected.speed });
         }
       }
     }
     const base = parsed.resumed && cached !== undefined ? cached.records : [];
     const records = dedupeWithinFile([...base, ...parsed.records]);
     const tailRecords = parsed.tailRecords;
+    const titles =
+      parsed.sessionTitles === undefined ? {} : { sessionTitles: parsed.sessionTitles };
 
     return {
       records: tailRecords.length === 0 ? records : [...records, ...tailRecords],
       malformedRecords: parsed.malformedRecords,
+      ...titles,
       update: {
         entry: {
           size,
@@ -674,6 +688,7 @@ export const make = Effect.gen(function* () {
           records,
           tailRecords,
           malformedRecords: parsed.malformedRecords,
+          ...titles,
           position: parsed.position,
         },
         replaces: cached,
@@ -694,6 +709,7 @@ export const make = Effect.gen(function* () {
           readonly path: string;
           readonly records: readonly UsageRecord[];
           readonly malformedRecords: readonly number[];
+          readonly sessionTitles?: ReadonlyMap<string, string>;
         }[]
       | null;
     /** Every transcript path the walk listed, in walk order, whatever its mtime. */
@@ -733,25 +749,25 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
-    const parsedFiles = read.map(({ path, records, malformedRecords, update }) => {
-      if (update === undefined) return { path, records, malformedRecords };
+    const parsedFiles = read.map(({ update, failed: _failed, ...file }) => {
+      if (update === undefined) return file;
       // A scan of another window may have cached its own read of this file
       // meanwhile. Then keep whichever read saw the later file, so a slower
       // scan never replaces newer usage with older.
-      const current = fileCache.get(path);
+      const current = fileCache.get(file.path);
       if (
         current === update.replaces ||
         current === undefined ||
         isLaterRead(update.entry, current)
       ) {
-        fileCache.set(path, {
+        fileCache.set(file.path, {
           ...update.entry,
           records: correctedBatch(update.entry.records),
           tailRecords: correctedBatch(update.entry.tailRecords),
         });
         cacheDirty = true;
       }
-      return { path, records, malformedRecords };
+      return file;
     });
     const livePaths = new Set(files.map((file) => file.path));
     for (const file of read) {
@@ -840,8 +856,11 @@ export const make = Effect.gen(function* () {
       });
     }
 
-    let hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
-    if (input.resolution === "hour") {
+    let exactWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null = null;
+    if (
+      input.resolution === "hour" ||
+      (input.sinceTime !== undefined && input.untilTime !== undefined)
+    ) {
       const sinceTime =
         input.sinceTime === undefined ? Option.none() : DateTime.make(input.sinceTime);
       const untilTime =
@@ -849,19 +868,36 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(sinceTime) || Option.isNone(untilTime)) {
         return yield* new UsageReadError({
           reason: "invalidWindow",
-          detail: "Hourly usage requires valid sinceTime and untilTime instants",
+          detail: "Usage requires valid sinceTime and untilTime instants when using exact bounds",
         });
       }
       const sinceTimeMs = DateTime.toEpochMillis(sinceTime.value);
       const untilTimeMs = DateTime.toEpochMillis(untilTime.value);
       const durationMs = untilTimeMs - sinceTimeMs;
-      if (durationMs <= 0 || durationMs > MAX_HOURLY_WINDOW_MS) {
+      if (durationMs <= 0) {
         return yield* new UsageReadError({
           reason: "invalidWindow",
-          detail: "Hourly usage window must be greater than zero and at most 24 hours",
+          detail: "Usage sinceTime must precede untilTime",
         });
       }
-      hourlyWindow = { sinceTimeMs, untilTimeMs };
+      if (input.resolution === "hour" && durationMs > MAX_HOURLY_WINDOW_MS) {
+        // Today may cover 25 hours when local clocks fall back.
+        const localStart = Option.getOrUndefined(
+          DateTime.setZoneNamed(sinceTime.value, input.timeZone),
+        );
+        const withinLocalDay =
+          input.sinceDay === input.untilDay &&
+          localStart !== undefined &&
+          DateTime.toEpochMillis(DateTime.startOf(localStart, "day")) === sinceTimeMs &&
+          untilTimeMs <= DateTime.toEpochMillis(DateTime.add(localStart, { days: 1 }));
+        if (!withinLocalDay) {
+          return yield* new UsageReadError({
+            reason: "invalidWindow",
+            detail: "Hourly usage window must be at most 24 hours or within one local calendar day",
+          });
+        }
+      }
+      exactWindow = { sinceTimeMs, untilTimeMs };
     }
 
     const startedAtMs = yield* Clock.currentTimeMillis;
@@ -875,16 +911,16 @@ export const make = Effect.gen(function* () {
       });
     }
     const windowStartMs =
-      (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
+      (exactWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
     const retentionCutoffMs =
       settings.usageHistoryRetentionDays === "unlimited"
         ? 0
         : Math.max(0, startedAtMs - settings.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
 
-    const inWindow = usageTimestampFilter({ ...input, ...hourlyWindow });
+    const inWindow = usageTimestampFilter({ ...input, ...exactWindow });
     const windowEndMs =
-      hourlyWindow?.untilTimeMs ??
+      exactWindow?.untilTimeMs ??
       Date.parse(`${input.untilDay}T00:00:00Z`) + 86400000 + MTIME_SLACK_MS;
 
     const awaitRefresh = input.awaitRefresh === true;
@@ -917,9 +953,9 @@ export const make = Effect.gen(function* () {
       );
       return { scannedDirs: scanned, fromMemory };
     });
-    const [{ scannedDirs, fromMemory }] = yield* Effect.all(
-      [collect, provisional ? Effect.void : ensureRates(false)],
-      { concurrency: 2 },
+    const [{ scannedDirs, fromMemory }, , metadata] = yield* Effect.all(
+      [collect, provisional ? Effect.void : ensureRates(false), metadataIndex.snapshot()],
+      { concurrency: 3 },
     );
 
     const priceOverrides = createOverrideRateTable(settings.usagePriceOverrides);
@@ -960,6 +996,7 @@ export const make = Effect.gen(function* () {
               ? entry.records
               : [...entry.records, ...entry.tailRecords],
           malformedRecords: entry.malformedRecords,
+          ...(entry.sessionTitles === undefined ? {} : { sessionTitles: entry.sessionTitles }),
         });
       }
       return retainedFiles.flatMap((file) => {
@@ -1015,17 +1052,21 @@ export const make = Effect.gen(function* () {
     if (!fromMemory) yield* refreshForUnlistedModels(rateModels);
 
     const summaryPricing = pricing();
+    const resolveProject = yield* prepareProjectResolution(metadata, filesByDir);
 
     const aggregator = new UsageAggregator({
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       resolution: input.resolution ?? "day",
-      ...hourlyWindow,
+      ...exactWindow,
       rates,
       priceOverrides,
       modelAliases,
       rateModel: (provider, model) => providerRateModels.get(provider)?.(model),
+      resolveProject,
+      ...(input.projectFilter === undefined ? {} : { projectFilter: input.projectFilter }),
+      ...(input.providers === undefined ? {} : { providers: new Set(input.providers) }),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     });
 
@@ -1120,7 +1161,7 @@ export const make = Effect.gen(function* () {
             eventOccurrences.set(key, occurrence);
             usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
           }
-          if (aggregator.add(usageRecord, dir)) {
+          if (aggregator.add(usageRecord, dir, file.sessionTitles?.get(record.sessionId))) {
             counted = true;
             if (record.sessionId.length > 0) sessionIds.add(record.sessionId);
           }
@@ -1195,10 +1236,13 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       buckets: aggregated.buckets,
+      projects: aggregated.projects,
+      topSessions: aggregated.topSessions,
       sources,
       pricing: summaryPricing,
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
+      ...(input.projectFilter === undefined ? {} : { projectFilter: input.projectFilter }),
     } satisfies UsageSummary;
     return { summary, fromMemory };
   });
@@ -1233,14 +1277,26 @@ export const make = Effect.gen(function* () {
       input.awaitRefresh === true,
       provisional,
       input.modelFilter ?? null,
+      input.projectFilter?.projectKey ?? null,
+      input.providers ?? null,
     ]);
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (
     requested: UsageSummaryInput,
   ) {
-    const { modelFilter: requestedFilter, ...unfiltered } = requested;
+    const {
+      modelFilter: requestedFilter,
+      providers: requestedProviders,
+      ...unfiltered
+    } = requested;
     const modelFilter = canonicalModelFilter(requestedFilter);
-    const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
+    const providers =
+      requestedProviders === undefined ? undefined : [...new Set(requestedProviders)].sort();
+    const input: UsageSummaryInput = {
+      ...unfiltered,
+      ...(modelFilter === undefined ? {} : { modelFilter }),
+      ...(providers === undefined ? {} : { providers }),
+    };
     const settings = yield* readSettings;
     const provisional = input.provisional === true && input.awaitRefresh !== true;
     const key = scanKey(input, settings, provisional);

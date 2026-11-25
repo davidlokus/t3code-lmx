@@ -71,6 +71,165 @@ function aggregate(
 }
 
 describe("UsageAggregator", () => {
+  it("filters all totals by canonical project without counting a fork's copied usage", () => {
+    const worktree = "/work/fork";
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      projectFilter: { projectKey: "t3:repo" },
+      resolveProject: ({ cwd }) =>
+        cwd === worktree
+          ? {
+              project: { projectKey: "t3:repo", label: "Repo", t3ProjectId: "repo" },
+              cwd,
+              worktreePath: cwd,
+              t3ThreadId: "thread-a",
+              t3Title: "T3 title",
+            }
+          : { project: { projectKey: "path:/work/other", label: "Other" } },
+    });
+    const copy = record({ dedupeKey: "copied" });
+    expect(aggregator.add(copy, "/claude")).toBe(false);
+    expect(aggregator.add({ ...copy, cwd: worktree }, "/claude")).toBe(false);
+    aggregator.add(record({ cwd: worktree, reportedCostUsd: 2 }), "/claude", "Native title");
+    aggregator.add(record({ cwd: worktree }), "/claude");
+
+    const { buckets, projects, topSessions } = aggregator.finish();
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]).toMatchObject({
+      records: 2,
+      costSource: "modelPriced",
+      costUsd: expect.closeTo(2.005625),
+      providerReportedCostUsd: 2,
+    });
+    expect(projects).toMatchObject([
+      {
+        projectKey: "t3:repo",
+        worktreeCount: 1,
+        sessions: 1,
+        records: 2,
+        providerReportedCostUsd: 2,
+        topModels: [{ model: "claude-fable-5", totalTokens: 2320 }],
+      },
+    ]);
+    expect(topSessions).toMatchObject([
+      {
+        t3ThreadId: "thread-a",
+        t3ProjectId: "repo",
+        sessionId: "session-a",
+        title: "T3 title",
+        records: 2,
+      },
+    ]);
+  });
+
+  it("bounds the top sessions and ranks otherwise unpriced sessions by tokens", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      resolveProject: () => ({
+        project: { projectKey: "path:/work/repo", label: "Repo", workspaceRoot: "/work/repo" },
+      }),
+    });
+    for (let index = 0; index < 52; index++) {
+      aggregator.add(
+        record({
+          sessionId: `session-${index}`,
+          totals: { ...record().totals, outputTokens: index },
+          model: "unknown-model",
+          reportedCostUsd: index === 0 ? 10 : null,
+        }),
+      );
+    }
+    const { projects, topSessions } = aggregator.finish();
+    expect(topSessions).toHaveLength(50);
+    expect(topSessions.slice(0, 3).map(({ sessionId }) => sessionId)).toEqual([
+      "session-0",
+      "session-51",
+      "session-50",
+    ]);
+    expect(topSessions.at(-1)?.sessionId).toBe("session-3");
+    expect(projects[0]?.sessions).toBe(52);
+  });
+
+  it("enforces <=50 wire cap unfiltered, ranks provider-filtered sessions before cap, emits worktreeRoots, and keeps all project models", () => {
+    const build = (providers?: ReadonlySet<UsageRecord["provider"]>) => {
+      const aggregator = new UsageAggregator({
+        timeZone: "UTC",
+        sinceDay: "2026-08-01",
+        untilDay: "2026-08-31",
+        rates,
+        ...(providers === undefined ? {} : { providers }),
+        resolveProject: ({ cwd }) => ({
+          project: { projectKey: "t3:repo", label: "Repo", t3ProjectId: "repo" },
+          ...(cwd !== undefined ? { cwd, worktreePath: cwd } : {}),
+        }),
+      });
+      for (let index = 0; index < 50; index++) {
+        aggregator.add(
+          record({
+            provider: "claude",
+            sessionId: `claude-${index}`,
+            cwd: index % 2 === 0 ? "/work/repo-a" : "/work/repo-b",
+            reportedCostUsd: 100 - index,
+            model: `model-${index % 7}`,
+          }),
+          "/claude",
+        );
+      }
+      for (let index = 0; index < 30; index++) {
+        aggregator.add(
+          record({
+            provider: "omp",
+            sessionId: `omp-${index}`,
+            cwd: "/work/repo-c",
+            reportedCostUsd: 0.5 - index * 0.01,
+            model: "model-6",
+          }),
+          "/omp",
+        );
+      }
+      return aggregator.finish();
+    };
+
+    const unfiltered = build();
+    expect(unfiltered.topSessions).toHaveLength(50);
+    expect(unfiltered.topSessions.every((session) => session.provider === "claude")).toBe(true);
+    const claudeProject = unfiltered.projects.find((entry) => entry.provider === "claude");
+    const ompProject = unfiltered.projects.find((entry) => entry.provider === "omp");
+    expect(claudeProject?.worktreeCount).toBe(2);
+    expect(claudeProject?.worktreeRoots).toEqual(["/work/repo-a", "/work/repo-b"]);
+    expect(ompProject?.worktreeCount).toBe(1);
+    expect(ompProject?.worktreeRoots).toEqual(["/work/repo-c"]);
+    expect(claudeProject?.topModels).toHaveLength(7);
+
+    const ompOnly = build(new Set(["omp"]));
+    expect(ompOnly.topSessions).toHaveLength(30);
+    expect(ompOnly.topSessions.every((session) => session.provider === "omp")).toBe(true);
+    expect(ompOnly.buckets.every((bucket) => bucket.provider === "omp")).toBe(true);
+  });
+
+  it("uses exact MTD bounds without turning daily results into hourly buckets", () => {
+    const sinceTimeMs = Date.parse("2026-08-01T00:00:00Z");
+    const untilTimeMs = Date.parse("2026-08-07T12:00:00Z");
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-07",
+      resolution: "day",
+      sinceTimeMs,
+      untilTimeMs,
+      rates,
+    });
+    expect(aggregator.add(record({ timestampMs: sinceTimeMs }))).toBe(true);
+    expect(aggregator.add(record({ timestampMs: untilTimeMs }))).toBe(false);
+    expect(aggregator.finish().buckets).toMatchObject([{ day: "2026-08-01", records: 1 }]);
+  });
+
   it("splits a bucket's cost by category and speed", () => {
     const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
 
