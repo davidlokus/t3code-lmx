@@ -11,11 +11,13 @@ rules:
   proposal:
     - "必须包含「Out of Scope」与「上游同步冲突面」（区分新增独立文件与需加 // fork: 钩子的上游文件）。"
     - "必须逐项评估多面影响（Web / Desktop / Mobile / Server / Contracts / Providers / i18n），不涉及的显式标 N/A。"
+    - "若隶属多 PR / 多 Wave Epic，须在提案中关联 Epic Charter（openspec/epics/<epic>.md）与本 PR 文件归属围栏；沿冻结契约增量扩展 Provider/数据源的 L1+ 提案须直接在提案中附真实载荷真值表与四象限防御检查。"
     - "需求存在次要模糊点时，先做合理假设并集中在「Assumptions」中列出供用户一句纠偏；仅当猜错代价高（架构边界、安全、破坏性兼容）时停下来反问。"
   design:
     - "仅在跨包/跨端改动、新增依赖、涉及打包/安全/性能边界或存在非平凡技术权衡时编写；否则说明跳过原因即可。"
-    - "凡消费 Provider 运行时数据（usage、cost、model options、tools、transcripts），编写设计前必须抽样核对 omp 与至少 1 个上游 Provider 的真实载荷，并在设计中记录字段真值矩阵，禁止靠猜造 fixture。"
-    - "若涉及跨 Agent 交接（agy × omp），必须在契约中明确区分对外消费导出与模块内部 helper（避免触发 knip:check:exports），并将新 UI 槽位与逻辑收口到 apps/web/src/fork/<area>/。"
+    - "凡消费 Provider 运行时数据（usage、cost、model options、tools、transcripts、limits），编写设计前必须抽样核对 omp 与至少 1 个上游 Provider 的真实载荷，并在设计中记录字段真值矩阵，禁止靠猜造 fixture。"
+    - "凡涉及可选协议扩展、外部探测、多账号/多实例聚合或持久化缓存，必须在设计中填写四象限防御矩阵（旧服缺可选字段 / 失败态保留旧值防震荡 / 多实例隔离防双计 / 缓存版本升级与全局旧引用清理）。"
+    - "若涉及跨 Agent 交接（agy × omp），必须坚持写审模型异构（Author ≠ Reviewer）与全新只读 Reviewer 会话，在契约中明确区分对外消费导出与模块内部 helper（避免触发 knip:check:exports），并将新 UI 槽位与逻辑收口到 apps/web/src/fork/<area>/。"
     - "若涉及 apps/desktop 独立打包入口（boot.ts、compileCache.ts、serverCompileCache.ts、preload.ts），必须显式核对 deps.alwaysBundle 与工作区包内联。"
   tasks:
     - "每个实现任务组必须自带对应单测或回归守卫，每条 checkbox 都要写明具体验证命令或可观测验收标准。"
@@ -25,9 +27,9 @@ rules:
 operations:
   apply:
     guidance:
-      - "[auto / apply.before] 动手前确认当前位于独立功能分支与相邻 worktree（../t3code-lmx-<topic>），绝不直接提交到 lmx-lab 或 main。"
+      - "[auto / apply.before] 动手前确认当前位于独立功能分支与相邻 worktree（推荐用 node fork/scripts/worktree-task.mjs open <topic> 创建 ../t3code-lmx-<topic>），绝不直接提交到 lmx-lab 或 main。"
       - "[auto / apply.completed] 先用局部 typecheck/test 快循环，通过后统一跑一次 check:changed，并按 FORK.md 输出三段式审计证据：Verified、Broken by hand、Not tried。"
   archive:
     guidance:
-      - "[suggest / archive.before] 若本次变更引入、调整或移除长期分叉能力，询问是否同步更新 FORK.md 文末「分叉改动台账」。"
-      - "[auto / archive.completed] 显式复盘本次实施/Review/真机验收是否产生新教训，提炼 0–2 条记入 LESSONS.md 并推进 reviewed-through（若无则显式写无新教训；同类 ≥ 2 次升级为 FORK.md 硬条款并下沉守卫测试）。"
+      - "[suggest / archive.before] 若本次变更引入、调整或移除长期分叉能力，询问是否同步更新 FORK.md 文末「分叉改动台账」（并行 Wave PR 可推迟到合入前 rebase 或 Wave 收尾 PR）。"
+      - "[auto / archive.completed] 显式复盘本次实施/Review/真机验收是否产生新教训，提炼 0–2 条记入 LESSONS.md 并推进 reviewed-through（若无则显式写无新教训；同类 ≥ 2 次升级为 FORK.md 硬条款并下沉守卫测试）；PR 合入后用 node fork/scripts/worktree-task.mjs close <topic> 回收 worktree。"
