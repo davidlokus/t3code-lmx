@@ -40,6 +40,7 @@ describe("claudeUsageResponseToLimits", () => {
             id: "five_hour",
             kind: "session",
             label: "Session",
+            category: "plan",
             usedPercent: 54,
             windowDurationMins: 300,
             resetsAt: "2026-07-18T14:39:00.000Z",
@@ -48,6 +49,7 @@ describe("claudeUsageResponseToLimits", () => {
             id: "seven_day",
             kind: "weekly",
             label: "Weekly",
+            category: "plan",
             usedPercent: 18.4,
             windowDurationMins: 10080,
             resetsAt: "2026-07-24T08:59:00.000Z",
@@ -56,6 +58,8 @@ describe("claudeUsageResponseToLimits", () => {
             id: "seven_day_fable",
             kind: "weekly",
             label: "Weekly · Fable",
+            category: "plan",
+            scopeLabel: "Fable",
             usedPercent: 73,
             windowDurationMins: 10080,
             resetsAt: "2026-07-24T08:59:00.000Z",
@@ -101,6 +105,7 @@ describe("claudeUsageResponseToLimits", () => {
         id: "seven_day",
         kind: "weekly",
         label: "Weekly",
+        category: "plan",
         usedPercent: 100,
         windowDurationMins: 10080,
       },
@@ -132,14 +137,21 @@ describe("claudeUsageResponseToLimits", () => {
     id: "monthly_spend",
     kind: "monthly",
     label: "Monthly spend",
+    category: "overage",
     usedPercent: expect.closeTo(9.262, 10),
+  };
+  const dollarAmounts = {
+    usedAmount: 46.31,
+    limitAmount: 500,
+    remainingAmount: 453.69,
+    unit: "USD",
   };
 
   it("maps the captured Enterprise budget precisely, preferring spend beside rolling windows", () => {
     expect(claudeUsageResponseToLimits({ checkedAt, response: enterpriseResponse }).limits).toEqual(
       {
         checkedAt,
-        windows: [monthlyWindow],
+        windows: [{ ...monthlyWindow, ...dollarAmounts }],
       },
     );
     const response = {
@@ -159,10 +171,11 @@ describe("claudeUsageResponseToLimits", () => {
         id: "five_hour",
         kind: "session",
         label: "Session",
+        category: "plan",
         usedPercent: 12,
         windowDurationMins: 300,
       },
-      monthlyWindow,
+      { ...monthlyWindow, ...dollarAmounts },
     ]);
   });
 
@@ -176,12 +189,58 @@ describe("claudeUsageResponseToLimits", () => {
           enabled: false,
           used: { amount_minor: 30_000, currency: "USD", exponent: 2 },
         },
-        extra_usage: { ...enterpriseResponse.rate_limits.extra_usage, utilization: 9 },
+        extra_usage: {
+          ...enterpriseResponse.rate_limits.extra_usage,
+          utilization: 9,
+          currency: " usd ",
+        },
       },
     };
     expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.windows).toEqual([
-      monthlyWindow,
+      { ...monthlyWindow, ...dollarAmounts },
     ]);
+    const rawCredits = {
+      ...response,
+      rate_limits: {
+        ...response.rate_limits,
+        extra_usage: {
+          ...response.rate_limits.extra_usage,
+          currency: null,
+          decimal_places: undefined,
+        },
+      },
+    };
+    expect(claudeUsageResponseToLimits({ checkedAt, response: rawCredits }).limits.windows).toEqual(
+      [
+        {
+          ...monthlyWindow,
+          usedAmount: 4_631,
+          limitAmount: 50_000,
+          remainingAmount: 45_369,
+          unit: "credits",
+        },
+      ],
+    );
+    const usdWithoutDecimals = {
+      ...response,
+      rate_limits: {
+        ...response.rate_limits,
+        extra_usage: { ...response.rate_limits.extra_usage, decimal_places: undefined },
+      },
+    };
+    expect(
+      claudeUsageResponseToLimits({ checkedAt, response: usdWithoutDecimals }).limits.windows,
+    ).toEqual([{ ...monthlyWindow, ...dollarAmounts }]);
+    const invalidDecimals = {
+      ...response,
+      rate_limits: {
+        ...response.rate_limits,
+        extra_usage: { ...response.rate_limits.extra_usage, decimal_places: -1 },
+      },
+    };
+    expect(
+      claudeUsageResponseToLimits({ checkedAt, response: invalidDecimals }).limits.windows,
+    ).toEqual([monthlyWindow]);
     const utilizationOnly = {
       ...response,
       rate_limits: {
@@ -257,6 +316,7 @@ describe("claudeRateLimitEventToUpdate", () => {
           id: "seven_day",
           kind: "weekly",
           label: "Weekly",
+          category: "plan",
           usedPercent: 85,
           windowDurationMins: 10080,
           resetsAt: "2026-07-14T03:33:20.000Z",
@@ -278,6 +338,8 @@ describe("claudeRateLimitEventToUpdate", () => {
           id: "seven_day_fable",
           kind: "weekly",
           label: "Weekly · Fable",
+          category: "plan",
+          scopeLabel: "Fable",
           usedPercent: 40,
           windowDurationMins: 10080,
         },

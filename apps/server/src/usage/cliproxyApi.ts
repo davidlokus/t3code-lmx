@@ -39,6 +39,10 @@ export interface CliproxyHub {
   readonly managementKey: string;
 }
 
+const SubscriptionActiveUntil = Schema.optional(
+  Schema.NullOr(Schema.Union([Schema.String, Schema.Number])),
+);
+
 const AuthFile = Schema.Struct({
   id: Schema.String,
   auth_index: Schema.String,
@@ -50,6 +54,7 @@ const AuthFile = Schema.Struct({
     Schema.Struct({
       chatgpt_account_id: Schema.optional(Schema.String),
       chatgpt_plan_type: Schema.optional(Schema.String),
+      chatgpt_subscription_active_until: SubscriptionActiveUntil,
       plan_type: Schema.optional(Schema.String),
     }),
   ),
@@ -66,6 +71,16 @@ const CodexWindow = Schema.Struct({
 });
 const CodexUsage = Schema.Struct({
   plan_type: Schema.optional(Schema.String),
+  credits: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        has_credits: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        unlimited: Schema.optional(Schema.NullOr(Schema.Boolean)),
+        balance: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+      }),
+    ),
+  ),
+  subscription_active_until: SubscriptionActiveUntil,
   rate_limit: Schema.NullOr(
     Schema.Struct({
       primary_window: Schema.optional(Schema.NullOr(CodexWindow)),
@@ -86,9 +101,11 @@ const ClaudeUsage = Schema.Struct({
     Schema.NullOr(
       Schema.Struct({
         is_enabled: Schema.Boolean,
-        monthly_limit: Schema.NullOr(Schema.Number),
-        used_credits: Schema.NullOr(Schema.Number),
-        utilization: Schema.NullOr(Schema.Number),
+        monthly_limit: Schema.optional(Schema.NullOr(Schema.Number)),
+        used_credits: Schema.optional(Schema.NullOr(Schema.Number)),
+        utilization: Schema.optional(Schema.NullOr(Schema.Number)),
+        currency: Schema.optional(Schema.NullOr(Schema.String)),
+        decimal_places: Schema.optional(Schema.NullOr(Schema.Number)),
       }),
     ),
   ),
@@ -273,6 +290,20 @@ const CODEX_HUB: HubProvider = {
           checkedAt,
           snapshot: {
             planType: planType ?? null,
+            credits:
+              usage.credits && typeof usage.credits.has_credits === "boolean"
+                ? {
+                    hasCredits: usage.credits.has_credits,
+                    unlimited: usage.credits.unlimited === true,
+                    balance:
+                      typeof usage.credits.balance === "number"
+                        ? String(usage.credits.balance)
+                        : usage.credits.balance,
+                  }
+                : undefined,
+            subscriptionActiveUntil:
+              usage.subscription_active_until ??
+              account.id_token?.chatgpt_subscription_active_until,
             primary: toWindow(usage.rate_limit?.primary_window),
             secondary: toWindow(usage.rate_limit?.secondary_window),
           },
@@ -332,7 +363,15 @@ const HUB_PROVIDERS = new Map<string, HubProvider>([
           seven_day: usage.seven_day ?? null,
           model_scoped,
           spend: usage.spend,
-          extra_usage: usage.extra_usage ?? null,
+          extra_usage: usage.extra_usage
+            ? {
+                ...usage.extra_usage,
+                monthly_limit: usage.extra_usage.monthly_limit ?? null,
+                used_credits: usage.extra_usage.used_credits ?? null,
+                utilization: usage.extra_usage.utilization ?? null,
+                currency: usage.extra_usage.currency ?? null,
+              }
+            : null,
         };
         return {
           ...listedIdentity(account),
