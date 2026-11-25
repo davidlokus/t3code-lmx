@@ -156,6 +156,16 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         "--filter=@t3tools/shared...",
         "preflight runs root `vp test run`, which loads all workspace vite configs",
       );
+      assert.include(
+        forkRelease,
+        "unset GITHUB_REPOSITORY",
+        "GitHub Actions ignores step env overrides of built-in GITHUB_* variables",
+      );
+      assert.notInclude(
+        forkRelease,
+        'GITHUB_REPOSITORY: ""',
+        "step-level GITHUB_REPOSITORY overrides are ignored by GitHub Actions runners",
+      );
     }),
   );
 

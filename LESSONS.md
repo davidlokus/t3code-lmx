@@ -1,4 +1,4 @@
-<!-- reviewed-through: 4c52a1435c (2026-11-25) -->
+<!-- reviewed-through: 9b6940cfc6 (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -101,10 +101,10 @@
 - **代码守卫**：`.github/workflows/fork-ci.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`apps/web/src/components/chat/McpAppFrame.browser.test.tsx`、`apps/web/src/components/usage/UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`。
 - **Seen**：1（2026-11-25，PR #15）
 
-## 12. `Fork Release` 不可用局部 `--filter` 安装配根级 `vp test run`，且 macOS 打包 Runner 须对齐 Xcode 26 (`macos-26`)
+## 12. `Fork Release` 不可用局部 `--filter` 安装配根级 `vp test run`，macOS 打包须用 `macos-26` 且在 Shell 内 `unset GITHUB_REPOSITORY`
 
-- **规则**：① `.github/workflows/fork-release.yml` 的 `preflight` 作业从仓库根执行 `vp test run packages/shared/src/forkIdentity.guard.test.ts` 时，必须使用完整工作区安装（复用 `Fork CI` 缓存的 `pnpm-full-v1-*` store），严禁传 `--filter=@t3tools/shared...`。② `build_mac_arm64` 作业必须运行在 `macos-26`（默认 Xcode 26），满足上游 `apps/desktop/scripts/build-apple-speech.mjs` 对 `-target arm64-apple-macos26.0` 的硬性编译要求，并显式安装 `--filter=@t3tools/web...` 与保存 macOS pnpm store 缓存。
-- **原因**：根目录 `vite.config.ts` 在 `process.cwd() === import.meta.dirname` 时会自动加载 `TEST_CONFIG_PACKAGES`（含 `apps/web/vite.config.ts` 与 `apps/mobile/vite.config.ts`），`--filter=@t3tools/shared...` 缺少 `@vitejs/plugin-react` 和 `@babel/core` 会直接报 `ERR_MODULE_NOT_FOUND`；同时上游在同步后要求打包期编译 `t3-apple-speech` helper，`macos-15` 默认 Xcode 16 会直接失败。
-- **铁证**：`v0.1.12-lab.5` 首次触发 `Fork Release`（Run `45572850935`）在 `Preflight -> Run Fork invariant guard` 第 48 秒因缺少 `@vitejs/plugin-react` 和 `@babel/core` 失败；排查 `build_mac_arm64` 时同时检出 `macos-15` 与 `build-apple-speech.mjs` 的 Xcode 26 硬性要求冲突。
-- **代码守卫**：`.github/workflows/fork-release.yml`、`packages/shared/src/forkIdentity.guard.test.ts`。
-- **Seen**：1（2026-11-25，`v0.1.12-lab.5`）
+- **规则**：① `.github/workflows/fork-release.yml` 的 `preflight` 作业从仓库根执行 `vp test run packages/shared/src/forkIdentity.guard.test.ts` 时，必须使用完整工作区安装（复用 `Fork CI` 缓存的 `pnpm-full-v1-*` store），严禁传 `--filter=@t3tools/shared...`。② `build_mac_arm64` 作业必须运行在 `macos-26`（默认 Xcode 26），满足上游 `apps/desktop/scripts/build-apple-speech.mjs` 对 `-target arm64-apple-macos26.0` 的硬性编译要求，并显式安装 `--filter=@t3tools/web...` 与保存 macOS pnpm store 缓存。③ 清除内置 `GITHUB_REPOSITORY` 以禁用无签名 `app-update.yml` 时，必须在 `run:` Shell 内执行 `unset GITHUB_REPOSITORY T3CODE_DESKTOP_UPDATE_REPOSITORY`，不得依赖 step 级 `env: GITHUB_REPOSITORY: ""`。
+- **原因**：根目录 `vite.config.ts` 在 `process.cwd() === import.meta.dirname` 时会自动加载 `TEST_CONFIG_PACKAGES`（含 `apps/web/vite.config.ts` 与 `apps/mobile/vite.config.ts`），`--filter=@t3tools/shared...` 缺少 `@vitejs/plugin-react` 和 `@babel/core` 会直接报 `ERR_MODULE_NOT_FOUND`；上游打包期编译 `t3-apple-speech` 需要 Xcode 26；此外 GitHub Actions Runner 会忽略 step 级 `env:` 对内置 `GITHUB_*` 变量的覆写，导致 `resolveGitHubPublishConfig` 仍读到 `davidlokus/t3code-lmx` 并向无签名 DMG 写入 `app-update.yml`。
+- **铁证**：`v0.1.12-lab.5` 首次 `Fork Release`（Run `45572850935`）在 `Preflight` 第 48 秒因缺少 `@vitejs/plugin-react` 和 `@babel/core` 失败；PR #18 修复 `Preflight` 并升 `macos-26` 后，Run `45574745676` 成功打出 arm64 DMG，但 `verify-mac-dmg.sh` 立刻拦住因 step `env: GITHUB_REPOSITORY: ""` 失效而注入的 `app-update.yml`。
+- **代码守卫**：`.github/workflows/fork-release.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`fork/scripts/verify-mac-dmg.sh`。
+- **Seen**：2（2026-11-25，`v0.1.12-lab.5` Run `45572850935` 与 Run `45574745676`）
