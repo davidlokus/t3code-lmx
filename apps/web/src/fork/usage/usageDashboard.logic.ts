@@ -1,5 +1,6 @@
 import { UsageDay, type UsageSummaryInput, type UsageTokenTotals } from "@t3tools/contracts";
 import {
+  type DailyTotals,
   isModelCostUnknown,
   type MergedProjectTotals,
   type MergedSessionTotals,
@@ -268,6 +269,52 @@ export function deriveUsageKpis(merged: MergedUsage, resolution: "day" | "hour")
     unpricedShare: costQuality.unpricedShare,
     providerReportedCostUsd,
   };
+}
+
+export interface UsageStreakSnapshot {
+  readonly currentDays: number;
+  readonly longestDays: number;
+  readonly activeDays: number;
+  readonly reachesWindowStart: boolean;
+}
+
+const UTC_DAY_MS = 24 * 60 * 60 * 1_000;
+
+function utcDayMillis(day: string): number {
+  const ms = Date.parse(day);
+  return Number.isFinite(ms) && DateTime.formatIsoDate(DateTime.makeUnsafe(ms)) === day ? ms : NaN;
+}
+
+export function computeUsageStreak(
+  daily: readonly Pick<DailyTotals, "day" | "totalTokens" | "costUsd">[],
+  todayDay: string,
+  windowStartDay: string,
+): UsageStreakSnapshot {
+  const today = utcDayMillis(todayDay);
+  const windowStart = utcDayMillis(windowStartDay);
+  const active = new Set<number>();
+  for (const { day, totalTokens, costUsd } of daily) {
+    if (!(totalTokens > 0 || costUsd > 0)) continue;
+    const ms = utcDayMillis(day);
+    if (ms >= windowStart && ms <= today) active.add(ms);
+  }
+
+  const currentEnd = active.has(today) ? today : today - UTC_DAY_MS;
+  let currentDays = 0;
+  let longestDays = 0;
+  let reachesWindowStart = false;
+  for (const start of active) {
+    if (active.has(start - UTC_DAY_MS)) continue;
+    let next = start + UTC_DAY_MS;
+    while (active.has(next)) next += UTC_DAY_MS;
+    const days = (next - start) / UTC_DAY_MS;
+    longestDays = Math.max(longestDays, days);
+    if (next - UTC_DAY_MS === currentEnd) {
+      currentDays = days;
+      reachesWindowStart = start === windowStart;
+    }
+  }
+  return { currentDays, longestDays, activeDays: active.size, reachesWindowStart };
 }
 
 export function quotaRiskTone(remainingPercent: number): UsageRiskTone {

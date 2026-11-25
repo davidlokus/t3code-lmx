@@ -31,6 +31,9 @@ import {
   MenuGroupLabel,
   MenuItem,
   MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuRadioItemIndicator,
   MenuSeparator,
   MenuTrigger,
 } from "~/components/ui/menu";
@@ -392,6 +395,63 @@ function UsageDisplayOptionsMenu({
           >
             <T>Soft budget bar</T>
           </MenuCheckboxItem>
+        </MenuGroup>
+        <MenuSeparator />
+        <MenuGroup>
+          <MenuGroupLabel>
+            <T>Limits display</T>
+          </MenuGroupLabel>
+          <MenuCheckboxItem
+            variant="switch"
+            checked={options.quotaDisplayMode === "used"}
+            closeOnClick={false}
+            data-testid="usage-options-used-mode"
+            onCheckedChange={(checked) =>
+              options.setQuotaDisplayMode(checked ? "used" : "remaining")
+            }
+          >
+            <T>Show used % instead of left</T>
+          </MenuCheckboxItem>
+          <MenuCheckboxItem
+            variant="switch"
+            checked={options.resetTimeMode === "exact"}
+            closeOnClick={false}
+            data-testid="usage-options-exact-reset"
+            onCheckedChange={(checked) => options.setResetTimeMode(checked ? "exact" : "countdown")}
+          >
+            <T>Exact reset timestamps</T>
+          </MenuCheckboxItem>
+        </MenuGroup>
+        <MenuSeparator />
+        <MenuGroup>
+          <MenuGroupLabel>
+            <T>Low-quota alert threshold</T>
+          </MenuGroupLabel>
+          <MenuRadioGroup
+            value={String(options.alertThresholdPercent)}
+            onValueChange={(value) => {
+              const parsed = Number(value);
+              if (parsed === 70 || parsed === 80 || parsed === 90) {
+                options.setAlertThresholdPercent(parsed);
+              }
+            }}
+          >
+            {([70, 80, 90] as const).map((preset) => (
+              <MenuRadioItem
+                key={preset}
+                value={String(preset)}
+                closeOnClick={false}
+                data-testid={`usage-options-threshold-${preset}`}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="tabular-nums">
+                    {gt("{used}% used ({left}% left)", { used: preset, left: 100 - preset })}
+                  </span>
+                  <MenuRadioItemIndicator />
+                </span>
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
         </MenuGroup>
         <MenuSeparator />
         <MenuItem data-testid="usage-configure-budget-item" onClick={onOpenBudgetDialog}>

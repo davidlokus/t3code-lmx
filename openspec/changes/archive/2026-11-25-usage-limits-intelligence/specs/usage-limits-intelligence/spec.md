@@ -39,7 +39,12 @@ The shared pure engine (`@t3tools/shared/usageLimitsIntelligence`) SHALL compute
 
 ### Requirement: Unified multi-source limits intelligence and alerts
 
-`collectLimitsIntelligence` SHALL aggregate native provider accounts, CLIProxyAPI hub accounts (deduplicated via `collectLimitAccounts`), and HTTP quota sources (`collectHttpQuotaSources`) together with optional manual subscription overrides into deterministic `resets`, `alerts`, and `expiries` collections.
+`collectLimitsIntelligence` SHALL aggregate native providers, CLIProxyAPI hub accounts, and HTTP quota sources with manual subscription overrides into deterministic `resets`, `alerts`, and `expiries` using canonical fleet identity keys and metadata-preserving mixed-fleet deduplication.
+
+#### Scenario: Mixed-fleet deduplication and filtered workspace-less routes preserve identity and metadata
+
+- **WHEN** a native provider with `email` and `workspaceId` and a workspace-less hub route for the same email report overlapping snapshots, or the user filters to only the hub route while passing the unfiltered fleet via `identityPresentations`
+- **THEN** both views resolve the same canonical `account.key` so saved manual renewals remain attached, fresher explicit values (including `balances: []`) win while omitted optional metadata and unit-compatible window fields inherit from other readable routes, and conflicting units never cross-inherit amounts
 
 #### Scenario: Alert severity ranking respects user threshold
 

@@ -393,10 +393,15 @@ export function UsageLimitsSection({
   selectedEnvironmentIds,
   hiddenProviders,
   now,
+  // fork: Optional display modes forwarded from UsageLimitsEnhanced.
+  quotaDisplayMode,
+  resetTimeMode,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly now: number;
+  readonly quotaDisplayMode?: "remaining" | "used";
+  readonly resetTimeMode?: "countdown" | "exact";
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
@@ -408,6 +413,10 @@ export function UsageLimitsSection({
       if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(id)) return [];
       const config = presentation.serverConfig;
       if (hiddenDrivers.size === 0 || config === null) return [[id, presentation] as const];
+      // fork: Resolve bound HTTP quota accounts against the environment's providers before filtering.
+      const driverByInstanceId = new Map(
+        config.providers.map((provider) => [provider.instanceId, provider.driver] as const),
+      );
       return [
         [
           id,
@@ -418,9 +427,27 @@ export function UsageLimitsSection({
               providers: config.providers.filter((provider) => isVisible(provider.driver)),
               usageLimitSources: config.usageLimitSources?.flatMap((source) => {
                 const accounts = source.accounts.filter((account) => isVisible(account.driver));
-                return accounts.length === 0 && source.accounts.length > 0
-                  ? []
-                  : [{ ...source, accounts }];
+                const quotaAccounts = source.quotaAccounts?.filter((account) => {
+                  if (account.providerInstanceId === undefined) return true;
+                  const boundDriver = driverByInstanceId.get(account.providerInstanceId);
+                  return boundDriver === undefined || isVisible(boundDriver);
+                });
+                const droppedAllCliAccounts = source.accounts.length > 0 && accounts.length === 0;
+                const droppedAllHttpAccounts =
+                  (source.quotaAccounts?.length ?? 0) > 0 && (quotaAccounts?.length ?? 0) === 0;
+                if (
+                  (droppedAllCliAccounts && (quotaAccounts?.length ?? 0) === 0) ||
+                  (droppedAllHttpAccounts && accounts.length === 0)
+                ) {
+                  return [];
+                }
+                return [
+                  {
+                    ...source,
+                    accounts,
+                    ...(quotaAccounts === undefined ? {} : { quotaAccounts }),
+                  },
+                ];
               }),
             },
           },
@@ -428,5 +455,12 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} />;
+  return (
+    <UsageLimitsPooled
+      presentations={selected}
+      now={now}
+      {...(quotaDisplayMode === undefined ? {} : { quotaDisplayMode })}
+      {...(resetTimeMode === undefined ? {} : { resetTimeMode })}
+    />
+  );
 }

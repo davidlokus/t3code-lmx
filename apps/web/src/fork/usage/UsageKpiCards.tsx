@@ -1,5 +1,6 @@
 import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { T, useGT, useLocale } from "gt-react";
+import { FlameIcon } from "lucide-react";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -8,6 +9,7 @@ import type {
   UsageDelta,
   UsageKpiSnapshot,
   UsageRiskTone,
+  UsageStreakSnapshot,
 } from "./usageDashboard.logic";
 
 function deltaPillClass(delta: UsageDelta): string {
@@ -58,6 +60,7 @@ export function UsageKpiCards({
   showComparison,
   primaryDelta,
   budgetStatus,
+  streak = null,
   onOpenModelPrices,
   onOpenBudgetDialog,
 }: {
@@ -68,6 +71,7 @@ export function UsageKpiCards({
   readonly showComparison: boolean;
   readonly primaryDelta: UsageDelta | null;
   readonly budgetStatus: UsageBudgetStatus | null;
+  readonly streak?: UsageStreakSnapshot | null;
   readonly onOpenModelPrices: () => void;
   readonly onOpenBudgetDialog: () => void;
 }) {
@@ -218,9 +222,50 @@ export function UsageKpiCards({
         data-testid="usage-kpi-burn"
         className="flex min-w-0 flex-col justify-between gap-2 rounded-xl border border-border/70 bg-card/65 p-3.5"
       >
-        <span className="text-xs font-medium text-muted-foreground">
-          {resolution === "hour" ? <T>Avg per active hour</T> : <T>Avg per active day</T>}
-        </span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-muted-foreground">
+            {resolution === "hour" ? <T>Avg per active hour</T> : <T>Avg per active day</T>}
+          </span>
+          {resolution === "day" && streak !== null && streak.currentDays > 0 ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    tabIndex={0}
+                    data-testid="usage-kpi-streak"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground tabular-nums outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+                  />
+                }
+              >
+                <FlameIcon className="size-3" aria-hidden />
+                <span>
+                  {streak.reachesWindowStart
+                    ? gt("{days}+d streak", { days: streak.currentDays })
+                    : gt("{days}d streak", { days: streak.currentDays })}
+                </span>
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                <div className="flex flex-col gap-0.5 text-xs">
+                  <span>
+                    {streak.reachesWindowStart
+                      ? gt("Streak reaches the start of this window ({days}+ days)", {
+                          days: streak.currentDays,
+                        })
+                      : gt("Current streak: {days} consecutive days", {
+                          days: streak.currentDays,
+                        })}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {gt("Longest in window: {longest}d · Active days: {active}", {
+                      longest: streak.longestDays,
+                      active: streak.activeDays,
+                    })}
+                  </span>
+                </div>
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
+        </div>
         <p
           className={cn(
             "text-2xl font-semibold tracking-tight text-foreground tabular-nums",

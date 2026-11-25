@@ -73,6 +73,7 @@ import { UsageBudgetDialog } from "./UsageBudgetDialog";
 import {
   buildUsageWindowPair,
   computeUsageDelta,
+  computeUsageStreak,
   deriveSoftBudgetStatus,
   deriveUsageKpis,
   serializeUsageExportCsv,
@@ -230,6 +231,9 @@ function filterPresentationsForLimits(
       if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(id)) return [];
       const config = presentation.serverConfig;
       if (hiddenDrivers.size === 0 || config === null) return [[id, presentation] as const];
+      const driverByInstanceId = new Map(
+        config.providers.map((provider) => [provider.instanceId, provider.driver] as const),
+      );
       return [
         [
           id,
@@ -240,9 +244,27 @@ function filterPresentationsForLimits(
               providers: config.providers.filter((provider) => isVisible(provider.driver)),
               usageLimitSources: config.usageLimitSources?.flatMap((source) => {
                 const accounts = source.accounts.filter((account) => isVisible(account.driver));
-                return accounts.length === 0 && source.accounts.length > 0
-                  ? []
-                  : [{ ...source, accounts }];
+                const quotaAccounts = source.quotaAccounts?.filter((account) => {
+                  if (account.providerInstanceId === undefined) return true;
+                  const boundDriver = driverByInstanceId.get(account.providerInstanceId);
+                  return boundDriver === undefined || isVisible(boundDriver);
+                });
+                const droppedAllCliAccounts = source.accounts.length > 0 && accounts.length === 0;
+                const droppedAllHttpAccounts =
+                  (source.quotaAccounts?.length ?? 0) > 0 && (quotaAccounts?.length ?? 0) === 0;
+                if (
+                  (droppedAllCliAccounts && (quotaAccounts?.length ?? 0) === 0) ||
+                  (droppedAllHttpAccounts && accounts.length === 0)
+                ) {
+                  return [];
+                }
+                return [
+                  {
+                    ...source,
+                    accounts,
+                    ...(quotaAccounts === undefined ? {} : { quotaAccounts }),
+                  },
+                ];
               }),
             },
           },
@@ -746,6 +768,9 @@ export function UsageDashboard() {
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
 
   const kpis = deriveUsageKpis(merged, shownHourly ? "hour" : "day");
+  const streak = shownHourly
+    ? null
+    : computeUsageStreak(merged.daily, shownWindow.untilDay, shownWindow.sinceDay);
   const primaryDelta =
     canCompare && comparison.merged !== null
       ? computeUsageDelta(
@@ -838,6 +863,8 @@ export function UsageDashboard() {
               </p>
             ) : showingLimits ? (
               <UsageLimitsEnhanced
+                presentations={limitPresentations}
+                identityPresentations={presentationsWithProviders}
                 selectedEnvironmentIds={selectedEnvironmentIds}
                 hiddenProviders={effectiveHiddenProviders}
                 refreshTickNow={limitsNow}
@@ -1002,6 +1029,7 @@ export function UsageDashboard() {
                       showComparison={canCompare}
                       primaryDelta={primaryDelta}
                       budgetStatus={budgetStatus}
+                      streak={streak}
                       onOpenModelPrices={() => setPriceDialog({})}
                       onOpenBudgetDialog={() => setBudgetDialogOpen(true)}
                     />

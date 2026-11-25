@@ -5,10 +5,11 @@ import {
   type MergedSessionTotals,
   type ModelTotals,
 } from "@t3tools/shared/usageMerge";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   buildUsageWindowPair,
+  computeUsageStreak,
   computeUsageDelta,
   deriveSoftBudgetStatus,
   deriveUsageKpis,
@@ -24,6 +25,7 @@ import {
   parseUsageUiOptions,
   readPersistedUsageUiOptions,
   USAGE_UI_OPTIONS_STORAGE_KEY,
+  useUsageOptionsStore,
 } from "./usageOptionsStore";
 
 describe("usage windows", () => {
@@ -195,6 +197,12 @@ describe("usage options", () => {
       monthlyBudgetUsd: 12.5,
       budgetScope: "reportedOnly",
       hiddenProviders: ["claude"],
+      limitsLens: "pools",
+      limitsLayout: "pool",
+      quotaDisplayMode: "remaining",
+      resetTimeMode: "countdown",
+      alertThresholdPercent: 80,
+      manualSubscriptionOverrides: {},
     });
   });
 
@@ -210,6 +218,165 @@ describe("usage options", () => {
       ),
     ).toBe(true);
     expect(isDefaultUsageUiOptions(readPersistedUsageUiOptions(null))).toBe(true);
+  });
+
+  it("sanitizes new fields without discarding valid preferences in the v1 save", () => {
+    const options = readPersistedUsageUiOptions({
+      getItem: () => `{
+        "metric": "tokens",
+        "monthlyBudgetUsd": 20,
+        "limitsLens": "resets",
+        "limitsLayout": "compact",
+        "quotaDisplayMode": "used",
+        "resetTimeMode": false,
+        "alertThresholdPercent": 99,
+        "manualSubscriptionOverrides": {
+          "host:valid": {"expiresAt": "2028-02-29", "monthlyCost": 12.5, "currency": " eur ", "planLabel": " Pro "},
+          "host:partial": {"expiresAt": "2026-02-29", "monthlyCost": -12, "currency": "EURO", "notes": " paid annually "},
+          "host:bad": {"expiresAt": "123", "monthlyCost": "12", "bogus": 42},
+          "host:array": [],
+          "__proto__": {"notes": "ignore reserved keys"}
+        }
+      }`,
+    });
+    expect(options).toMatchObject({
+      metric: "tokens",
+      monthlyBudgetUsd: 20,
+      limitsLens: "resets",
+      limitsLayout: "pool",
+      quotaDisplayMode: "used",
+      resetTimeMode: "countdown",
+      alertThresholdPercent: 80,
+    });
+    expect(options.manualSubscriptionOverrides).toEqual({
+      "host:valid": {
+        expiresAt: "2028-02-29",
+        monthlyCost: 12.5,
+        currency: "EUR",
+        planLabel: "Pro",
+      },
+      "host:partial": { notes: "paid annually" },
+    });
+    // User-recorded subscription renewals do not count as non-default view preferences.
+    expect(
+      isDefaultUsageUiOptions(
+        parseUsageUiOptions({
+          manualSubscriptionOverrides: { "host:a": { notes: "Renew annually" } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("persists edits, clears only the targeted override, and resets the expanded options", () => {
+    const initial = useUsageOptionsStore.getState();
+    const saved = new Map<string, string>();
+    const localStorage = {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        saved.set(key, value);
+      },
+    };
+    vi.stubGlobal("window", { localStorage });
+    try {
+      initial.resetUsageUiOptions();
+      initial.setLimitsLens("expiries");
+      initial.setLimitsLayout("matrix");
+      initial.setQuotaDisplayMode("used");
+      initial.setResetTimeMode("exact");
+      initial.setAlertThresholdPercent(90);
+      initial.setBudget({ monthlyBudgetUsd: 42 });
+      initial.setManualSubscriptionOverride("host:one", { monthlyCost: 12, currency: "usd" });
+      initial.setManualSubscriptionOverride("host:other", { planLabel: "Other plan" });
+      initial.setManualSubscriptionOverride("host:one", {
+        expiresAt: "2026-12-01T00:00:00.000Z",
+        monthlyCost: 15,
+        currency: "usd",
+      });
+      initial.setManualSubscriptionOverride("host:one", {
+        expiresAt: "tomorrow",
+        monthlyCost: Infinity,
+      });
+      expect(readPersistedUsageUiOptions(localStorage)).toMatchObject({
+        limitsLens: "expiries",
+        limitsLayout: "matrix",
+        quotaDisplayMode: "used",
+        resetTimeMode: "exact",
+        alertThresholdPercent: 90,
+        monthlyBudgetUsd: 42,
+        manualSubscriptionOverrides: {
+          "host:one": { expiresAt: "2026-12-01T00:00:00.000Z", monthlyCost: 15, currency: "USD" },
+          "host:other": { planLabel: "Other plan" },
+        },
+      });
+      initial.clearManualSubscriptionOverride("host:one");
+      expect(readPersistedUsageUiOptions(localStorage).manualSubscriptionOverrides).toEqual({
+        "host:other": { planLabel: "Other plan" },
+      });
+      expect(useUsageOptionsStore.getState().manualSubscriptionOverrides).not.toHaveProperty(
+        "host:one",
+      );
+      initial.resetUsageUiOptions();
+      const afterReset = readPersistedUsageUiOptions(localStorage);
+      expect(isDefaultUsageUiOptions(afterReset)).toBe(true);
+      // Resetting display/budget preferences must never wipe user-recorded renewals.
+      expect(afterReset.manualSubscriptionOverrides).toEqual({
+        "host:other": { planLabel: "Other plan" },
+      });
+      expect([...saved.keys()]).toEqual([USAGE_UI_OPTIONS_STORAGE_KEY]);
+    } finally {
+      vi.unstubAllGlobals();
+      useUsageOptionsStore.setState(initial, true);
+    }
+  });
+});
+
+describe("usage streak", () => {
+  it("allows an inactive today, uses either positive metric, and counts each UTC day once", () => {
+    expect(
+      computeUsageStreak(
+        [
+          { day: "2026-03-09", totalTokens: 0, costUsd: 0 },
+          { day: "2026-03-08", totalTokens: 8, costUsd: 0 },
+          { day: "2026-03-07", totalTokens: 0, costUsd: 0.5 },
+          { day: "2026-03-07", totalTokens: 10, costUsd: 0 },
+          { day: "2026-03-06", totalTokens: 1, costUsd: 0 },
+          { day: "2026-03-10", totalTokens: 5, costUsd: 0 },
+        ],
+        "2026-03-09",
+        "2026-02-08",
+      ),
+    ).toEqual({
+      currentDays: 3,
+      longestDays: 3,
+      activeDays: 3,
+      reachesWindowStart: false,
+    });
+  });
+
+  it("treats an active streak at the loaded boundary as a lower bound", () => {
+    const daily = ["02-26", "02-27", "02-28", "02-29", "03-01", "03-02", "03-03", "03-04"].map(
+      (day) => ({ day: `2028-${day}`, totalTokens: 4, costUsd: 1 }),
+    );
+    expect(computeUsageStreak(daily, "2028-03-04", "2028-02-27")).toEqual({
+      currentDays: 7,
+      longestDays: 7,
+      activeDays: 7,
+      reachesWindowStart: true,
+    });
+  });
+
+  it("does not keep a current streak alive past yesterday even if an older run touches the boundary", () => {
+    const daily = ["2026-11-01", "2026-11-02", "2026-11-04"].map((day) => ({
+      day,
+      totalTokens: 4,
+      costUsd: 0,
+    }));
+    expect(computeUsageStreak(daily, "2026-11-06", "2026-11-01")).toEqual({
+      currentDays: 0,
+      longestDays: 2,
+      activeDays: 3,
+      reachesWindowStart: false,
+    });
   });
 });
 

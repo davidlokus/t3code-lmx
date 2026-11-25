@@ -1,4 +1,4 @@
-<!-- reviewed-through: 9b6940cfc6 (2026-11-25) -->
+<!-- reviewed-through: c4c32288b0 (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -108,3 +108,11 @@
 - **铁证**：`v0.1.12-lab.5` 首次 `Fork Release`（Run `45572850935`）在 `Preflight` 第 48 秒因缺少 `@vitejs/plugin-react` 和 `@babel/core` 失败；PR #18 修复 `Preflight` 并升 `macos-26` 后，Run `45574745676` 成功打出 arm64 DMG，但 `verify-mac-dmg.sh` 立刻拦住因 step `env: GITHUB_REPOSITORY: ""` 失效而注入的 `app-update.yml`。
 - **代码守卫**：`.github/workflows/fork-release.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`fork/scripts/verify-mac-dmg.sh`。
 - **Seen**：2（2026-11-25，`v0.1.12-lab.5` Run `45572850935` 与 Run `45574745676`）
+
+## 13. 跨环境额度归并与富字段合并须坚持全量身份键、严格窗口兼容、显式清空优先与纯日期 UTC 渲染
+
+- **规则**：① 持久化账号级覆写键必须基于**未过滤全量舰队**（`identityPresentations`）做规范身份消歧并使用无碰撞 JSON 元组键（禁止冒号拼接字符串或首路由 key），且「Reset defaults」仅重置视图偏好绝不清空用户数据。② 稀疏流式更新、探测竞态与混合舰队合并仅在窗口 `kind`、时长、`unit`、`limitAmount`、`scopeLabel`、`category` 全部兼容时继承省略字段，严禁将无单位数值与单位声明拼成伪造货币数额，也严禁让旧读数覆盖较新路由的显式清空（如 `balances: []`）。③ 纯日期 `YYYY-MM-DD` 经 `Date.parse` 解析为 UTC 午夜后，前端日历渲染必须传 `timeZone: "UTC"`。
+- **原因**：环境筛选会遮蔽携带 `workspaceId` 的节点导致无 workspace 的 hub 路由退化丢键；Codex 会复用 `primary` 窗口 ID 表示 5h 与 monthly 两种周期，若不校验 `kind`/时长会借用已过期的旧重置时间吞掉真实耗尽告警；负 UTC 时区直接按本地时区格式化 `YYYY-MM-DD` 会稳定显示早 1 天。
+- **铁证**：`feat/usage-limits-intelligence` 在 `ego-browser` 真机 QA 中捕获 PST 时区 `2026-12-31` 渲染为 `Dec 30, 2026`，并在 4 轮跨模型只读 Review 内存探针中先后复现跨环境过滤丢续费、跨单位 `credits → USD` 串数、旧探针复活 `balances: []` 以及跨周期 `primary` 吞掉 `window-exhausted` 告警，补齐统一守卫后全部闭环。
+- **代码守卫**：`packages/shared/src/usageLimitsIntelligence.test.ts`、`packages/provider-core/src/server/usageLimits.test.ts`、`apps/web/src/fork/usage/usageDashboard.logic.test.ts`、`apps/web/src/fork/usage/usageLimitsIntelligence.browser.test.tsx`。
+- **Seen**：1（2026-11-25，`feat/usage-limits-intelligence`）

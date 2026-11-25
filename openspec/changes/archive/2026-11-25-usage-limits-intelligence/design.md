@@ -18,12 +18,12 @@
 
 ## 2. 4-Quadrant Defense Matrix (`LESSONS.md #9`)
 
-| 象限                               | 设计约束与自动化测试断言                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1. 旧服缺可选字段（混合舰队）**  | `ServerProviderUsageWindow` / `ServerProviderUsageLimits` 所有新增字段全部 `Schema.optional(...)`；旧服返回基础字段时，Matrix / Resets / Alerts / Expiries 正常渲染，缺 `usedAmount`/`limitAmount` 不显示伪 `$0`，缺 `windowDurationMins`（如 Antigravity 回退、Codex `individual`、`http` `quotaAccounts`）时 `computeWindowBurnPace` 返回 `null` 而不臆测窗口长度。 |
-| **2. 探测/异步失败保留旧值防震荡** | `applyUsageLimitsUpdate` 收到稀疏更新时不覆盖已探测的 `usedAmount`/`limitAmount`/`remainingAmount`/`unit`/`category`/`scopeLabel` 与账号级 `subscriptionExpiresAt`/`planTier`/`balances`/`serviceNotice`；`UsageLimitsEnhanced` 沿用隔离分钟时钟 `useNowMinute()`，切换视角或刷新失败时不重置已展示数据、不触发循环重查。                                             |
-| **3. 多账号/多实例隔离防双计**     | 情报引擎复用上游 `collectLimitAccounts(presentations)` 的跨环境/Hub 身份归并（`email` / `workspaceId` / `credentialFingerprint`）与 `collectHttpQuotaSources(presentations)`，绝不重复计入同一账号的告警或重置事件；`manualSubscriptionOverrides` 按稳定 `account.key` 索引，清除后彻底删除键值。                                                                     |
-| **4. 缓存/存储版本与失效清理**     | 沿用 `USAGE_UI_OPTIONS_STORAGE_KEY = "t3lab:usage-ui:v1"`，所有新增 UI 字段在 `parseUsageUiOptions` 做类型守卫与非法值回退（含损坏 JSON、越界 `alertThresholdPercent`、畸形 `manualSubscriptionOverrides` 条目），老用户已存偏好 100% 平滑保留且无冗余旧键残留。                                                                                                      |
+| 象限                               | 设计约束与自动化测试断言                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. 旧服缺可选字段（混合舰队）**  | `ServerProviderUsageWindow` / `ServerProviderUsageLimits` 所有新增字段全部 `Schema.optional(...)`；旧服返回基础字段时，Matrix / Resets / Alerts / Expiries 正常渲染，缺 `usedAmount`/`limitAmount` 不显示伪 `$0`，缺 `windowDurationMins`（如 Antigravity 回退、Codex `individual`、`http` `quotaAccounts`）时 `computeWindowBurnPace` 返回 `null` 而不臆测窗口长度。                                                                                                                                           |
+| **2. 探测/异步失败保留旧值防震荡** | `applyUsageLimitsUpdate` 收到稀疏更新时不覆盖已探测的 `usedAmount`/`limitAmount`/`remainingAmount`/`unit`/`category`/`scopeLabel` 与账号级 `subscriptionExpiresAt`/`planTier`/`balances`/`serviceNotice`；`UsageLimitsEnhanced` 沿用隔离分钟时钟 `useNowMinute()`，切换视角或刷新失败时不重置已展示数据、不触发循环重查。                                                                                                                                                                                       |
+| **3. 多账号/多实例隔离防双计**     | 情报引擎在未过滤全量舰队（`identityPresentations`）上执行与上游一致的 `email` / `workspaceId` / `credentialFingerprint` 规范身份消歧，并采用 JSON 元组命名空间键（`["identity", ...]` / `["native", ...]` / `["cliproxy", ...]` / `["http", ...]`）消除跨环境筛选丢键、换号串号与冒号碰撞；混合新旧服归并保留最新读数与显式清空（如 `balances: []`），仅对缺省字段做单位/容量兼容继承；同步复用 Cursor `totalPercentUsed`/`autoPercentUsed` 别名抑制；账号回退 `unsupported` 时保留既有手动续费以便查看与清除。 |
+| **4. 缓存/存储版本与失效清理**     | 沿用 `USAGE_UI_OPTIONS_STORAGE_KEY = "t3lab:usage-ui:v1"`，所有新增 UI 字段在 `parseUsageUiOptions` 做类型守卫与非法值回退（含损坏 JSON、越界 `alertThresholdPercent`、畸形 `manualSubscriptionOverrides` 条目），老用户已存偏好 100% 平滑保留且无冗余旧键残留。                                                                                                                                                                                                                                                |
 
 ## 3. Public vs Internal Export Boundary (`knip:check:exports`)
 
@@ -75,14 +75,15 @@
   ```ts
   {
     readonly presentations: LimitPresentations;
+    readonly identityPresentations?: LimitPresentations; // unfiltered fleet for stable canonical keys across environment filters
     readonly now: number;
     readonly alertThresholdPercent?: number; // default 80 (clamped 50..95)
     readonly manualOverrides?: Readonly<Record<string, ManualSubscriptionOverride>>;
   }
   ```
-- 数据源统一：
-  1. 原生 Provider + CLIProxyAPI accounts（经 `collectLimitAccounts(presentations)` 去重）。
-  2. 上游 `http` 配额源（经 `collectHttpQuotaSources(presentations)` 提取每个 `quotaAccount`，`sourceKind: "http"`，`driver: null`，`key: "http:${source.key}:${account.id}"`）。
+- 数据源统一（与上游 Pool 视图保持一致的去重与别名语义，同时保留扩展元数据与稳定覆写键）：
+  1. 原生 Provider + CLIProxyAPI accounts：基于 `identityPresentations ?? presentations` 生成规范身份键 `JSON.stringify(["identity", "email"|"credential", driver, id, workspaceId|null])`（缺失身份时回退到无碰撞命名空间元组 `["native", envId, instanceId]` / `["cliproxy", hubKey, accountId, workspaceId|null]`），按新鲜度优先保留最新读数与显式清空值（含 `balances: []`），仅对省略字段继承其他可读路由（含纯元数据路由）及单位/容量/范围兼容窗口的富字段；同时应用 Cursor `totalPercentUsed` / `autoPercentUsed` 别名抑制，并在账号报告 `unsupported` 时保留已有手动续费记录（不使其额度变为可读）。
+  2. 上游 `http` 配额源：提取每个 `quotaAccount`（`sourceKind: "http"`，`driver: null`，`key: JSON.stringify(["http", envId, sourceId, accountId])`）；Provider 过滤器会先按环境内 `providerInstanceId` 解析绑定驱动再过滤，未绑定 HTTP 源保持独立可见。
   3. 不可读的 Provider / Hub 错误（`probeFailed` / `source.error` / `serviceNotice`）进入 `alerts`（`kind: "probe-failed" | "service-notice"`）。
 - `resets` 分组：
   - `resetsAt === undefined` 或无效 → `group: "unscheduled"`

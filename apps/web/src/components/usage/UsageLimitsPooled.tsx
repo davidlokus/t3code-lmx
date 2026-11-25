@@ -49,6 +49,15 @@ import {
 } from "@t3tools/shared/usageLimitsCopy";
 // fork: Risk-tiered semantic styling shared with Overview Quota Strip and HUD Quota Card.
 import { quotaRiskTone, type UsageRiskTone } from "~/fork/usage/usageDashboard.logic";
+import type { UsageQuotaDisplayMode, UsageResetTimeMode } from "~/fork/usage/usageOptionsStore";
+
+const LimitsDisplayModeContext = createContext<{
+  readonly quotaDisplayMode: UsageQuotaDisplayMode;
+  readonly resetTimeMode: UsageResetTimeMode;
+}>({
+  quotaDisplayMode: "remaining",
+  resetTimeMode: "countdown",
+});
 
 function riskToneTextClass(tone: UsageRiskTone): string {
   switch (tone) {
@@ -174,11 +183,16 @@ function SegmentPopover({
   readonly onRedeem: (choice: ResetCreditChoice) => void;
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  const { quotaDisplayMode, resetTimeMode } = use(LimitsDisplayModeContext);
   const gt = useGT();
   const m = useMessages();
   const remaining = remainingPercent(window);
+  const used = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
   const timeLeft = paceRemainingPercent(window, now);
   const resetsIn = formatResetsIn(window, now, m, "in");
+  const exactReset = window.resetsAt
+    ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m) || null
+    : null;
   const where =
     account.environments.length > 0
       ? account.environments.map((environment) => environment.label).join(", ")
@@ -223,11 +237,22 @@ function SegmentPopover({
         ) : null}
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
-        <Row label={gt("Left", { $context: "remaining usage" })}>{remaining}%</Row>
-        {window.resetsAt ? (
+        <Row
+          label={
+            quotaDisplayMode === "used"
+              ? gt("Used", { $context: "consumed usage" })
+              : gt("Left", { $context: "remaining usage" })
+          }
+        >
+          {quotaDisplayMode === "used" ? `${used}%` : `${remaining}%`}
+        </Row>
+        {exactReset || resetsIn ? (
           <Row label={gt("Resets", { $context: "when the usage window resets" })}>
-            {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m)}
-            {resetsIn ? ` · ${resetsIn}` : ""}
+            {exactReset
+              ? resetTimeMode !== "exact" && resetsIn
+                ? `${exactReset} · ${resetsIn}`
+                : exactReset
+              : resetsIn}
           </Row>
         ) : null}
         {timeLeft !== null ? (
@@ -391,22 +416,40 @@ function SegmentTriggers({
   readonly showAccountName: boolean;
 }) {
   const popover = use(SegmentPopoverContext) ?? undefined;
+  const { quotaDisplayMode, resetTimeMode } = use(LimitsDisplayModeContext);
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const payload: SegmentPayload = { account, window, reset, redeem };
   const remaining = remainingPercent(window);
+  const used = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
+  const displayedPercent = quotaDisplayMode === "used" ? used : remaining;
   const timeLeft = paceRemainingPercent(window, now);
-  const [segmentRef, paceMark] = usePaceMark(timeLeft);
+  const paceTick =
+    timeLeft === null ? null : quotaDisplayMode === "used" ? 100 - timeLeft : timeLeft;
+  const [segmentRef, paceMark] = usePaceMark(paceTick);
   const m = useMessages();
   const resetsIn = formatResetsIn(window, now, m);
   const refillIn = formatResetsIn(window, now, m, "refill");
+  const exactReset = window.resetsAt
+    ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m) || null
+    : null;
+  const segmentResetText = resetTimeMode === "exact" ? (exactReset ?? refillIn) : refillIn;
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
   const segmentLabel = [
-    gt("{name}: {remaining}% left", {
-      name:
-        account.displayName ?? (account.email ? accountInitials(account.email) : account.driver),
-      remaining,
-    }),
-    resetsIn,
+    quotaDisplayMode === "used"
+      ? gt("{name}: {used}% used", {
+          name:
+            account.displayName ??
+            (account.email ? accountInitials(account.email) : account.driver),
+          used,
+        })
+      : gt("{name}: {remaining}% left", {
+          name:
+            account.displayName ??
+            (account.email ? accountInitials(account.email) : account.driver),
+          remaining,
+        }),
+    resetTimeMode === "exact" ? (exactReset ?? resetsIn) : resetsIn,
     timeLeft === null ? null : gt("{timeLeft}% of the window left", { timeLeft }),
     credits
       ? gt(
@@ -439,9 +482,9 @@ function SegmentTriggers({
             <div
               aria-hidden
               className="absolute inset-y-0 left-0 rounded-md opacity-35"
-              style={{ width: `${remaining}%`, backgroundColor: color }}
+              style={{ width: `${displayedPercent}%`, backgroundColor: color }}
             />
-            {remaining < 100 && reset && refillPercent > 0 ? (
+            {quotaDisplayMode === "remaining" && remaining < 100 && reset && refillPercent > 0 ? (
               <div
                 aria-hidden
                 className="absolute inset-y-0 right-0 opacity-20"
@@ -478,15 +521,15 @@ function SegmentTriggers({
           {/* A single-account bar repeats the headline percentage. */}
           {showAccountName ? (
             <span className="shrink-0 font-semibold text-foreground tabular-nums">
-              {remaining}%
+              {displayedPercent}%
             </span>
           ) : null}
-          {resetsIn || credits ? (
+          {segmentResetText || credits ? (
             <span className="ms-auto flex min-w-0 items-center gap-1.5 overflow-hidden rounded-sm bg-background/85 px-1.5 py-0.5 text-2xs whitespace-nowrap text-foreground tabular-nums">
-              {refillIn ?? ""}
+              {segmentResetText ?? ""}
               {credits ? (
                 <>
-                  {resetsIn ? (
+                  {segmentResetText ? (
                     <span aria-hidden className="text-muted-foreground">
                       ·
                     </span>
@@ -518,10 +561,18 @@ function LegendRow({
   readonly index: number;
 }) {
   const popover = use(SegmentPopoverContext) ?? undefined;
+  const { quotaDisplayMode, resetTimeMode } = use(LimitsDisplayModeContext);
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const { account, window } = payload;
   const remaining = remainingPercent(window);
+  const used = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
+  const displayedPercent = quotaDisplayMode === "used" ? used : remaining;
   const m = useMessages();
   const resetsIn = formatResetsIn(window, now, m, "refill");
+  const exactReset = window.resetsAt
+    ? formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m) || null
+    : null;
+  const resetText = resetTimeMode === "exact" ? (exactReset ?? resetsIn) : resetsIn;
   const credits = account.limits.resetCredits?.availableCount ?? 0;
   const gt = useGT();
   return (
@@ -542,12 +593,14 @@ function LegendRow({
         <span className="relative">{index}</span>
       </span>
       <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
-      <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
+      <span className="shrink-0 font-semibold text-foreground tabular-nums">
+        {displayedPercent}%
+      </span>
       <span className="ms-auto flex shrink-0 items-center gap-1.5 text-2xs text-muted-foreground tabular-nums">
-        {resetsIn ?? ""}
+        {resetText ?? ""}
         {credits ? (
           <>
-            {resetsIn ? <span aria-hidden>·</span> : null}
+            {resetText ? <span aria-hidden>·</span> : null}
             <span
               aria-hidden
               className="inline-flex items-center gap-0.5 font-semibold text-foreground"
@@ -637,6 +690,7 @@ function PoolWindowCard({
 }) {
   const gt = useGT();
   const m = useMessages();
+  const { quotaDisplayMode, resetTimeMode } = use(LimitsDisplayModeContext);
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const nextRefill = pool.resets.find((reset) => reset.at > now && reset.restoresPercent > 0);
   // fork: Align risk tone + reset timestamp/countdown to the same reset event as the refill indicator.
@@ -644,9 +698,20 @@ function PoolWindowCard({
   const primaryReset = nextRefill ?? pool.resets.find((reset) => reset.at > now) ?? pool.resets[0];
   const resetWindow = primaryReset?.member.window ?? pool.members[0]?.window;
   const resetsAt = resetWindow?.resetsAt
-    ? formatUpcomingTimestamp(resetWindow.resetsAt, timestampFormat, now, undefined, m)
+    ? formatUpcomingTimestamp(resetWindow.resetsAt, timestampFormat, now, undefined, m) || null
     : null;
   const resetsIn = resetWindow ? formatResetsIn(resetWindow, now, m, "in") : null;
+  const headlinePercent = quotaDisplayMode === "used" ? pool.usedPercent : pool.remainingPercent;
+  const resetInfoText =
+    resetTimeMode === "exact"
+      ? resetsAt
+        ? gt("Resets {resetsAt}", { resetsAt })
+        : resetsIn
+      : resetsAt && resetsIn
+        ? gt("Resets {resetsAt} · {resetsIn}", { resetsAt, resetsIn })
+        : resetsAt
+          ? gt("Resets {resetsAt}", { resetsAt })
+          : resetsIn;
   return (
     <div
       data-testid="usage-limit-window-card"
@@ -659,25 +724,25 @@ function PoolWindowCard({
         ) : null}
         <span className="flex items-baseline gap-2">
           <span className={cn("text-3xl font-semibold tabular-nums", riskToneTextClass(tone))}>
-            {pool.remainingPercent}%
+            {headlinePercent}%
           </span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <span>
-              <T context="remaining usage percentage">left</T>
+              {quotaDisplayMode === "used" ? (
+                <T context="consumed usage percentage">used</T>
+              ) : (
+                <T context="remaining usage percentage">left</T>
+              )}
             </span>
             {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
           </span>
         </span>
-        {resetsAt || resetsIn ? (
+        {resetInfoText ? (
           <span
             data-testid="usage-limit-reset-info"
             className="text-2xs text-muted-foreground tabular-nums"
           >
-            {resetsAt && resetsIn
-              ? gt("Resets {resetsAt} · {resetsIn}", { resetsAt, resetsIn })
-              : resetsAt
-                ? gt("Resets {resetsAt}", { resetsAt })
-                : resetsIn}
+            {resetInfoText}
           </span>
         ) : null}
         {nextRefill && pool.columns.length > 1 ? (
@@ -754,12 +819,17 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
 export function UsageLimitsPooled({
   presentations,
   now,
+  quotaDisplayMode = "remaining",
+  resetTimeMode = "countdown",
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
   readonly now: number;
+  readonly quotaDisplayMode?: UsageQuotaDisplayMode;
+  readonly resetTimeMode?: UsageResetTimeMode;
 }) {
   const gt = useGT();
   const m = useMessages();
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
@@ -767,95 +837,110 @@ export function UsageLimitsPooled({
   const notices = collectLimitNotices(presentations, m);
   const externalLinks = collectExternalUsageLinks(presentations, m);
   return (
-    <div className="flex flex-col gap-8">
-      {pools.length === 0 &&
-      notices.length === 0 &&
-      externalLinks.length === 0 &&
-      quotaSources.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          <T>No provider on the selected environments reports subscription limits.</T>
-        </p>
-      ) : null}
-      <SegmentPopoverContext value={segmentPopover}>
-        {pools.map((pool) => (
-          <Fragment key={pool.driver}>
-            <PoolSection pool={pool} now={now} />
-          </Fragment>
-        ))}
-      </SegmentPopoverContext>
-      <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
-        {({ payload }) =>
-          payload ? (
-            <ActiveSegmentPopover
-              handle={segmentPopover}
-              actions={segmentPopoverActions}
-              payload={payload}
-              pools={pools}
-              now={now}
-            />
-          ) : null
-        }
-      </Popover>
-      {quotaSources.map((source) => (
-        <section key={source.key} className="space-y-3 rounded-xl border p-4">
-          <h2 className="text-sm font-medium">{source.label}</h2>
-          {source.quotaAccounts?.map((account) => (
-            <div key={account.id} className="space-y-1">
-              <h3 className="text-sm font-medium">{account.label}</h3>
-              {account.windows.map((window) => {
-                const reset = formatResetsIn(window, now, m);
-                return (
-                  <div
-                    key={window.id}
-                    className="flex justify-between gap-3 text-sm text-muted-foreground"
-                  >
-                    <span>{window.label}</span>
-                    <span>
-                      {gt("{remaining}% left", { remaining: remainingPercent(window) })}
-                      {reset ? ` · ${reset}` : ""}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+    <LimitsDisplayModeContext value={{ quotaDisplayMode, resetTimeMode }}>
+      <div className="flex flex-col gap-8">
+        {pools.length === 0 &&
+        notices.length === 0 &&
+        externalLinks.length === 0 &&
+        quotaSources.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            <T>No provider on the selected environments reports subscription limits.</T>
+          </p>
+        ) : null}
+        <SegmentPopoverContext value={segmentPopover}>
+          {pools.map((pool) => (
+            <Fragment key={pool.driver}>
+              <PoolSection pool={pool} now={now} />
+            </Fragment>
           ))}
-        </section>
-      ))}
-      {externalLinks.map((link) => (
-        <section
-          key={link.url}
-          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            {link.url === CHATGPT_USAGE_URL ? (
-              <OpenAI className="size-5 shrink-0" aria-hidden="true" />
-            ) : null}
-            <div className="min-w-0 space-y-1">
-              <h2 className="text-sm font-medium">{link.label}</h2>
-              <p className="text-xs break-words text-muted-foreground">
-                {link.accounts.join(", ")}
-              </p>
-              {link.url === CHATGPT_USAGE_URL ? (
-                <p className="text-xs text-muted-foreground">
-                  <T>View usage in ChatGPT with your connected account.</T>
-                </p>
-              ) : link.message ? (
-                <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
-              ) : null}
-            </div>
-          </div>
-          <Button
-            variant="ghost-muted"
-            size="xs"
-            onClick={() => void ensureLocalApi().shell.openExternal(link.url)}
+        </SegmentPopoverContext>
+        <Popover handle={segmentPopover} actionsRef={segmentPopoverActions}>
+          {({ payload }) =>
+            payload ? (
+              <ActiveSegmentPopover
+                handle={segmentPopover}
+                actions={segmentPopoverActions}
+                payload={payload}
+                pools={pools}
+                now={now}
+              />
+            ) : null
+          }
+        </Popover>
+        {quotaSources.map((source) => (
+          <section key={source.key} className="space-y-3 rounded-xl border p-4">
+            <h2 className="text-sm font-medium">{source.label}</h2>
+            {source.quotaAccounts?.map((account) => (
+              <div key={account.id} className="space-y-1">
+                <h3 className="text-sm font-medium">{account.label}</h3>
+                {account.windows.map((window) => {
+                  const countdown = formatResetsIn(window, now, m);
+                  const exact = window.resetsAt
+                    ? formatUpcomingTimestamp(
+                        window.resetsAt,
+                        timestampFormat,
+                        now,
+                        undefined,
+                        m,
+                      ) || null
+                    : null;
+                  const reset = resetTimeMode === "exact" ? (exact ?? countdown) : countdown;
+                  const used = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
+                  return (
+                    <div
+                      key={window.id}
+                      className="flex justify-between gap-3 text-sm text-muted-foreground"
+                    >
+                      <span>{window.label}</span>
+                      <span>
+                        {quotaDisplayMode === "used"
+                          ? gt("{used}% used", { used })
+                          : gt("{remaining}% left", { remaining: remainingPercent(window) })}
+                        {reset ? ` · ${reset}` : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </section>
+        ))}
+        {externalLinks.map((link) => (
+          <section
+            key={link.url}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"
           >
-            {gt("Manage usage")}
-            <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
-          </Button>
-        </section>
-      ))}
-      <LimitNotices notices={notices} />
-    </div>
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              {link.url === CHATGPT_USAGE_URL ? (
+                <OpenAI className="size-5 shrink-0" aria-hidden="true" />
+              ) : null}
+              <div className="min-w-0 space-y-1">
+                <h2 className="text-sm font-medium">{link.label}</h2>
+                <p className="text-xs break-words text-muted-foreground">
+                  {link.accounts.join(", ")}
+                </p>
+                {link.url === CHATGPT_USAGE_URL ? (
+                  <p className="text-xs text-muted-foreground">
+                    <T>View usage in ChatGPT with your connected account.</T>
+                  </p>
+                ) : link.message ? (
+                  <p className="max-w-xl text-xs text-muted-foreground">{link.message}</p>
+                ) : null}
+              </div>
+            </div>
+            <Button
+              variant="ghost-muted"
+              size="xs"
+              onClick={() => void ensureLocalApi().shell.openExternal(link.url)}
+            >
+              {gt("Manage usage")}
+              <ExternalLinkIcon className="size-3.5" aria-hidden="true" />
+            </Button>
+          </section>
+        ))}
+        <LimitNotices notices={notices} />
+      </div>
+    </LimitsDisplayModeContext>
   );
 }
 

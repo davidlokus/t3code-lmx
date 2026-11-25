@@ -451,6 +451,10 @@
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"
     },
+    "./usageLimitsIntelligence": {
+      "types": "./src/usageLimitsIntelligence.ts",
+      "import": "./src/usageLimitsIntelligence.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"
