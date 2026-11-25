@@ -139,6 +139,13 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
       assert.include(installScript, "verify-mac-dmg.sh");
       assert.include(installScript, "smoke-desktop-app.ts");
       assert.include(installScript, "T3CODE_DESKTOP_UNTRUSTED_BUNDLE");
+
+      const forkCi = yield* readRepoFile(".github/workflows/fork-ci.yml");
+      assert.include(forkCi, "name: Fork checks");
+      assert.include(forkCi, "mode=sharded");
+      assert.include(forkCi, "test_server:");
+      assert.include(forkCi, "!/.repos/");
+      assert.notInclude(forkCi, "persist-credentials: false");
     }),
   );
 

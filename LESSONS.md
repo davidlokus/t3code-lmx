@@ -1,4 +1,4 @@
-<!-- reviewed-through: a71e680ef5 (2026-11-24) -->
+<!-- reviewed-through: e58a3d9e34 (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -92,3 +92,11 @@
 - **铁证**：`feat/usage-dashboard` 跨模型只读 Review 通过注入式文件系统先后验证了 12 层以上深路径别名穿透与二次扫描目录替换穿透，改为全祖先最外层校验 + 按次扫描缓存后彻底闭环。
 - **代码守卫**：`apps/server/src/usage/usageProjectResolution.test.ts`（覆盖 16 层深符号链接拦截及二次扫描目录替换重校验）。
 - **Seen**：1（2026-11-24，`feat/usage-dashboard`）
+
+## 11. 大跨度上游同步的 Fork CI 须自动分片，并警惕跨文件 Fork 断言漂移
+
+- **规则**：① `.github/workflows/fork-ci.yml` 保持 `plan` → `fast`（≤80 文件且未动根配置/lockfile 时走单机 `check:changed`）与 `sharded`（大同步或改动 `vite.config.ts`/`package.json`/`pnpm-workspace.yaml`/`pnpm-lock.yaml` 时并行拆为 `Static & Typecheck` + `Test Packages` + `Test Web 1..3/3` + `Test Server 1..8/8`，汇总到 `protect-lmx-lab` 必过的 `Fork checks` 门禁）双模式。② 上游同步若 `pnpm-lock.yaml` 冲突或自动合并后报 `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY`（残留旧 patch hash），先 `git checkout <target> -- pnpm-lock.yaml` 再跑 `vp i`。③ 修改共享注册表/适配器或品牌名（如 `PROVIDER_ORDER`、`PiAdapterV2` `tokenUsage`、`APP_BASE_NAME`）时，不可只依赖 `check:changed` 的同目录测试发现，须跨目录检索并复验图表、Replay 夹具与品牌断言测试。
+- **原因**：`apps/server` 配置 `fileParallelism: false`（服务端测试逐个串行），大跨度上游同步会拉起 500+ Vitest 文件，在单机 4 核 `ubuntu-latest` 上既会触发 `check:changed` 默认 `900s` 超时，也会因 CPU 争抢拖死 Chromium 浏览器测试；同时 `check:changed` 只跑变更文件同目录测试，会漏检此前 PR 留下的跨目录断言漂移。
+- **铁证**：PR #15（`e745f9705e`，同步 512 个上游提交）在单机 `Fork CI` Run `45556033883` 第 15 分钟因 596 文件超时被杀、Run `45558482027` 跑满 35m11s；改为分片双模式后 Run `45565260782` 11 分钟内直接揪出 PR #12 遗留的 `UsageProviderChart.test.ts`（缺 `omp`）与 `pi_output.ts`（缺 `cost`/`reasoningOutputTokens`）以及上游新增的 `McpAppFrame.browser.test.tsx`（硬编码 `"T3 Code"`），修齐后 Run `45567482753` 全部 13 个分片在 ~9 分钟绿灯通过。
+- **代码守卫**：`.github/workflows/fork-ci.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`apps/web/src/components/chat/McpAppFrame.browser.test.tsx`、`apps/web/src/components/usage/UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`。
+- **Seen**：1（2026-11-25，PR #15）
