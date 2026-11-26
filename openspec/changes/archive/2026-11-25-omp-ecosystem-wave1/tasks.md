@@ -21,7 +21,7 @@
 - [x] 4.1 在通过本地 Pre-Review 门禁（`vp fmt --check`、`vp lint`、受影响 `typecheck` 与单测）后，启动异构模型全新只读 Reviewer 对 `git diff <plan-sha>` 执行 `openspec-verify-change omp-ecosystem-wave1` 并闭环所有 `CRITICAL`/`WARNING` 发现（含核对无冗余导出，确保 `knip:check:exports` 绿灯）
 - [x] 4.2 执行「Broken by hand」手工证伪（依次临时破坏 `paths.ts` 的 Pi 环境变量隔离守卫与 `maintenance.ts` 的只读/Nix 拦截守卫，确认对应新单测真实 `FAIL` 后恢复）
 - [x] 4.3 执行完整门禁验证：`vp run check:changed origin/lmx-lab`、`vp test run packages/shared/src/forkIdentity.guard.test.ts`、`vp run i18n:check`，并记录三段式审计证据（`Verified` / `Broken by hand` / `Not tried`）
-- [ ] 4.4 在当前功能 worktree 执行 `bash fork/scripts/install-local-mac.sh <ver>`（严禁设置 `T3CODE_DESKTOP_UNTRUSTED_BUNDLE=true`）完成本地真机试装验收：核对设置页新字段、模型 `Auto` 思考强度、Text Generation（标题生成）、模型刷新与更新提示均正常且 `~/.t3/userdata` 零触碰
+- [x] 4.4 在当前功能 worktree 执行 `bash fork/scripts/install-local-mac.sh <ver>`（严禁设置 `T3CODE_DESKTOP_UNTRUSTED_BUNDLE=true`）完成本地真机试装验收：核对设置页新字段、模型 `Auto` 思考强度、Text Generation（标题生成）、模型刷新与更新提示均正常且 `~/.t3/userdata` 零触碰
 
 ## Workflow follow-up
 
