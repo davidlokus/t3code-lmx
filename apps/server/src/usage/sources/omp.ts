@@ -1,8 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - the OMP cache is an external SQLite file opened read-only.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeURL from "node:url";
 
 import {
   type HttpQuotaAccount,
@@ -13,6 +15,7 @@ import {
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { isValidOmpProfileName } from "@t3tools/provider-omp/server";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -50,9 +53,24 @@ interface CachedReport {
   readonly planTier: string | undefined;
 }
 
-export function resolveOmpDbPath(url: string, env = process.env, home = NodeOS.homedir()): string {
-  if (url !== "omp://default") return NodePath.resolve(expandHomePath(url, home));
-  const agentDir = env.OMP_CODING_AGENT_DIR?.trim();
+export function resolveOmpDbPath(
+  url: string,
+  env = process.env,
+  home = NodeOS.homedir(),
+): string | null {
+  const isDefault = url === "omp://default";
+  const profilePrefix = "omp://profile/";
+  if (!isDefault && !url.startsWith(profilePrefix)) {
+    return NodePath.resolve(expandHomePath(url, home));
+  }
+  const profile = isDefault
+    ? env.OMP_PROFILE?.trim() || undefined
+    : url.slice(profilePrefix.length).trim();
+  if (profile !== undefined && !isValidOmpProfileName(profile)) return null;
+  if (profile !== undefined && profile !== "default") {
+    return NodePath.resolve(home, ".omp", "profiles", profile, "agent", "agent.db");
+  }
+  const agentDir = isDefault ? env.OMP_CODING_AGENT_DIR?.trim() : undefined;
   return NodePath.resolve(
     agentDir ? expandHomePath(agentDir, home) : NodePath.join(home, ".omp", "agent"),
     "agent.db",
@@ -298,7 +316,20 @@ function readReport(row: Record<string, unknown>, now: number): CachedReport | u
 
 function readCache(dbPath: string, now: number): OmpReading {
   try {
-    const db = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    if (!NodeFS.statSync(dbPath, { throwIfNoEntry: false })?.isFile()) return READ_ERROR;
+    const realPath = NodeFS.realpathSync(dbPath);
+    if (NodeFS.lstatSync(`${realPath}-journal`, { throwIfNoEntry: false })) return READ_ERROR;
+    const wal = NodeFS.lstatSync(`${realPath}-wal`, { throwIfNoEntry: false });
+    if (
+      wal !== undefined &&
+      (!wal.isFile() || !NodeFS.lstatSync(`${realPath}-shm`, { throwIfNoEntry: false })?.isFile())
+    ) {
+      return READ_ERROR;
+    }
+    // A WAL-mode database can create sidecars on read-only open. Only use normal locking with both present.
+    const filename =
+      wal === undefined ? `${NodeURL.pathToFileURL(realPath).href}?immutable=1` : realPath;
+    const db = new NodeSqlite.DatabaseSync(filename, { readOnly: true });
     try {
       db.exec("PRAGMA busy_timeout = 100");
       // An arbitrary configured file must not turn the usage read into a credential view.

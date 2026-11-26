@@ -1,5 +1,5 @@
 import { latestProviderTurnTokenUsage } from "@t3tools/client-runtime/state/context-window";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { forkIdentity } from "@t3tools/shared/forkIdentity";
 import { RotateCcwIcon, SlidersHorizontalIcon } from "lucide-react";
 import { T, useGT } from "gt-react";
@@ -32,6 +32,7 @@ import {
   deriveHudContextMetrics,
   deriveHudHeaderSummary,
   deriveHudSessionMetrics,
+  resolveOmpThreadHudLimits,
   type HudThreadStatusKind,
 } from "./hudMetrics.logic";
 import {
@@ -174,25 +175,48 @@ function HudOptionsMenu() {
   );
 }
 
-export function useHudLegacySuppression(usage: Partial<ThreadDetailsUsageInput> | undefined): {
+export function useHudLegacySuppression(
+  usage: Partial<ThreadDetailsUsageInput> | undefined,
+  threadRef: ScopedThreadRef | null = null,
+): {
   readonly suppressLegacyContext: boolean;
   readonly suppressLegacyUsage: boolean;
 } {
   const showContext = useHudOptionsStore((state) => state.showContext);
   const showQuota = useHudOptionsStore((state) => state.showQuota);
+  const threadStructure = useQuietThreadProjection(threadRef);
+  const projection = threadStructure?.projection ?? null;
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00Z`);
   const providers = usage?.providers ?? [];
   const sources = usage?.sources ?? EMPTY_USAGE_SOURCES;
+  const providerInstanceId = usage?.providerInstanceId ?? null;
+  const provider = providers.find((entry) => entry.instanceId === providerInstanceId);
+  const requestedModel = usage?.model ?? projection?.thread.modelSelection.model ?? null;
+  const servedModel =
+    provider?.driver === "omp"
+      ? deriveHudHeaderSummary({
+          runtimeStatus: null,
+          hasPendingApproval: false,
+          hasPendingUserInput: false,
+          lastError: null,
+          providerLabel: "",
+          requestedModel,
+          projection,
+        }).servedModel
+      : null;
   const resolvedLimits =
     showQuota && providers.length > 0
-      ? resolveThreadDetailsLimits(
-          usage?.providerInstanceId ?? null,
-          usage?.model ?? null,
-          providers,
-          sources,
-          nowMs,
-        )
+      ? provider?.driver === "omp"
+        ? resolveOmpThreadHudLimits({
+            provider,
+            model: servedModel,
+            fallbackModel: requestedModel,
+            providers,
+            sources,
+            nowMs,
+          })
+        : resolveThreadDetailsLimits(providerInstanceId, requestedModel, providers, sources, nowMs)
       : null;
   return {
     suppressLegacyContext: showContext && usage?.contextWindow != null,
@@ -344,15 +368,33 @@ export function ThreadHudSections(props: {
     ? latestProviderTurnTokenUsage(projection.providerTurns, projection, activeProviderThread)
     : null;
 
+  const providerInstanceId = props.usage?.providerInstanceId ?? null;
+  const provider = providers.find((entry) => entry.instanceId === providerInstanceId);
+  const servedModel =
+    provider?.driver === "omp"
+      ? deriveHudHeaderSummary({
+          runtimeStatus: null,
+          hasPendingApproval: false,
+          hasPendingUserInput: false,
+          lastError: null,
+          providerLabel: "",
+          requestedModel,
+          projection,
+        }).servedModel
+      : null;
+
   const resolvedLimits =
     providers.length > 0 && (showQuota || showSession)
-      ? resolveThreadDetailsLimits(
-          props.usage?.providerInstanceId ?? null,
-          requestedModel,
-          providers,
-          sources,
-          nowMs,
-        )
+      ? provider?.driver === "omp"
+        ? resolveOmpThreadHudLimits({
+            provider,
+            model: servedModel,
+            fallbackModel: requestedModel,
+            providers,
+            sources,
+            nowMs,
+          })
+        : resolveThreadDetailsLimits(providerInstanceId, requestedModel, providers, sources, nowMs)
       : null;
   const usableLimits = hasUsableHudQuotaLimits(resolvedLimits) ? resolvedLimits : null;
 

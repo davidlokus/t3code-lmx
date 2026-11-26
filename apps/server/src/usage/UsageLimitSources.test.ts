@@ -8,6 +8,8 @@ import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProviderInstanceEnvironmentVariableName,
+  ProviderInstanceId,
   SecretProviderId,
   SecretProviderKind,
   ServerConfigStreamEvent,
@@ -2671,6 +2673,23 @@ it.effect(
     }).pipe(Effect.provide(externalSourceTestLayer)),
 );
 
+function seedOmpCache(cachePath: string, usedFraction: number) {
+  using db = new NodeSqlite.DatabaseSync(cachePath);
+  db.exec("CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)");
+  db.prepare("INSERT INTO cache VALUES (?, ?, ?)").run(
+    "usage_cache:report:1:commandcode:default:api_key|secret:f00d",
+    JSON.stringify({
+      value: {
+        provider: "commandcode",
+        fetchedAt: NOW - 60_000,
+        limits: [{ id: "weekly", label: "Weekly", amount: { usedFraction } }],
+      },
+      expiresAt: NOW + 60_000,
+    }),
+    NOW / 1_000 + 3_600,
+  );
+}
+
 it.effect("keeps cached OMP quotas after a same-path read failure but not after retargeting", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
@@ -2678,22 +2697,7 @@ it.effect("keeps cached OMP quotas after a same-path read failure but not after 
     const path = yield* Path.Path;
     const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-omp-usage-" });
     const cachePath = path.join(temp, "agent.db");
-    {
-      using db = new NodeSqlite.DatabaseSync(cachePath);
-      db.exec("CREATE TABLE cache (key TEXT PRIMARY KEY, value TEXT, expires_at INTEGER)");
-      db.prepare("INSERT INTO cache VALUES (?, ?, ?)").run(
-        "usage_cache:report:1:commandcode:default:api_key|secret:f00d",
-        JSON.stringify({
-          value: {
-            provider: "commandcode",
-            fetchedAt: NOW - 60_000,
-            limits: [{ id: "weekly", label: "Weekly", amount: { usedFraction: 0.2 } }],
-          },
-          expiresAt: NOW + 60_000,
-        }),
-        NOW / 1_000 + 3_600,
-      );
-    }
+    seedOmpCache(cachePath, 0.2);
     const settings = yield* ServerSettings.ServerSettingsService;
     const sourceId = UsageLimitSourceId.make("cache");
     const config = {
@@ -2743,6 +2747,222 @@ it.effect("keeps cached OMP quotas after a same-path read failure but not after 
       NodeServices.layer,
     ]),
   ),
+);
+
+const localOmpSourceLayer = Layer.mergeAll(
+  externalSourceTestLayer,
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make(() => Effect.die("Unexpected network request for an OMP cache")),
+  ),
+);
+
+it.effect("dedupes OMP caches and retains last-good data for the same path only", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-omp-usage-" });
+    const team = path.join(home, ".omp", "profiles", "team", "agent");
+    const custom = path.join(home, "custom");
+    const alias = path.join(home, "alias");
+    const teamDb = path.join(team, "agent.db");
+    const customDb = path.join(custom, "agent.db");
+    const linkedTeamDb = path.join(home, "team.db");
+    yield* fs.makeDirectory(team, { recursive: true });
+    yield* fs.makeDirectory(custom);
+    yield* fs.symlink(teamDb, linkedTeamDb);
+    yield* fs.symlink(custom, alias);
+    seedOmpCache(teamDb, 0.25);
+    seedOmpCache(customDb, 0.5);
+
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const manual = UsageLimitSourceId.make("manual");
+    const omp = { driver: ProviderDriverKind.make("omp"), enabled: true };
+    const manualSource = {
+      kind: "omp",
+      managementKey: "",
+      enabled: true,
+      url: linkedTeamDb,
+    } as const;
+    const customId = ProviderInstanceId.make("custom");
+    yield* settings.updateSettings({
+      usageLimitSources: { [manual]: manualSource },
+      providerInstances: {
+        [ProviderInstanceId.make("missing")]: omp,
+        [ProviderInstanceId.make("team")]: { ...omp, config: { launchArgs: "--profile=team" } },
+        [customId]: {
+          driver: omp.driver,
+          config: { enabled: true },
+          environment: [
+            {
+              name: ProviderInstanceEnvironmentVariableName.make("OMP_CODING_AGENT_DIR"),
+              value: "~/custom",
+              sensitive: false,
+            },
+          ],
+        },
+        [ProviderInstanceId.make("alias")]: { ...omp, config: { agentDir: alias } },
+      },
+    });
+    const sources = yield* UsageLimitSources.make.pipe(
+      Effect.provideService(HostProcess.HomeDirectory, home),
+      Effect.provideService(HostProcess.Environment, {
+        HOME: home,
+        USERPROFILE: home,
+        PI_CODING_AGENT_DIR: custom,
+      }),
+    );
+    yield* sources.refresh;
+    const initial = yield* sources.current;
+    expect(initial).toMatchObject([
+      { id: manual, kind: "omp", quotaAccounts: [{ windows: [{ usedPercent: 25 }] }] },
+      {
+        id: "omp-instance:custom",
+        kind: "omp",
+        label: "omp",
+        quotaAccounts: [{ windows: [{ usedPercent: 50 }] }],
+      },
+    ]);
+    expect(initial[1]?.quotaAccounts?.[0]?.providerInstanceId).toBeUndefined();
+    expect(yield* fs.exists(path.join(home, ".omp", "agent", "agent.db"))).toBe(false);
+
+    yield* settings.updateSettings({
+      usageLimitSources: { [manual]: { ...manualSource, enabled: false } },
+    });
+    yield* fs.writeFileString(customDb, "corrupt cache");
+    yield* sources.refresh;
+    expect(yield* sources.current).toMatchObject([
+      {
+        id: "omp-instance:team",
+        label: "omp (team)",
+        quotaAccounts: [{ windows: [{ usedPercent: 25 }] }],
+      },
+      {
+        id: "omp-instance:custom",
+        error: expect.any(String),
+        quotaAccounts: initial[1]?.quotaAccounts,
+      },
+    ]);
+
+    const other = path.join(home, "other");
+    yield* fs.makeDirectory(other);
+    yield* fs.writeFileString(path.join(other, "agent.db"), "corrupt cache");
+    yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId: customId,
+      instance: { ...omp, config: { agentDir: other } },
+    });
+    yield* sources.refresh;
+    expect((yield* sources.current).map((entry) => entry.id)).toEqual([
+      "omp-instance:team",
+      "omp-instance:custom",
+      "omp-instance:alias",
+    ]);
+    expect((yield* sources.current)[1]?.quotaAccounts).toBeUndefined();
+  }).pipe(Effect.provide(localOmpSourceLayer)),
+);
+
+it.effect("refreshes changed OMP instance settings and fences a disable during publication", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-omp-settings-" });
+    const first = path.join(home, "first");
+    const second = path.join(home, "second");
+    yield* fs.makeDirectory(first);
+    yield* fs.makeDirectory(second);
+    seedOmpCache(path.join(first, "agent.db"), 0.2);
+    seedOmpCache(path.join(second, "agent.db"), 0.6);
+
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const instanceId = ProviderInstanceId.make("work");
+    const envName = ProviderInstanceEnvironmentVariableName.make("OMP_CODING_AGENT_DIR");
+    const instance = {
+      driver: ProviderDriverKind.make("omp"),
+      enabled: true,
+      environment: [{ name: envName, value: first, sensitive: false }],
+    };
+    const original = yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId,
+      instance,
+    });
+    const changes = yield* Effect.acquireRelease(
+      PubSub.unbounded<ServerSettingsModel>(),
+      PubSub.shutdown,
+    );
+    const subscription = yield* PubSub.subscribe(changes);
+    yield* PubSub.publish(changes, original);
+    const waitingOnSnapshot = yield* Deferred.make<void>();
+    const releaseSnapshot = yield* Deferred.make<void>();
+    let pauseNextSnapshot = false;
+    const sources = yield* UsageLimitSources.make.pipe(
+      Effect.provideService(ServerSettings.ServerSettingsService, {
+        ...settings,
+        streamChanges: Stream.fromSubscription(subscription),
+        withSettingsSnapshot: (use) =>
+          Effect.suspend(() => {
+            if (!pauseNextSnapshot) return settings.withSettingsSnapshot(use);
+            pauseNextSnapshot = false;
+            return Deferred.succeed(waitingOnSnapshot, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseSnapshot)),
+              Effect.andThen(settings.withSettingsSnapshot(use)),
+            );
+          }),
+      }),
+      Effect.provideService(HostProcess.HomeDirectory, home),
+      Effect.provideService(HostProcess.Environment, { HOME: home, USERPROFILE: home }),
+    );
+    const snapshotId = "omp-instance:work";
+    const waitForSnapshot = (usedPercent: number, label: string) =>
+      sources.streamChanges.pipe(
+        Stream.filter((snapshots) => {
+          const [snapshot] = snapshots;
+          return (
+            snapshot?.label === label &&
+            snapshot.quotaAccounts?.[0]?.windows[0]?.usedPercent === usedPercent
+          );
+        }),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+    expect(yield* waitForSnapshot(20, "omp")).toMatchObject([{ id: snapshotId }]);
+
+    const renamedInstance = { ...instance, displayName: "Work" };
+    const renamed = yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId,
+      instance: renamedInstance,
+    });
+    yield* PubSub.publish(changes, renamed);
+    expect(yield* waitForSnapshot(20, "Work")).toMatchObject([{ id: snapshotId }]);
+
+    const retargetedInstance = {
+      ...renamedInstance,
+      environment: [{ name: envName, value: second, sensitive: false }],
+    };
+    const retargeted = yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId,
+      instance: retargetedInstance,
+    });
+    yield* PubSub.publish(changes, retargeted);
+    expect(yield* waitForSnapshot(60, "Work")).toMatchObject([{ id: snapshotId }]);
+
+    pauseNextSnapshot = true;
+    const poll = yield* Effect.forkChild(sources.refresh);
+    yield* Deferred.await(waitingOnSnapshot);
+    yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId,
+      instance: { ...retargetedInstance, enabled: false },
+    });
+    yield* Deferred.succeed(releaseSnapshot, undefined);
+    yield* Fiber.join(poll);
+    expect(yield* sources.current).toEqual([]);
+  }).pipe(Effect.provide(localOmpSourceLayer)),
 );
 
 it.effect("reads a management key from its secret provider", () => {

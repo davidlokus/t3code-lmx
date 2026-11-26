@@ -5,7 +5,10 @@ import type {
 } from "@t3tools/client-runtime/state/models";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import {
+  EnvironmentId,
   isOrchestrationV2WorkActive,
+  isProviderAvailable,
+  ProviderDriverKind,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2ProviderTurnTokenUsage,
   type OrchestrationV2RemoteTaskChild,
@@ -15,13 +18,25 @@ import {
   type ResourceTelemetryProcessCategory,
   type ResourceTelemetrySnapshot,
   type ResourceTelemetrySourceStatus,
+  type ServerProvider,
+  type ServerProviderUsageLimits,
   type ThreadId,
+  type UsageLimitSourceSnapshot,
+  type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import {
+  antigravityWindowLimitsModel,
+  collectLimitAccounts,
+  collectLimitPools,
+  displayLimitWindows,
+} from "@t3tools/shared/usageLimits";
+import { limitsNotice } from "@t3tools/shared/usageLimitsCopy";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { msg } from "gt-react";
 
+import type { ThreadDetailsLimits } from "~/components/chat/ThreadDetailsUsage.logic";
 import type { MessageResolver } from "~/i18n/messages";
 
 export type HudThreadStatusKind = "running" | "approval" | "input" | "error" | "waiting" | "idle";
@@ -1194,4 +1209,195 @@ export function formatHudCompactDuration(ms: number, resolve?: MessageResolver):
       $context: "elapsed time, hours and minutes",
     }),
   );
+}
+
+const OMP_HUD_ENVIRONMENT = EnvironmentId.make("hud-omp");
+const OMP_SUBPROVIDER_DRIVERS: Readonly<Record<string, ProviderDriverKind | undefined>> = {
+  "openai-codex": ProviderDriverKind.make("codex"),
+  anthropic: ProviderDriverKind.make("claudeAgent"),
+  claude: ProviderDriverKind.make("claudeAgent"),
+  cursor: ProviderDriverKind.make("cursor"),
+  "google-antigravity": ProviderDriverKind.make("antigravity"),
+  "xai-oauth": ProviderDriverKind.make("grok"),
+  "opencode-go": ProviderDriverKind.make("opencode"),
+  "muse-code": ProviderDriverKind.make("muse"),
+};
+
+function parseOmpModelSubprovider(model: string | null | undefined): {
+  readonly subprovider: string;
+  readonly bareModel: string;
+} | null {
+  const trimmed = nonEmptyText(model);
+  if (trimmed === null || trimmed === "default") return null;
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0) return null;
+  const subprovider = trimmed.slice(0, slashIndex).trim().toLowerCase();
+  const bareModel = trimmed.slice(slashIndex + 1).trim();
+  return subprovider && bareModel ? { subprovider, bareModel } : null;
+}
+
+function filterLimitsForSubproviderModel(
+  driver: ProviderDriverKind | undefined,
+  limits: ServerProviderUsageLimits,
+  bareModel: string,
+): ServerProviderUsageLimits {
+  if (driver !== "antigravity") return limits;
+  return {
+    ...limits,
+    windows: limits.windows.filter((window) => antigravityWindowLimitsModel(window, bareModel)),
+  };
+}
+
+function hasUsableLimits(
+  limits: ServerProviderUsageLimits | undefined,
+): limits is ServerProviderUsageLimits {
+  return limits !== undefined && limitsNotice(limits) === null && limits.windows.length > 0;
+}
+
+function poolOmpSourceAccounts(
+  source: UsageLimitSourceSnapshot,
+  accounts: UsageLimitSourceSnapshot["accounts"],
+  nowMs: number,
+): ThreadDetailsLimits | null {
+  const presentations = new Map([
+    [
+      OMP_HUD_ENVIRONMENT,
+      {
+        entry: { target: { label: "" } },
+        serverConfig: {
+          providers: [],
+          usageLimitSources: [{ ...source, accounts, quotaAccounts: undefined }],
+        },
+      },
+    ],
+  ]);
+  const pools = collectLimitPools(collectLimitAccounts(presentations), nowMs);
+  const windows = pools.flatMap(displayLimitWindows);
+  return windows.length > 0 ? { kind: "pool", windows } : null;
+}
+
+function ompSubproviderTokens(
+  subprovider: string,
+  mappedDriver: ProviderDriverKind | undefined,
+): ReadonlySet<string> {
+  const tokens = new Set<string>([subprovider]);
+  if (mappedDriver !== undefined) {
+    tokens.add(mappedDriver.toLowerCase());
+    for (const [key, driver] of Object.entries(OMP_SUBPROVIDER_DRIVERS)) {
+      if (driver === mappedDriver) tokens.add(key);
+    }
+  }
+  return tokens;
+}
+
+export function resolveOmpThreadHudLimits(input: {
+  readonly provider: ServerProvider | undefined;
+  readonly model: string | null | undefined;
+  readonly fallbackModel?: string | null | undefined;
+  readonly providers: readonly ServerProvider[];
+  readonly sources: UsageLimitSourceSnapshots;
+  readonly nowMs: number;
+}): ThreadDetailsLimits | null {
+  const { provider, providers, sources, nowMs } = input;
+  if (!provider || provider.driver !== "omp") return null;
+  const parsed =
+    parseOmpModelSubprovider(input.model) ?? parseOmpModelSubprovider(input.fallbackModel);
+  if (!parsed) return null;
+
+  const { subprovider, bareModel } = parsed;
+  const mappedDriver = Object.hasOwn(OMP_SUBPROVIDER_DRIVERS, subprovider)
+    ? OMP_SUBPROVIDER_DRIVERS[subprovider]
+    : undefined;
+  const ompSources = sources.filter((source) => source.kind === "omp");
+  const ownSourceId = `omp-instance:${provider.instanceId}`;
+  const ownSource = ompSources.find((source) => source.id === ownSourceId);
+  const enabledOmpCount = providers.filter(
+    (entry) => entry.driver === "omp" && entry.enabled,
+  ).length;
+  // Never borrow another instance's auto-discovered snapshot; fall back only to a single manual omp source.
+  const targetSource =
+    ownSource ??
+    (ompSources.length === 1 &&
+    !ompSources[0]!.id.startsWith("omp-instance:") &&
+    enabledOmpCount <= 1
+      ? ompSources[0]
+      : undefined);
+
+  if (targetSource) {
+    if (mappedDriver !== undefined) {
+      const matchingAccounts = targetSource.accounts.flatMap((account) => {
+        if (account.driver !== mappedDriver) return [];
+        const limits = filterLimitsForSubproviderModel(
+          mappedDriver,
+          account.usageLimits,
+          bareModel,
+        );
+        return hasUsableLimits(limits) ? [{ ...account, usageLimits: limits }] : [];
+      });
+      if (matchingAccounts.length === 1) {
+        return { kind: "instance", limits: matchingAccounts[0]!.usageLimits };
+      }
+      if (matchingAccounts.length > 1) {
+        const pooled = poolOmpSourceAccounts(targetSource, matchingAccounts, nowMs);
+        if (pooled) return pooled;
+      }
+    }
+
+    const tokens = ompSubproviderTokens(subprovider, mappedDriver);
+    const matchingQuotas = (targetSource.quotaAccounts ?? []).flatMap((account) => {
+      const idPrefix = account.id.split(":")[0]?.trim().toLowerCase() ?? "";
+      const labelPrefix = account.label.split(" · ")[0]?.trim().toLowerCase() ?? "";
+      if (!tokens.has(idPrefix) && !tokens.has(labelPrefix)) return [];
+      const limits = filterLimitsForSubproviderModel(
+        mappedDriver,
+        {
+          checkedAt: targetSource.checkedAt,
+          windows: account.windows,
+          ...(account.planTier === undefined ? {} : { planTier: account.planTier }),
+          ...(account.balances === undefined ? {} : { balances: account.balances }),
+        },
+        bareModel,
+      );
+      return hasUsableLimits(limits) ? [{ account, limits }] : [];
+    });
+    if (matchingQuotas.length === 1) {
+      return { kind: "instance", limits: matchingQuotas[0]!.limits };
+    }
+    if (matchingQuotas.length > 1) {
+      const poolDriver = mappedDriver ?? provider.driver;
+      const limitAccounts = matchingQuotas.map(({ account, limits }) => ({
+        key: `${targetSource.id}:${account.id}`,
+        driver: poolDriver,
+        displayName: account.label,
+        email: undefined,
+        plan: account.planTier,
+        accentColor: undefined,
+        environments: [],
+        sourceLabel: targetSource.label,
+        redeem: null,
+        limits,
+      }));
+      const windows = collectLimitPools(limitAccounts, nowMs).flatMap(displayLimitWindows);
+      if (windows.length > 0) return { kind: "pool", windows };
+    }
+  }
+
+  if (mappedDriver !== undefined) {
+    const enabledNative = providers.filter(
+      (entry) => entry.driver === mappedDriver && entry.enabled,
+    );
+    if (enabledNative.length === 1) {
+      const candidate = enabledNative[0]!;
+      if (candidate.installed && isProviderAvailable(candidate) && candidate.usageLimits) {
+        const limits = filterLimitsForSubproviderModel(
+          mappedDriver,
+          candidate.usageLimits,
+          bareModel,
+        );
+        if (hasUsableLimits(limits)) return { kind: "instance", limits };
+      }
+    }
+  }
+
+  return null;
 }

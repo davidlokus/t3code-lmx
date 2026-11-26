@@ -110,6 +110,9 @@ describe("ProviderSettingsForm helpers", () => {
       "slowModel",
       "planModel",
       "advisor",
+      "warnCostUsd",
+      "maxCostUsd",
+      "maxTime",
       "launchArgs",
     ]);
 
@@ -137,7 +140,19 @@ describe("ProviderSettingsForm helpers", () => {
     expect(
       nextProviderConfigWithFieldValue({ serviceTier: "priority" }, serviceTier!, ""),
     ).toBeUndefined();
-    expect(translated.length).toBeGreaterThan(15);
+
+    const warnCostUsd = fields.find((field) => field.key === "warnCostUsd");
+    const maxCostUsd = fields.find((field) => field.key === "maxCostUsd");
+    const maxTime = fields.find((field) => field.key === "maxTime");
+    expect(warnCostUsd?.label.startsWith("t:")).toBe(true);
+    expect(warnCostUsd?.description?.startsWith("t:")).toBe(true);
+    expect(maxCostUsd?.label.startsWith("t:")).toBe(true);
+    expect(maxCostUsd?.description?.startsWith("t:")).toBe(true);
+    expect(maxTime?.label.startsWith("t:")).toBe(true);
+    expect(maxTime?.description?.startsWith("t:")).toBe(true);
+    expect(maxTime?.placeholder?.startsWith("t:")).toBe(true);
+    expect(nextProviderConfigWithFieldValue({ maxTime: "30m" }, maxTime!, "")).toBeUndefined();
+    expect(translated.length).toBeGreaterThan(20);
   });
 });
 

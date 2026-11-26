@@ -28,20 +28,24 @@ keeps the model saved in the session. Use **Refresh models** in Providers settin
 `omp models refresh` and update omp's local model catalog cache.
 
 Optional instance settings let you configure omp's session-level **Service tier**
-(`--service-tier`), role models (**Smol model**, **Slow model**, **Plan model**), and passive
-**Advisor** review (`--advisor`). Once you start a thread, the composer offers omp's skills and
-slash commands for that workspace. Multi-folder threads forward external workspace directories to
-omp via repeatable `--add-dir` flags. Use `/compact` to summarize a long conversation without
-starting a new thread.
+(`--service-tier`), role models (**Smol model**, **Slow model**, **Plan model**), passive
+**Advisor** review (`--advisor`), and session budget/time guardrails (**Cost warning (USD)** via
+`--warn-cost`, **Max cost (USD)** via `--max-cost`, and **Max run time** via `--max-time`, e.g.
+`30m` or `1.5h`). Cost warnings and cost-cap refusals surface directly as session notices; invalid
+guardrail values or duplicates in **Launch arguments** fail fast before starting `omp`. Once you
+start a thread, the composer offers omp's skills and slash commands for that workspace. Multi-folder
+threads forward external workspace directories to omp via repeatable `--add-dir` flags. Use
+`/compact` to summarize a long conversation without starting a new thread.
 
 Threads resume with omp's native session files. Where T3 tools are available, omp can use them to
 create durable child threads. omp's own `task` tool appears as a regular tool call instead.
 
-## Text generation and usage history
+## Text generation, usage history, and quota limits
 
 Enabled omp instances support [text generation](./text-generation.md) (automatic thread titles,
 commit messages, PR descriptions, branch names, and transcription post-processing) over an isolated,
-tool-free ephemeral RPC run. When the text generation model is set to **omp default** and **Smol
+tool-free ephemeral RPC run that strips session-only guardrails (`--warn-cost`, `--max-cost`,
+`--max-time`, and `--advisor`). When the text generation model is set to **omp default** and **Smol
 model** is configured on that instance, T3 Lab prefers the smol model first.
 
 Session JSONL history under each instance's resolved sessions directory (`~/.omp/agent/sessions`,
@@ -50,6 +54,12 @@ Session JSONL history under each instance's resolved sessions directory (`~/.omp
 reasoning-token telemetry in the Thread HUD. Configure custom directories through **Profile** or
 **Agent directory** (rather than raw `PI_CODING_AGENT_*` environment variables) so runtime sessions
 and Usage history stay aligned without overlapping Pi's directories.
+
+T3 Lab also automatically reads each enabled omp instance's cached quota reports from its resolved
+`agent.db` (read-only, without creating SQLite sidecars or reading credentials) and deduplicates
+against any manual **OMP Local Cache** source pointing at the same database. In the Thread HUD, the
+**Quota** card displays only the windows matching the thread's active model sub-backend (such as
+`openai-codex/*` or `anthropic/*`), and stays hidden when the active sub-backend has no quota data.
 
 ## Permission modes
 

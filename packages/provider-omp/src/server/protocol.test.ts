@@ -1,4 +1,4 @@
-// Frames below are trimmed from real `omp --mode rpc` 18.20.2 transcripts.
+// Fixtures use the omp 18.20.2 RPC transcripts and 19.2.1 budget frame shapes.
 import { describe, expect, it } from "@effect/vitest";
 import { parsePiDiscoveredCommands } from "@t3tools/provider-pi/server/commands";
 
@@ -30,6 +30,15 @@ const agentEnd = (extra: Record<string, unknown> = {}, stopReason = "stop") => (
 const outbound = (translator: OmpTranslator, ...frames: ReadonlyArray<Record<string, unknown>>) =>
   frames.flatMap((frame) => translator.fromOmp(frame).frames);
 
+const costCapResult = {
+  type: "prompt_result",
+  id: "p1",
+  agentInvoked: false,
+  status: "error",
+  error: { code: "cost_cap", message: "Cost cap reached.", retryable: false },
+  sessionSettled: true,
+};
+
 describe("omp outbound frames", () => {
   it("drops frames Pi has no equivalent for", () => {
     const translator = makeOmpTranslator();
@@ -43,10 +52,76 @@ describe("omp outbound frames", () => {
           maxFrameBytes: 1048576,
         },
         { type: "prompt_result", id: "p1", agentInvoked: true, status: "completed" },
+        { ...costCapResult, error: { ...costCapResult.error, code: "other" } },
         { type: "session_settled" },
       ),
     ).toEqual([]);
   });
+
+  it("surfaces nonblank OMP notices as Pi notifications", () => {
+    const translator = makeOmpTranslator();
+    expect(
+      outbound(
+        translator,
+        { type: "notice", level: "warning", message: "Cost warning: $2.50", source: "cost_gate" },
+        { type: "notice", level: "error", message: "  " },
+        { type: "notice", level: "other", message: " Information " },
+      ),
+    ).toEqual([
+      {
+        type: "extension_ui_request",
+        id: "omp:notice:1",
+        method: "notify",
+        notifyType: "warning",
+        message: "Cost warning: $2.50",
+      },
+      {
+        type: "extension_ui_request",
+        id: "omp:notice:2",
+        method: "notify",
+        notifyType: "info",
+        message: "Information",
+      },
+    ]);
+  });
+
+  it("does not repeat a cost-cap error notice in the prompt result or clear it on an unsettled end", () => {
+    const translator = makeOmpTranslator();
+    expect(
+      outbound(
+        translator,
+        { type: "notice", level: "error", message: " Cost cap reached. ", source: "cost_gate" },
+        agentEnd({ yielded: false }),
+        costCapResult,
+      ).filter((frame) => frame["type"] === "extension_ui_request"),
+    ).toEqual([
+      {
+        type: "extension_ui_request",
+        id: "omp:notice:1",
+        method: "notify",
+        notifyType: "error",
+        message: "Cost cap reached.",
+      },
+    ]);
+  });
+
+  it.each([{ type: "agent_start" }, agentEnd({ yielded: true }), { type: "session_settled" }])(
+    "surfaces a standalone cost-cap failure again after $type",
+    (boundary) => {
+      const translator = makeOmpTranslator();
+      const result = { ...costCapResult, error: { ...costCapResult.error, message: "  " } };
+      const notification = {
+        type: "extension_ui_request",
+        id: "omp:cost-cap:1",
+        method: "notify",
+        notifyType: "error",
+        message: "Session reached its configured cost cap (--max-cost).",
+      };
+      expect(outbound(translator, result, result)).toEqual([notification]);
+      outbound(translator, boundary);
+      expect(outbound(translator, result)).toEqual([{ ...notification, id: "omp:cost-cap:2" }]);
+    },
+  );
 
   it("settles when the agent yields, not when the whole session is done", () => {
     const translator = makeOmpTranslator();

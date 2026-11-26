@@ -134,6 +134,9 @@ describe("omp launch arguments", () => {
         slowModel: "",
         planModel: "",
         advisor: false,
+        warnCostUsd: "",
+        maxCostUsd: "",
+        maxTime: "",
       });
       const resolved = yield* resolveOmpSettingsLaunchArgs(settings, {});
       expect(resolved).toMatchObject({
@@ -153,6 +156,9 @@ describe("omp launch arguments", () => {
         slowModel: "anthropic/claude-opus-4-6",
         planModel: "anthropic/claude-sonnet-4-6",
         advisor: true,
+        warnCostUsd: " 2.50 ",
+        maxCostUsd: "10",
+        maxTime: "30m",
       });
       const resolved = yield* resolveOmpSettingsLaunchArgs(settings, {});
       expect(resolved).toMatchObject({
@@ -169,6 +175,12 @@ describe("omp launch arguments", () => {
           "anthropic/claude-opus-4-6",
           "--plan=anthropic/claude-sonnet-4-6",
           "--advisor",
+          "--warn-cost",
+          "2.50",
+          "--max-cost",
+          "10",
+          "--max-time",
+          "30m",
         ],
       });
     }).pipe(Effect.provide(Path.layer)),
@@ -181,6 +193,9 @@ describe("omp launch arguments", () => {
     { key: "slowModel", value: "demo/slow", args: "--slow demo/other" },
     { key: "planModel", value: "demo/plan", args: "--plan demo/other" },
     { key: "advisor", value: true, args: "--advisor" },
+    { key: "warnCostUsd", value: "1", args: "--warn-cost=2" },
+    { key: "maxCostUsd", value: "10", args: "--max-cost 20" },
+    { key: "maxTime", value: "30m", args: "--max-time=45m" },
   ])("rejects setting $key alongside its manual launch flag", ({ key, value, args }) =>
     Effect.gen(function* () {
       const resolved = yield* resolveOmpSettingsLaunchArgs(
@@ -193,6 +208,43 @@ describe("omp launch arguments", () => {
       });
     }).pipe(Effect.provide(Path.layer)),
   );
+
+  it.effect.each([
+    { key: "warnCostUsd", flag: "--warn-cost", value: "0" },
+    { key: "warnCostUsd", flag: "--warn-cost", value: "+1" },
+    { key: "warnCostUsd", flag: "--warn-cost", value: "0x10" },
+    { key: "maxCostUsd", flag: "--max-cost", value: "-1" },
+    { key: "maxCostUsd", flag: "--max-cost", value: "NaN" },
+    { key: "maxCostUsd", flag: "--max-cost", value: "Infinity" },
+    { key: "maxCostUsd", flag: "--max-cost", value: "unlimited" },
+    { key: "maxTime", flag: "--max-time", value: "0" },
+    { key: "maxTime", flag: "--max-time", value: "0s" },
+    { key: "maxTime", flag: "--max-time", value: "-5m" },
+    { key: "maxTime", flag: "--max-time", value: "1d" },
+    { key: "maxTime", flag: "--max-time", value: `${"9".repeat(307)}h` },
+  ])("rejects $key=$value at launch, not at settings decode", ({ key, flag, value }) =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveOmpSettingsLaunchArgs(decodeSettings({ [key]: value }), {});
+      expect(resolved).toMatchObject({ ok: false, message: expect.stringContaining(flag) });
+      for (const args of [`${flag}=${value}`, `${flag} ${value}`]) {
+        expect(resolveOmpLaunchArgs(args)).toMatchObject({
+          ok: false,
+          message: expect.stringContaining(flag),
+        });
+      }
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  it("accepts manual budgets and both duration forms", () => {
+    expect(resolveOmpLaunchArgs("--warn-cost=.5 --max-cost 3.25 --max-time=1.5h")).toEqual({
+      ok: true,
+      args: ["--warn-cost", ".5", "--max-cost", "3.25", "--max-time", "1.5h"],
+    });
+    expect(resolveOmpLaunchArgs("--max-time .5")).toEqual({
+      ok: true,
+      args: ["--max-time", ".5"],
+    });
+  });
 });
 
 describe("omp launch command line", () => {
@@ -232,9 +284,9 @@ describe("omp launch command line", () => {
     ]);
   });
 
-  it("strips explicit extension roots, hooks, and tool overrides from a short-lived fork", () => {
+  it("strips session budgets, advisor, roots, hooks, and tool overrides from short-lived runs", () => {
     const launchArgs = resolveOmpLaunchArgs(
-      "--profile team --extension=/e.ts -e /x.ts --trusted-extension /t.ts --hook /h.ts --plugin-dir /plugins --tools bash --add-dir /root --thinking high",
+      "--profile team --extension=/e.ts -e /x.ts --trusted-extension /t.ts --hook /h.ts --plugin-dir /plugins --tools bash --add-dir /root --advisor --warn-cost 1 --max-cost=2 --max-time=10s --thinking high",
     );
     if (!launchArgs.ok) throw new Error(launchArgs.message);
     expect(

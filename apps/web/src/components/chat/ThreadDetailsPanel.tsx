@@ -108,8 +108,9 @@ interface ThreadDetailsPanelProps extends Pick<
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
+  const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
   // fork: suppress duplicate legacy Usage/Context rows only when corresponding HUD cards render
-  const hudDedup = useHudLegacySuppression(props.usage);
+  const hudDedup = useHudLegacySuppression(props.usage, activeThreadRef);
   const showLegacyUsage = visible.usage && !hudDedup.suppressLegacyUsage;
   const showLegacyContext =
     visible.context && !hudDedup.suppressLegacyContext && props.usage?.contextWindow != null;
@@ -119,7 +120,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     props.environmentId,
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
   );
-  const activeThreadRef = { environmentId: props.environmentId, threadId: props.threadId };
   const project = useProject(scopeProjectRef(props.environmentId, props.projectId));
   const serverConfig = useServerConfigs().get(props.environmentId);
   const tracksFolders = (project?.trackedFolders?.length ?? 0) > 0;
