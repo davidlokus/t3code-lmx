@@ -1386,6 +1386,17 @@ const UsageHistoryRetentionDays = Schema.Union([
   Schema.Literal("unlimited"),
 ]);
 
+// fork: Opt-in only; these settings authorize reading other CLIs' local stores.
+const DisabledLocalHistorySource = Schema.Boolean.pipe(
+  Schema.withDecodingDefault(Effect.succeed(false)),
+);
+const UsageLocalHistorySourcesSettings = Schema.Struct({
+  kimiCli: DisabledLocalHistorySource,
+  zcode: DisabledLocalHistorySource,
+  magpie: DisabledLocalHistorySource,
+  claudeSwap: DisabledLocalHistorySource,
+});
+
 const CloudSpeechCredential = SettingsSecretValue.pipe(
   Schema.withDecodingDefault(Effect.succeed("")),
 );
@@ -1634,6 +1645,12 @@ export const ServerSettings = Schema.Struct({
 
   usageHistoryRetentionDays: UsageHistoryRetentionDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(92)),
+  ),
+
+  usageLocalHistorySources: UsageLocalHistorySourcesSettings.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed(Schema.decodeSync(UsageLocalHistorySourcesSettings)({})),
+    ),
   ),
 
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
@@ -2030,6 +2047,14 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
 
   usageHistoryRetentionDays: Schema.optionalKey(UsageHistoryRetentionDays),
+  usageLocalHistorySources: Schema.optionalKey(
+    Schema.Struct({
+      kimiCli: Schema.optionalKey(Schema.Boolean),
+      zcode: Schema.optionalKey(Schema.Boolean),
+      magpie: Schema.optionalKey(Schema.Boolean),
+      claudeSwap: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
 
   usagePriceOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(UsageModelPriceOverride)),

@@ -12,6 +12,8 @@ export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
   "pi",
   "omp", // fork:
   "muse",
+  "kimi", // fork: opt-in local history
+  "zai",
 ];
 
 export function usageProviderKind(driver: string): UsageProviderKind | null {
@@ -29,6 +31,8 @@ export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   pi: "Pi",
   omp: "omp", // fork:
   muse: "Muse Code",
+  kimi: "Kimi Code",
+  zai: "Z.ai / BigModel",
 };
 
 export function useProviderColors(): Record<UsageProviderKind, string> {

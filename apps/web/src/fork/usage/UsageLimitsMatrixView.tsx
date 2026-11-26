@@ -320,6 +320,10 @@ export function UsageLimitsMatrixView({
                       <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
                         <T>OpenAI API</T>
                       </span>
+                    ) : account.sourceKind === "claudeSwap" ? (
+                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
+                        claude-swap
+                      </span>
                     ) : null}
                     {credits > 0 ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-foreground tabular-nums">

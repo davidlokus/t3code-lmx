@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import { definition as onePasswordDefinition } from "@t3tools/secret-provider-onepassword/shared/definition";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeLocalFileTracer, type EffectTraceRecord } from "@t3tools/shared/observability";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
@@ -3125,4 +3126,163 @@ it.effect("the reset fallback refreshes its hub, and a stalled hub cannot hold t
     yield* TestClock.adjust("5 seconds");
     expect(yield* Fiber.join(stalled)).toBeNull();
   }),
+);
+
+it.effect(
+  "reads local claude-swap backup quotas only when opted in, excludes active Claude account, and prunes on disable",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-swap-home-" });
+      const configsDir = path.join(home, ".claude-swap-backup", "configs");
+      const cacheDir = path.join(home, ".claude-swap-backup", "cache");
+      yield* fs.makeDirectory(configsDir, { recursive: true });
+      yield* fs.makeDirectory(cacheDir, { recursive: true });
+
+      // Active account in ~/.claude.json (slot 1) must be excluded to prevent double-counting.
+      yield* fs.writeFileString(
+        path.join(home, ".claude.json"),
+        JSON.stringify({
+          oauthAccount: {
+            accountUuid: "acct-active",
+            organizationUuid: "org-active",
+            emailAddress: "active@example.com",
+          },
+        }),
+      );
+      yield* fs.writeFileString(
+        path.join(configsDir, ".claude-config-1-active@example.com.json"),
+        JSON.stringify({
+          oauthAccount: {
+            accountUuid: "acct-active",
+            organizationUuid: "org-active",
+            emailAddress: "active@example.com",
+            planDisplayName: "Max",
+          },
+        }),
+      );
+      yield* fs.writeFileString(
+        path.join(configsDir, ".claude-config-2-backup@example.com.json"),
+        JSON.stringify({
+          oauthAccount: {
+            accountUuid: "acct-backup",
+            organizationUuid: "org-backup",
+            emailAddress: "backup@example.com",
+            planDisplayName: "Pro",
+          },
+        }),
+      );
+      yield* fs.writeFileString(
+        path.join(cacheDir, "usage.json"),
+        JSON.stringify({
+          schemaVersion: 2,
+          accounts: {
+            "1": {
+              email: "active@example.com",
+              organizationUuid: "org-active",
+              fetchedAt: Math.floor((NOW - 10 * 60_000) / 1_000),
+              lastError: null,
+              lastGood: { five_hour: { pct: 50 } },
+            },
+            "2": {
+              email: "backup@example.com",
+              organizationUuid: "org-backup",
+              fetchedAt: Math.floor((NOW - 10 * 60_000) / 1_000),
+              lastError: "http-429",
+              lastGood: {
+                five_hour: { pct: 32, resets_at: at(3) },
+                seven_day: { pct: 18, resets_at: at(72) },
+              },
+            },
+          },
+        }),
+      );
+
+      const settingsRef = yield* Ref.make<ServerSettingsModel>(DEFAULT_SERVER_SETTINGS);
+      const settingsChanges = yield* Effect.acquireRelease(
+        PubSub.unbounded<ServerSettingsModel>(),
+        PubSub.shutdown,
+      );
+      const writeLock = yield* Semaphore.make(1);
+      const settingsService: ServerSettings.ServerSettingsService["Service"] = {
+        start: Effect.void,
+        ready: Effect.void,
+        getSettings: Ref.get(settingsRef),
+        updateSettings: (patch) =>
+          writeLock.withPermits(1)(
+            Effect.gen(function* () {
+              const next = yield* Ref.updateAndGet(settingsRef, (current) =>
+                applyServerSettingsPatch(current, patch),
+              );
+              yield* PubSub.publish(settingsChanges, next);
+              return next;
+            }),
+          ),
+        updateProviderInstance: () => Effect.die("unused"),
+        withSettingsSnapshot: (use) =>
+          writeLock.withPermits(1)(Ref.get(settingsRef).pipe(Effect.flatMap(use))),
+        streamChanges: Stream.fromPubSub(settingsChanges),
+        subscribeChanges: Effect.succeed(Stream.fromPubSub(settingsChanges)),
+      };
+
+      const sources = yield* UsageLimitSources.make.pipe(
+        Effect.provide([
+          Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+          Layer.succeed(HostProcess.HomeDirectory, home),
+        ]),
+      );
+
+      // Default disabled: zero snapshots emitted.
+      yield* sources.refresh;
+      expect(yield* sources.current).toEqual([]);
+
+      // Enable claudeSwap: streamChanges triggers refresh and publishes ONLY inactive backup account.
+      yield* settingsService.updateSettings({ usageLocalHistorySources: { claudeSwap: true } });
+      const enabled = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length === 1),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(enabled).toMatchObject([
+        {
+          id: "claude-swap-local",
+          kind: "claudeSwap",
+          label: "claude-swap",
+          accounts: [
+            {
+              driver: "claudeAgent",
+              email: "backup@example.com",
+              workspaceId: "org-backup",
+              plan: "Pro",
+              usageLimits: {
+                windows: [
+                  { id: "five_hour", usedPercent: 32, resetsAt: at(3) },
+                  { id: "seven_day", usedPercent: 18, resetsAt: at(72) },
+                ],
+                serviceNotice: { message: "http-429", severity: "warning" },
+              },
+            },
+          ],
+        },
+      ]);
+
+      // Disable claudeSwap: streamChanges triggers refresh and immediately prunes snapshot.
+      yield* settingsService.updateSettings({ usageLocalHistorySources: { claudeSwap: false } });
+      const disabled = yield* sources.streamChanges.pipe(
+        Stream.filter((snapshots) => snapshots.length === 0),
+        Stream.runHead,
+        Effect.flatMap(Effect.fromOption),
+      );
+      expect(disabled).toEqual([]);
+    }).pipe(
+      Effect.provide([
+        externalSourceTestLayer,
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("Unexpected network request for local claude-swap")),
+        ),
+      ]),
+    ),
 );

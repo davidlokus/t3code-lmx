@@ -3,8 +3,8 @@ import type {
   ServerProviderUsageBalance,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
-  UsageLimitSourceKind,
   UsageLimitSourceSnapshot,
+  UsageLimitSourceSnapshotKind,
 } from "@t3tools/contracts";
 
 import { isLocalLoopbackHost, isWildcardHost } from "./hostClassification.ts";
@@ -53,7 +53,7 @@ export interface NormalizedLimitWindow extends ServerProviderUsageWindow {
 
 type AccountInput = Omit<LimitAccount, "driver"> & {
   readonly driver: LimitAccount["driver"] | null;
-  readonly sourceKind: "native" | UsageLimitSourceKind;
+  readonly sourceKind: "native" | UsageLimitSourceSnapshotKind;
   readonly providerInstanceId?: ProviderInstanceId;
 };
 
