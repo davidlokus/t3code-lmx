@@ -151,9 +151,17 @@ export const UsageLimitSourceKind = Schema.Literals([
 ]);
 export type UsageLimitSourceKind = typeof UsageLimitSourceKind.Type;
 
+// fork: Virtual read-only snapshot kinds (e.g. opt-in local claude-swap cache) stay forward-compatible
+// via UsageLimitSourceSnapshots without expanding configurable ServerSettings.usageLimitSources kinds.
+export const UsageLimitSourceSnapshotKind = Schema.Literals([
+  ...UsageLimitSourceKind.literals,
+  "claudeSwap",
+]);
+export type UsageLimitSourceSnapshotKind = typeof UsageLimitSourceSnapshotKind.Type;
+
 export const UsageLimitSourceSnapshot = Schema.Struct({
   id: UsageLimitSourceId,
-  kind: UsageLimitSourceKind,
+  kind: UsageLimitSourceSnapshotKind,
   label: TrimmedNonEmptyString,
   /** Origin of the hub, which also serves the agents sent through it. */
   origin: Schema.optional(TrimmedNonEmptyString),

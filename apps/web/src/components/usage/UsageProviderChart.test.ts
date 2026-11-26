@@ -44,6 +44,9 @@ describe("buildPeriodColumns", () => {
       // fork: omp is registered between pi and muse in PROVIDER_ORDER.
       { provider: "omp", value: 0 },
       { provider: "muse", value: 7 },
+      // fork: opt-in local history providers.
+      { provider: "kimi", value: 0 },
+      { provider: "zai", value: 0 },
     ]);
   });
 });

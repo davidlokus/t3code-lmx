@@ -53,6 +53,11 @@ export const PROVIDER_PRESENTATION = {
     color: "#0866ff",
     driverKind: ProviderDriverKind.make("muse"),
   },
+  // fork: Local history only; these kinds have no built-in runtime driver.
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- Provider brand name.
+  kimi: { label: "Kimi Code", color: "#635bff", driverKind: ProviderDriverKind.make("kimi") },
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- Provider brand name.
+  zai: { label: "Z.ai / BigModel", color: "#1c9c63", driverKind: ProviderDriverKind.make("zai") },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
 export const PROVIDER_ORDER = Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[];

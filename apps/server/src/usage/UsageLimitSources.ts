@@ -9,9 +9,10 @@ import {
   type ServerSettings,
   UsageLimitSourceConfig,
   settingsSecretLiteral,
-  type UsageLimitSourceId,
+  UsageLimitSourceId,
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { antigravityWindowLimitsModel, hubRoutes } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
@@ -37,6 +38,8 @@ import { resolveSettingsSecrets } from "../secrets/settingsSecretValue.ts";
 import * as Settings from "../serverSettings.ts";
 import { windowLimitsModel } from "../provider/claudeUsageLimits.ts";
 import { makeCliproxyApi, normalizeCliproxyHubUrl } from "./cliproxyApi.ts";
+// fork: Opt-in read-only local claude-swap quota cache reader.
+import { readClaudeSwapUsage } from "./localSources/claudeSwap.ts";
 import { COPILOT_USAGE_ENDPOINT, readCopilotUsage } from "./sources/copilot.ts";
 import { kimiUsageEndpoint, readKimiUsage } from "./sources/kimi.ts";
 import {
@@ -296,10 +299,18 @@ function managementKeyReference(config: UsageLimitSourceConfig): SecretReference
     : undefined;
 }
 
+// fork: Virtual snapshot ID for opt-in read-only local claude-swap cache accounts.
+const CLAUDE_SWAP_SOURCE_ID = UsageLimitSourceId.make("claude-swap-local");
+
 function sameUsageSourcesAndReferencedProviders(
-  before: Pick<ServerSettings, "usageLimitSources" | "secretProviders">,
-  after: Pick<ServerSettings, "usageLimitSources" | "secretProviders">,
+  before: Pick<ServerSettings, "usageLimitSources" | "secretProviders"> & {
+    readonly claudeSwapEnabled: boolean;
+  },
+  after: Pick<ServerSettings, "usageLimitSources" | "secretProviders"> & {
+    readonly claudeSwapEnabled: boolean;
+  },
 ): boolean {
+  if (before.claudeSwapEnabled !== after.claudeSwapEnabled) return false;
   const beforeEntries = Object.entries(before.usageLimitSources);
   const afterEntries = Object.entries(after.usageLimitSources);
   if (beforeEntries.length !== afterEntries.length) return false;
@@ -387,6 +398,7 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* Settings.ServerSettingsService;
   const secrets = yield* SecretResolver.SecretResolver;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+  const homeDirectory = yield* HostProcess.HomeDirectory;
   const readSecretRevision = (reference: SecretReference | undefined) =>
     reference === undefined || secrets.revision === undefined
       ? Effect.undefined
@@ -584,6 +596,28 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: 4 },
     );
+    // fork: Only read local claude-swap backup cache when explicitly opted in via server settings.
+    let claudeSwapReading: SourceReading | undefined;
+    if (settings?.usageLocalHistorySources.claudeSwap === true) {
+      const now = yield* DateTime.now;
+      const nowMs = DateTime.toEpochMillis(now);
+      const accounts = yield* Effect.tryPromise({
+        try: () => readClaudeSwapUsage({ home: homeDirectory, nowMs }),
+        catch: () => undefined,
+      }).pipe(Effect.orElseSucceed(() => [] as const));
+      if (accounts.length > 0) {
+        claudeSwapReading = {
+          target: `claudeSwap:${homeDirectory}`,
+          snapshot: {
+            id: CLAUDE_SWAP_SOURCE_ID,
+            kind: "claudeSwap",
+            label: "claude-swap",
+            checkedAt: DateTime.formatIso(now),
+            accounts,
+          },
+        };
+      }
+    }
     // Resolve latest effective auth identity outside the settings write lock so vault lookups
     // never block settings writes, then revalidate configs/provider bindings and publish atomically.
     const latest = yield* settingsService.getSettings.pipe(
@@ -713,6 +747,15 @@ export const make = Effect.gen(function* () {
                     },
               );
             }
+            // fork: Include opt-in claude-swap snapshot only if still enabled in committed settings.
+            if (
+              claudeSwapReading !== undefined &&
+              committed.usageLocalHistorySources.claudeSwap === true &&
+              !(CLAUDE_SWAP_SOURCE_ID in committed.usageLimitSources)
+            ) {
+              visibleIds.add(CLAUDE_SWAP_SOURCE_ID);
+              visible.push(claudeSwapReading);
+            }
             const nextVisible = keepLastGoodReadings(previous, visible);
             const retained = [
               ...nextVisible,
@@ -777,6 +820,7 @@ export const make = Effect.gen(function* () {
     Stream.map((settings) => ({
       usageLimitSources: settings.usageLimitSources,
       secretProviders: settings.secretProviders,
+      claudeSwapEnabled: settings.usageLocalHistorySources.claudeSwap,
     })),
     Stream.changesWith(sameUsageSourcesAndReferencedProviders),
     Stream.runForEach(() => refresh),

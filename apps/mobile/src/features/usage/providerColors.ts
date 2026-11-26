@@ -11,5 +11,7 @@ export function providerColors(scheme: "light" | "dark"): Record<UsageProviderKi
     pi: "#4d9f8a",
     omp: "#9b4dff", // fork:
     muse: "#0866ff",
+    kimi: "#635bff",
+    zai: "#1c9c63",
   };
 }

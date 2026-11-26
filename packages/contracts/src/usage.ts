@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -6,6 +7,10 @@ import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from ".
 export const USAGE_CONTRACT_VERSION = 6 as const;
 
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
+
+// fork: Encode these separately in filters so older servers can decode the request.
+const LocalHistoryProviderKind = Schema.Literals(["kimi", "zai"]);
+const isLocalHistoryProvider = Schema.is(LocalHistoryProviderKind);
 
 export const UsageProviderKind = Schema.Literals([
   "claude",
@@ -17,6 +22,7 @@ export const UsageProviderKind = Schema.Literals([
   "pi",
   "omp", // fork:
   "muse",
+  ...LocalHistoryProviderKind.literals,
 ]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
@@ -191,7 +197,7 @@ export const UsageSessionSummary = Schema.Struct({
 });
 export type UsageSessionSummary = typeof UsageSessionSummary.Type;
 
-export const UsageSummaryInput = Schema.Struct({
+const UsageSummaryQuery = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
   /** IANA bucketing zone; offsets fail across DST boundaries. */
@@ -206,6 +212,36 @@ export const UsageSummaryInput = Schema.Struct({
   projectFilter: Schema.optional(UsageProjectFilter),
   providers: Schema.optional(Schema.Array(UsageProviderKind)),
 });
+
+export const UsageSummaryInput = UsageSummaryQuery.mapFields((fields) => ({
+  ...fields,
+  localHistoryProviders: Schema.optional(Schema.Array(LocalHistoryProviderKind)),
+})).pipe(
+  Schema.decodeTo(
+    Schema.toType(UsageSummaryQuery),
+    SchemaTransformation.transform({
+      decode: (input) => {
+        const { localHistoryProviders, ...rest } = input;
+        return localHistoryProviders === undefined
+          ? rest
+          : { ...rest, providers: [...(rest.providers ?? []), ...localHistoryProviders] };
+      },
+      encode: (input) => {
+        const providers = input.providers;
+        const firstLocal = providers?.findIndex(isLocalHistoryProvider) ?? -1;
+        if (providers === undefined || firstLocal < 0) return input;
+        const legacy = providers.slice(0, firstLocal);
+        const local: (typeof LocalHistoryProviderKind.Type)[] = [];
+        for (let i = firstLocal; i < providers.length; i++) {
+          const provider = providers[i]!;
+          if (isLocalHistoryProvider(provider)) local.push(provider);
+          else legacy.push(provider);
+        }
+        return { ...input, providers: legacy, localHistoryProviders: local };
+      },
+    }),
+  ),
+);
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
 export const UsageSummary = Schema.Struct({

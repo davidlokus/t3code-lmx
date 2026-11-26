@@ -160,6 +160,27 @@ describe("ServerSettings usage price overrides", () => {
   });
 });
 
+describe("ServerSettings local usage history", () => {
+  it("defaults every source off in legacy settings and opts in only to present toggles", () => {
+    const disabled = { kimiCli: false, zcode: false, magpie: false, claudeSwap: false };
+    expect(decodeServerSettings({}).usageLocalHistorySources).toEqual(disabled);
+    const settings = decodeServerSettings({ usageLocalHistorySources: { kimiCli: true } });
+    expect(settings.usageLocalHistorySources).toEqual({ ...disabled, kimiCli: true });
+    expect(decodeServerSettings(encodeServerSettings(settings)).usageLocalHistorySources).toEqual(
+      settings.usageLocalHistorySources,
+    );
+  });
+
+  it("keeps patches sparse through the client codec, including an explicit disable", () => {
+    const patch = { usageLocalHistorySources: { magpie: false } };
+    expect(decodeClientServerSettingsPatch(patch)).toEqual(patch);
+    expect(encodeServerSettingsPatch(decodeServerSettingsPatch(patch))).toEqual(patch);
+    expect(() =>
+      decodeServerSettingsPatch({ usageLocalHistorySources: { zcode: "true" } }),
+    ).toThrow();
+  });
+});
+
 it("drops a hand-edited non-string hidden tag and keeps the rest of the settings", () => {
   const settings = decodeServerSettings({
     hiddenThreadTags: ["private", 123],

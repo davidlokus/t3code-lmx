@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - the suite seeds and grows real
 // transcript trees on disk, outside the service's Effect FileSystem.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -21,7 +22,7 @@ import {
   UsageDay,
   type UsageSource,
   type UsageSummary,
-  type UsageSummaryInput,
+  UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Clock from "effect/Clock";
@@ -58,6 +59,7 @@ import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import { makeScanCacheWriter, SCAN_CACHE_FILE_NAME } from "./usageScanCache.ts";
 
 vi.mock("node:fs/promises", { spy: true });
+vi.mock("node:fs", { spy: true });
 vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOriginal) => {
   const original = await importOriginal<typeof MuseSdk>();
   return {
@@ -76,6 +78,27 @@ vi.mock("../../../../packages/provider-muse/src/server/sdk.ts", async (importOri
 const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonString = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeUsageSummaryRequest = Schema.encodeSync(UsageSummaryInput);
+const decodeUsageSummaryRequest = Schema.decodeSync(UsageSummaryInput);
+const decodeLegacyUsageProviderFilter = Schema.decodeUnknownSync(
+  Schema.Struct({
+    providers: Schema.optional(
+      Schema.Array(
+        Schema.Literals([
+          "claude",
+          "codex",
+          "grok",
+          "cursor",
+          "opencode",
+          "antigravity",
+          "pi",
+          "omp",
+          "muse",
+        ]),
+      ),
+    ),
+  }),
+);
 
 function claudeLine(
   id: number,
@@ -522,6 +545,212 @@ describe("Codex usage history", () => {
         yield* sql`ALTER TABLE unavailable_events RENAME TO orchestration_events`;
         assert.strictEqual((yield* history.resolve([input])).get(input), "fast");
       }).pipe(Effect.provide(historyLayer)),
+  );
+});
+
+async function seedLocalHistory(home: string, magpieDirectory: string) {
+  const kimiDir = NodePath.join(home, ".kimi-code", "server", "events");
+  const zcodeDir = NodePath.join(home, ".zcode", "cli", "db");
+  const zcodePath = NodePath.join(zcodeDir, "db.sqlite");
+  const magpiePath = NodePath.join(magpieDirectory, "usage.jsonl");
+  await Promise.all(
+    [kimiDir, zcodeDir, magpieDirectory].map((dir) => NodeFSP.mkdir(dir, { recursive: true })),
+  );
+
+  const timestamp = "2026-08-01T10:00:00Z";
+  const kimiPath = NodePath.join(kimiDir, "session_kimi.jsonl");
+  const step = encodeUnknownJsonString({
+    kind: "event",
+    seq: 19,
+    envelope: {
+      type: "turn.step.completed",
+      seq: 19,
+      session_id: "session_kimi",
+      timestamp,
+      payload: { stepId: "step-1", model: "kimi-k3", usage: { inputOther: 10, output: 6 } },
+    },
+  });
+  const gateway = [
+    ["dsh", "openai", "codex/gpt-6.1-sol", 3],
+    ["hermes", "anthropic", "anthropic/claude-fable-5", 4],
+    ["Claude-Code", "anthropic", "anthropic/claude-fable-5", 100],
+    ["Codex", "openai", "codex/gpt-6.1-sol", 100],
+    ["OMP", "openai", "codex/gpt-6.1-sol", 100],
+    ["Kimi-Code", "kimi-coding", "kimi/kimi-k3", 60],
+    ["zcode", "zcode", "zcode/GLM-5.4", 70],
+    ["dsh", "kimi-coding", "kimi/kimi-k3", 2],
+    ["hermes", "zcode", "zcode/GLM-5.4", 1],
+  ].map(([agent, provider, model, out], i) =>
+    encodeUnknownJsonString({
+      t: timestamp,
+      agent,
+      provider,
+      model,
+      out,
+      response_id: `response-${i}`,
+      session: agent,
+    }),
+  );
+  await Promise.all([
+    NodeFSP.writeFile(kimiPath, `${step}\n${step}\n`),
+    NodeFSP.writeFile(magpiePath, gateway.join("\n")),
+  ]);
+  const mtime = Date.parse(timestamp) / 1_000;
+  await NodeFSP.utimes(kimiPath, mtime, mtime);
+  using db = new NodeSqlite.DatabaseSync(zcodePath);
+  db.exec(`CREATE TABLE model_usage (
+    id TEXT PRIMARY KEY, session_id TEXT, provider_id TEXT, model_id TEXT, status TEXT,
+    started_at INTEGER, input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER, computed_total_tokens INTEGER
+  )`);
+  db.prepare(
+    "INSERT INTO model_usage VALUES ('turn-1', 'zcode-session', 'account:bigmodel-start-plan', 'GLM-5.4', 'completed', ?, 10, 7, 0, 0, 0, 17)",
+  ).run(Date.parse(timestamp));
+  return { kimiDir, kimiPath, zcodePath, magpiePath };
+}
+
+function outputByProvider(summary: UsageSummary) {
+  const outputs = new Map<string, number>();
+  for (const { provider, totals } of summary.buckets) {
+    outputs.set(provider, (outputs.get(provider) ?? 0) + totals.outputTokens);
+  }
+  return Object.fromEntries(outputs);
+}
+
+describe("Local usage history", () => {
+  it("keeps provider filters readable by hosts that do not know Kimi or Z.ai", () => {
+    for (const [providers, legacy] of [
+      [["claude", "kimi", "zai"], ["claude"]],
+      [["kimi", "zai"], []],
+      [["codex"], ["codex"]],
+    ] as const) {
+      const wire = encodeUsageSummaryRequest({ ...WINDOW, providers });
+      assert.deepStrictEqual(decodeLegacyUsageProviderFilter(wire).providers, legacy);
+      assert.deepStrictEqual(decodeUsageSummaryRequest(wire).providers, providers);
+    }
+  });
+
+  it.effect("does not access local source paths or count their usage by default", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-08-02T12:00:00Z"));
+      const { home, settings } = yield* setup;
+      const magpieDirectory = NodePath.join(home, ".config", "magpie");
+      const paths = yield* Effect.promise(() => seedLocalHistory(home, magpieDirectory));
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(summary.buckets, []);
+        assert.isFalse(
+          vi.mocked(NodeFSP.readdir).mock.calls.some(([path]) => path === paths.kimiDir),
+        );
+        assert.isFalse(
+          vi
+            .mocked(NodeFSP.readFile)
+            .mock.calls.some(([path]) => path === paths.kimiPath || path === paths.magpiePath),
+        );
+        assert.isFalse(
+          vi.mocked(NodeFS.existsSync).mock.calls.some(([path]) => path === paths.zcodePath),
+        );
+      }).pipe(Effect.provide(layerService({ home, settings, prefix: "no-local-history" })));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("adds dsh and Hermes usage at its upstream without re-counting native agents", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-08-02T12:00:00Z"));
+      const { home, settings, transcript } = yield* setup;
+      const magpieDirectory = NodePath.join(home, "gateway");
+      yield* Effect.promise(async () => {
+        await seedLocalHistory(home, magpieDirectory);
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(outputByProvider(summary), {
+          claude: 9,
+          codex: 3,
+          kimi: 62,
+          zai: 71,
+        });
+        assert.deepStrictEqual(
+          summary.sources
+            .filter(
+              ({ fingerprint }) =>
+                fingerprint.resolvedHomePath === NodePath.join(magpieDirectory, "usage.jsonl"),
+            )
+            .map(({ fingerprint, status }) => [
+              fingerprint.provider,
+              status,
+              fingerprint.volumeId.length > 0,
+            ])
+            .sort(),
+          [
+            ["claude", "ok", true],
+            ["codex", "ok", true],
+            ["kimi", "ok", true],
+            ["zai", "ok", true],
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          layerService({
+            home,
+            settings: { ...settings, usageLocalHistorySources: { magpie: true } },
+            environment: { MAGPIE_CONFIG_DIR: magpieDirectory },
+            prefix: "magpie-history",
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("merges opt-in patches and counts Kimi CLI and ZCode once alongside Magpie", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-08-02T12:00:00Z"));
+      const { home, settings } = yield* setup;
+      const paths = yield* Effect.promise(() =>
+        seedLocalHistory(home, NodePath.join(home, ".config", "magpie")),
+      );
+      yield* Effect.gen(function* () {
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        yield* settingsService.updateSettings({
+          usageLocalHistorySources: { magpie: true, claudeSwap: true },
+        });
+        yield* settingsService.updateSettings({ usageLocalHistorySources: { kimiCli: true } });
+        const patched = yield* settingsService.updateSettings({
+          usageLocalHistorySources: { zcode: true },
+        });
+        assert.deepStrictEqual(patched.usageLocalHistorySources, {
+          kimiCli: true,
+          zcode: true,
+          magpie: true,
+          claudeSwap: true,
+        });
+
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(outputByProvider(summary), { claude: 4, codex: 3, kimi: 8, zai: 8 });
+        assert.strictEqual(
+          summary.buckets.find((bucket) => bucket.sourcePath === paths.kimiDir)?.records,
+          1,
+        );
+        assert.strictEqual(
+          summary.sources.find((source) => source.fingerprint.resolvedHomePath === paths.zcodePath)
+            ?.status,
+          "ok",
+        );
+
+        yield* Effect.promise(() => NodeFSP.writeFile(paths.zcodePath, "corrupt database"));
+        const partial = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(outputByProvider(partial), { claude: 4, codex: 3, kimi: 8, zai: 1 });
+        assert.strictEqual(
+          partial.sources.find((source) => source.fingerprint.resolvedHomePath === paths.zcodePath)
+            ?.status,
+          "failed",
+        );
+      }).pipe(Effect.provide(layerService({ home, settings, prefix: "all-local-history" })));
+    }).pipe(Effect.scoped),
   );
 });
 

@@ -36,9 +36,11 @@ import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import type {
   ProviderUsageInstance,
+  ProviderUsageScan,
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { makeLocalHistoryScanner } from "./localSources/index.ts";
 import {
   canonicalModelFilter,
   resolveModelAliases,
@@ -200,6 +202,7 @@ export const make = Effect.gen(function* () {
     });
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  const scanLocalHistory = makeLocalHistoryScanner();
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -795,6 +798,24 @@ export const make = Effect.gen(function* () {
     } satisfies ScannedDir;
   });
 
+  const scannedDir = (provider: UsageProviderKind, { volumeId, ...source }: ProviderUsageScan) =>
+    Effect.map(
+      // A reader's own volumeId names a remote account, not a local directory.
+      volumeId === undefined
+        ? Effect.all([
+            Effect.promise(() => readDirectoryVolumeId(source.dir)),
+            physicalSourceId(source.dir),
+          ])
+        : Effect.succeed<[string, string | undefined]>([volumeId, undefined]),
+      ([resolved, sourceId]): ScannedDir => ({
+        ...source,
+        files: source.files?.map((file) => ({ ...file, malformedRecords: [] })) ?? null,
+        provider,
+        volumeId: resolved,
+        ...(sourceId === undefined ? {} : { physicalSourceId: sourceId }),
+      }),
+    );
+
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
     { dirs, pending }: Effect.Success<ReturnType<typeof resolveTranscriptDirs>>,
     windowStartMs: number,
@@ -811,36 +832,39 @@ export const make = Effect.gen(function* () {
             reader.scan({ instances, settings, windowStartMs, retentionCutoffMs, awaitRefresh }),
           ),
           Effect.flatMap((sources) =>
-            Effect.forEach(sources, ({ volumeId, ...source }) =>
-              Effect.map(
-                // A reader's own volumeId names a remote account, not a local directory.
-                volumeId === undefined
-                  ? Effect.all([
-                      Effect.promise(() => readDirectoryVolumeId(source.dir)),
-                      physicalSourceId(source.dir),
-                    ])
-                  : Effect.succeed<[string, string | undefined]>([volumeId, undefined]),
-                ([resolved, sourceId]): ScannedDir => ({
-                  ...source,
-                  files: source.files?.map((file) => ({ ...file, malformedRecords: [] })) ?? null,
-                  provider: reader.provider,
-                  volumeId: resolved,
-                  ...(sourceId === undefined ? {} : { physicalSourceId: sourceId }),
-                }),
-              ),
-            ),
+            Effect.forEach(sources, (source) => scannedDir(reader.provider, source)),
           ),
           Effect.provideContext(readerContext),
         ),
       { concurrency: "unbounded" },
     );
 
+    // fork: Opted-in local histories use the scan-reader path, not the transcript cache.
+    const local = settings.usageLocalHistorySources;
+    const localScans =
+      local.kimiCli || local.zcode || local.magpie
+        ? scanLocalHistory(local, Math.max(windowStartMs, retentionCutoffMs)).pipe(
+            Effect.flatMap((sources) =>
+              Effect.forEach(sources, ({ provider, ...source }) => scannedDir(provider, source)),
+            ),
+          )
+        : Effect.undefined;
+
     // Scan independent sources together, directories sequentially to bound open files; keep order, since the first copy decides a duplicate's bucket.
-    const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)), scans],
+    const [transcripts, scanDirs, localDirs] = yield* Effect.all(
+      [
+        Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)),
+        scans,
+        localScans,
+      ],
       { concurrency: "unbounded" },
     );
-    const scanned: readonly ScannedDir[] = [...transcripts, ...pending, ...scanDirs.flat()];
+    const scanned: readonly ScannedDir[] = [
+      ...transcripts,
+      ...pending,
+      ...scanDirs.flat(),
+      ...(localDirs ?? []),
+    ];
     return scanned;
   });
 
