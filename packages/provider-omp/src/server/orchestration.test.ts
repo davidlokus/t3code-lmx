@@ -35,6 +35,17 @@ const taskResult = (...results: ReadonlyArray<Record<string, unknown>>) => ({
   result: { details: { results } },
 });
 
+const waitResult = (...jobs: ReadonlyArray<unknown>) => ({
+  type: "tool_execution_end",
+  toolName: "wait",
+  toolCallId: "wait-1",
+  result: { details: { op: "wait", jobs } },
+});
+
+const asyncResult = (content: unknown, jobs: ReadonlyArray<unknown>) => ({
+  type: "message_end",
+  message: { role: "custom", customType: "async-result", content, details: { jobs } },
+});
 const askQuestions = [
   {
     id: "runtime ",
@@ -96,6 +107,7 @@ describe("omp subagents", () => {
         ...identity,
         task: {
           agent: "explore",
+          title: "Inspect schema (explore)",
           status,
           task: "Find the schema",
           model: "example/model",
@@ -117,33 +129,151 @@ describe("omp subagents", () => {
     },
   );
 
-  it("uses tool args, then the output tail, and falls back to bounded final results", () => {
+  it("uses tool args, then a clean output prefix, and retains long reports within the result cap", () => {
     const tracker = new OmpSubagentTracker();
     expect(
       tracker.fromSubscription(
         progress({ currentTool: "grep", currentToolArgs: "schema", recentOutput: ["ignored"] }),
       ),
     ).toMatchObject({ task: { progress: "grep(schema)" } });
-    expect(
-      tracker.fromSubscription(
-        progress({ lastIntent: " ", recentOutput: ["old", `discarded${"a".repeat(200)}`, " "] }),
-      ),
-    ).toMatchObject({ task: { progress: "a".repeat(200) } });
+    const shortLine = "Architecture starts with linked resources";
+    const longLine = `## Architecture starts with [linked resources](${"/full/path".repeat(50)}) ${"and details ".repeat(25)}`;
+    const update = tracker.fromSubscription(
+      progress({ lastIntent: " ", recentOutput: ["old", longLine, "```", " "] }),
+    );
+    const preview = (update?.["task"] as { progress?: string } | undefined)?.progress;
+    expect(preview).toMatch(/^Architecture starts with linked resources.*\b…$/);
+    expect(preview?.length).toBeLessThanOrEqual(200);
+    expect(preview).not.toContain("/full/path");
+    expect(preview?.startsWith(shortLine)).toBe(true);
     expect(
       tracker.fromTaskResult(
         taskResult(
-          { id: "Writer", agent: "task", exitCode: 0, output: "x".repeat(12_000) },
+          { id: "Writer", agent: "task", exitCode: 0, output: "x".repeat(55_000) },
           { id: "Broken", agent: "task", exitCode: 0, error: "Could not open schema" },
           { id: "Stopped", agent: "task", exitCode: 1, aborted: true, stderr: "Interrupted" },
           { agent: "unknown owner" },
         ),
       ),
     ).toMatchObject([
-      { taskKey: "Writer", task: { status: "completed", result: "x".repeat(10_000) } },
+      { taskKey: "Writer", task: { status: "completed", result: "x".repeat(50_000) } },
       { taskKey: "Broken", task: { status: "failed", result: "Could not open schema" } },
       { taskKey: "Stopped", task: { status: "interrupted", result: "Interrupted" } },
     ]);
-    expect(tracker.fromSubscription(lifecycle("started"))).toBeUndefined();
+  });
+
+  it.each([
+    ["  ProviderView  ", "ProviderView (explore)"],
+    ["explore", "explore"],
+    ["See all\nproviders", "Scout (explore)"],
+    ["s".repeat(61), "Scout (explore)"],
+  ])("chooses a distinguishable single-line title for %j", (description, title) => {
+    const tracker = new OmpSubagentTracker();
+    expect(tracker.fromSubscription(progress({ description }))).toMatchObject({ task: { title } });
+  });
+
+  it("backfills known wait jobs, ignoring unrelated tools and preserving settled status", () => {
+    const tracker = new OmpSubagentTracker();
+    tracker.fromSubscription(lifecycle("failed"));
+    tracker.fromSubscription(progress({ id: "ClientView" }));
+    tracker.fromSubscription(progress({ id: "RuntimeView" }));
+    const result = waitResult(
+      {
+        id: "Scout-2",
+        agentUrlId: "Scout",
+        type: "task",
+        status: "completed",
+        resultText:
+          '<task-result id="Scout" status="completed"><output>\n# Architecture\n\nSee `provider.ts`.\n</output></task-result>',
+      },
+      {
+        id: "ClientView",
+        type: "task",
+        status: "cancelled",
+        resultText: " ",
+        errorText: "Stopped by the caller",
+      },
+      { id: "RuntimeView", error: "<error>Unable to read workspace</error>" },
+      {
+        id: "bash-1",
+        type: "bash",
+        resultText: '<task-result id="Scout"><output>Unrelated</output></task-result>',
+      },
+      { id: "unknown", type: "task", resultText: "Untracked work" },
+    );
+    expect(tracker.fromWaitResult(result)).toMatchObject([
+      {
+        taskKey: "Scout",
+        task: { status: "failed", result: "# Architecture\n\nSee `provider.ts`." },
+      },
+      { taskKey: "ClientView", task: { status: "interrupted", result: "Stopped by the caller" } },
+      { taskKey: "RuntimeView", task: { status: "failed", result: "Unable to read workspace" } },
+    ]);
+    expect(tracker.fromWaitResult(result)).toEqual([]);
+  });
+
+  it("matches every async report by job or agent id without replacing fuller output", () => {
+    const tracker = new OmpSubagentTracker();
+    tracker.fromSubscription(progress({ lastIntent: "Inspecting" }));
+    tracker.fromSubscription(progress({ id: "ClientView" }));
+    tracker.fromSubscription(progress({ id: "RuntimeView" }));
+    const content = [
+      '<system-notice><task-result id="Scout" status="completed"><output># Provider\n',
+      "Use `<output>nested</output>`.\n</output></task-result>",
+      "<task-result status='failed' id='client-job'><error>Could not inspect UI</error></task-result>",
+      '<task-result id="RuntimeView"><output>Not present in job metadata</output></task-result>',
+      '<task-result id="untracked"><output>Not a known agent</output></task-result></system-notice>',
+    ].map((text) => ({ type: "text", text }));
+    const jobs = [
+      { jobId: "Scout-2", agentId: "Scout", type: "task", status: "completed" },
+      { jobId: "client-job", agentId: "ClientView", status: "failed" },
+      { jobId: "untracked", type: "task", status: "completed" },
+    ];
+    expect(tracker.fromAsyncResultMessage(asyncResult(content, jobs))).toMatchObject([
+      {
+        taskKey: "Scout",
+        task: { status: "completed", result: "# Provider\nUse `<output>nested</output>`." },
+      },
+      { taskKey: "ClientView", task: { status: "failed", result: "Could not inspect UI" } },
+    ]);
+    expect(
+      tracker.fromAsyncResultMessage(
+        asyncResult(
+          '<task-result id="Scout"><preview full-output="agent://Scout"># Provider</preview></task-result>',
+          jobs,
+        ),
+      ),
+    ).toEqual([]);
+    const barePreviewTracker = new OmpSubagentTracker();
+    barePreviewTracker.fromSubscription(lifecycle("completed"));
+    expect(
+      barePreviewTracker.fromAsyncResultMessage(
+        asyncResult('<task-result id="Scout"><preview>Bare preview body</preview></task-result>', [
+          { jobId: "Scout", type: "task", status: "completed" },
+        ]),
+      ),
+    ).toMatchObject([{ taskKey: "Scout", task: { result: "Bare preview body" } }]);
+  });
+
+  it("recovers after malformed wrappers and refuses to guess across ambiguous task owners", () => {
+    const tracker = new OmpSubagentTracker();
+    tracker.fromSubscription(progress({ id: "First" }));
+    const secondOwner = lifecycle("started");
+    tracker.fromSubscription(secondOwner);
+    tracker.fromSubscription({
+      ...secondOwner,
+      payload: { ...secondOwner.payload, parentToolCallId: "task-2" },
+    });
+    expect(
+      tracker.fromAsyncResultMessage(
+        asyncResult(
+          '<task-result id="broken" '.repeat(2_000) +
+            '<task-result id="Scout"><output>ambiguous</output></task-result>' +
+            '<task-result id="First"><output>the recovered report</output></task-result>',
+          [{ jobId: "Scout" }, { jobId: "First" }],
+        ),
+      ),
+    ).toMatchObject([{ taskKey: "First", task: { result: "the recovered report" } }]);
   });
 });
 

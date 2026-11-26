@@ -7,6 +7,7 @@ import { useThreadShell, useProject } from "../../state/entities";
 import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
 import { SideThreadsOpenContext, useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
 import { useLinkedThreadOpener } from "../../state/linkedThreadView";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -466,6 +467,11 @@ function SubagentTimelineLink(props: {
   const gt = useGT();
   const m = useMessages();
   const threadId = props.threadId;
+  const native = props.origin === "provider_native" && threadId === null && remote === undefined;
+  const title = native ? props.title.trim() || gt("Subagent") : props.title;
+  const model = native
+    ? (agent?.executedModel ?? agent?.model ?? agent?.modelSelection?.model)
+    : undefined;
   // A task in a linked environment opens there, or read-only through this one.
   const remoteOpener = useLinkedThreadOpener(props.parentRef, remote, props.title);
   const trigger = useSideThreadTrigger();
@@ -477,6 +483,15 @@ function SubagentTimelineLink(props: {
       : (remoteOpener?.open ?? null);
   // A task on a connected linked environment opens there, on the main screen only.
   const panel = threadId !== null || remoteOpener?.mode === "linked";
+  const triggerProps =
+    canOpen && native
+      ? {
+          onClick: () =>
+            useRightPanelStore.getState().openSubagent(props.parentRef, props.subagentId, title),
+        }
+      : open !== null
+        ? trigger(open, { panel })
+        : null;
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? m(subagentStatusVisual(liveStatus).label);
@@ -502,12 +517,15 @@ function SubagentTimelineLink(props: {
       />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className="min-w-0 truncate text-xs font-medium text-foreground">
-            {props.title}
-          </span>
+          <span className="min-w-0 truncate text-xs font-medium text-foreground">{title}</span>
           {remote !== undefined ? (
             <span className="shrink-0 text-xs text-muted-foreground">
               {gt("on {environment}", { environment: remote.label })}
+            </span>
+          ) : null}
+          {model ? (
+            <span className="max-w-[min(40%,12rem)] shrink-0 truncate rounded-full bg-muted px-1.5 py-0.5 text-2xs leading-tight text-muted-foreground">
+              {model}
             </span>
           ) : null}
         </span>
@@ -536,7 +554,7 @@ function SubagentTimelineLink(props: {
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
         {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
       </span>
-      {open !== null ? (
+      {triggerProps !== null ? (
         <ChevronRightIcon
           aria-hidden
           className="size-3.5 shrink-0 text-muted-foreground/60 transition-colors group-hover/subagent:text-foreground"
@@ -551,7 +569,7 @@ function SubagentTimelineLink(props: {
       <TooltipTrigger
         delay={200}
         render={
-          open === null ? (
+          triggerProps === null ? (
             <div data-v2-item-type="subagent" aria-description={statusLabel} className={className}>
               {content}
             </div>
@@ -559,9 +577,9 @@ function SubagentTimelineLink(props: {
             <button
               type="button"
               data-v2-item-type="subagent"
-              aria-label={gt("Open {title}", { title: props.title })}
+              aria-label={gt("Open {title}", { title })}
               aria-description={statusLabel}
-              {...trigger(open, { panel })}
+              {...triggerProps}
               className={cn(
                 className,
                 "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
@@ -575,8 +593,9 @@ function SubagentTimelineLink(props: {
       <ThreadHoverCardPopup>
         <SubagentTimelineTooltip
           {...props}
+          title={title}
           elapsed={agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null}
-          model={agent?.model ?? null}
+          model={model ?? agent?.model ?? null}
           modelSelection={agent?.modelSelection}
           status={liveStatus}
           result={agent?.result ?? props.result}

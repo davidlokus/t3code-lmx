@@ -17,7 +17,12 @@ import SideThreadPane from "./SideThreadPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
-import { type RightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
+import { NativeSubagentInspectorPane } from "~/fork/subagent/NativeSubagentInspectorPane";
+import {
+  subagentOwnerRef,
+  type RightPanelSurface,
+  useRightPanelStore,
+} from "../../rightPanelStore";
 import {
   PersistentThreadTerminalPanel,
   type PersistentThreadTerminalPanelProps,
@@ -243,6 +248,20 @@ export function RightPanelSurfaceContent(props: {
           onClose={() => onCloseSurface(surface)}
         />
       );
+    case "subagent": {
+      const parentRef = subagentOwnerRef(threadRef, surface);
+      const hosted = parentRef.threadId !== threadRef.threadId;
+      return (
+        <NativeSubagentInspectorPane
+          key={`${scopedThreadKey(parentRef)}:${surface.id}`}
+          parentRef={parentRef}
+          panelRef={threadRef}
+          surface={surface}
+          cwd={hosted ? undefined : props.files.workspaceRoot}
+          {...(hosted ? {} : { workspaceMutationId: props.workspaceRevision })}
+        />
+      );
+    }
     case "linked-thread":
       return (
         <LinkedThreadPane

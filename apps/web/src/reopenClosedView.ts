@@ -164,10 +164,13 @@ export async function reopenClosedView(
     case "thread":
       panels.openThread(ref, surface.threadId);
       break;
+    case "subagent":
+      return panels.openSubagent(ref, surface.subagentId, surface.title, surface.ownerThreadId);
     case "linked-thread":
       panels.openLinkedThread(ref, surface);
       break;
-    default:
+    case "diff":
+    case "pull-requests":
       panels.open(ref, surface.kind);
   }
   return true;

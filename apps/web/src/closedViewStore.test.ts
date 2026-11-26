@@ -66,12 +66,36 @@ describe("closedViewStore", () => {
       threadRef: refA,
       surface: { kind: "linked-thread", id: "linked-thread:x", viaEnvironmentId: "env-1" },
     },
+    ...[
+      { id: "subagent:other" },
+      { kind: "preview", resourceId: null },
+      { id: "subagent:", subagentId: "" },
+      { id: "subagent: ", subagentId: " " },
+      { id: "subagent:8", subagentId: 8 },
+      { title: "" },
+      { title: " " },
+      { title: undefined },
+      { title: 8 },
+      { ownerThreadId: null },
+      { ownerThreadId: " " },
+    ].map((malformed) => ({
+      id: "bad",
+      kind: "panel-tab",
+      threadRef: refA,
+      surface: {
+        id: "subagent:saved",
+        kind: "subagent",
+        subagentId: "saved",
+        title: "Saved task",
+        ...malformed,
+      },
+    })),
   ])("discards incomplete saved views %j while retaining valid history", async (entry) => {
     const id = useClosedViewStore.getState().remember(diff(refA));
-    const { storage, name } = useClosedViewStore.persist.getOptions();
+    const { storage, name, version } = useClosedViewStore.persist.getOptions();
     await storage!.setItem(name!, {
       state: { entries: [entry as ClosedViewEntry, ...useClosedViewStore.getState().entries] },
-      version: 1,
+      version: version!,
     });
     await useClosedViewStore.persist.rehydrate();
     expect(useClosedViewStore.persist.hasHydrated()).toBe(true);

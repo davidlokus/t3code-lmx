@@ -3447,6 +3447,90 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect("keeps completed tools terminal when delayed RPC frames arrive", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+
+      for (const toolName of ["task", "bash", "powershell"]) {
+        const call = { toolName, toolCallId: `${toolName}-call` };
+        const result = { content: [{ type: "text", text: "Finished" }] };
+        const start = { ...call, type: "tool_execution_start", args: { command: "echo Finished" } };
+        yield* fake.emit(start);
+        yield* fake.emit({ ...call, type: "tool_execution_end", result });
+        yield* fake.emit({
+          ...call,
+          type: "tool_execution_update",
+          partialResult: { content: [{ type: "text", text: "Late progress" }] },
+        });
+        yield* fake.emit(start);
+      }
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "next-call",
+        toolName: "task",
+      });
+
+      const nodes = new Map<string, string[]>();
+      const items = new Map<string, string[]>();
+      const laterChunks: string[] = [];
+      yield* takeEvent((event) => {
+        if (event.type === "command_output.delta") laterChunks.push(event.chunk);
+        if (event.type === "node.updated") {
+          const id = event.node.nativeItemRef?.nativeId;
+          if (id) nodes.set(id, [...(nodes.get(id) ?? []), event.node.status]);
+        }
+        if (event.type !== "turn_item.updated") return false;
+        const id = event.turnItem.nativeItemRef?.nativeId;
+        if (id === "next-call") return true;
+        if (id) items.set(id, [...(items.get(id) ?? []), event.turnItem.status]);
+        return false;
+      });
+      for (const id of ["task-call", "bash-call", "powershell-call"]) {
+        assert.deepEqual(nodes.get(id), ["running", "completed"]);
+        assert.deepEqual(items.get(id), ["running", "completed"]);
+      }
+      assert.deepEqual(laterChunks, []);
+
+      yield* fake.emit({ type: "agent_end", messages: [] });
+      yield* fake.emit({ type: "agent_settled" });
+      yield* takeEvent((event) => event.type === "turn.terminal");
+
+      yield* startTurn(runtime, providerThread, "default", [], "Turn 2", undefined, 2);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({
+        type: "tool_execution_update",
+        toolName: "task",
+        toolCallId: "task-call",
+        partialResult: { content: [{ type: "text", text: "Cross-turn detached progress" }] },
+      });
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "turn2-call",
+        toolName: "task",
+      });
+      const turn2TaskEvents: string[] = [];
+      yield* takeEvent((event) => {
+        if (event.type === "turn_item.updated") {
+          const id = event.turnItem.nativeItemRef?.nativeId;
+          if (id === "task-call") turn2TaskEvents.push(event.turnItem.status);
+          if (id === "turn2-call") return true;
+        }
+        return false;
+      });
+      assert.deepEqual(turn2TaskEvents, []);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect(
     "keeps native and MCP images available to the shared asset reader with typed results",
     () =>

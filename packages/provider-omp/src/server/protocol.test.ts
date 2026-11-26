@@ -123,6 +123,75 @@ describe("omp outbound frames", () => {
     },
   );
 
+  it.each([{ type: "agent_start" }, agentEnd({ yielded: true }), { type: "session_settled" }])(
+    "drops late tool progress across the $type boundary",
+    (boundary) => {
+      const translator = makeOmpTranslator();
+      const call = { toolName: "task", toolCallId: "call-task" };
+      const start = { ...call, type: "tool_execution_start" };
+      const end = { ...call, type: "tool_execution_end", result: { details: { results: [] } } };
+      const update = { ...call, type: "tool_execution_update" };
+      const unrelated = { ...update, toolCallId: "call-other" };
+      expect(
+        outbound(
+          translator,
+          start,
+          update,
+          end,
+          update,
+          unrelated,
+          agentEnd({ yielded: false }),
+          update,
+        ),
+      ).toEqual([start, update, end, unrelated, agentEnd({ yielded: false })]);
+      outbound(translator, boundary);
+      expect(outbound(translator, update, unrelated)).toEqual([unrelated]);
+    },
+  );
+
+  it("translates async result messages and wait results without swallowing the source frames", () => {
+    const translator = makeOmpTranslator();
+    const lifecycle = (id: string) => ({
+      type: "subagent_lifecycle",
+      payload: { id, parentToolCallId: "task-1", agent: "scout", status: "completed" },
+    });
+    outbound(translator, lifecycle("first"), lifecycle("second"));
+    const wait = {
+      type: "tool_execution_end",
+      toolName: "wait",
+      toolCallId: "wait-1",
+      result: { details: { jobs: [{ id: "first", type: "task", resultText: "Wait report" }] } },
+    };
+    const message = {
+      type: "message_end",
+      message: {
+        role: "custom",
+        customType: "async-result",
+        content: '<task-result id="second"><output>Async report</output></task-result>',
+        details: { jobs: [{ jobId: "second", type: "task", status: "completed" }] },
+      },
+    };
+    const notAsync = { ...message, message: { ...message.message, customType: "something-else" } };
+    expect(outbound(translator, notAsync)).toEqual([notAsync]);
+    expect(outbound(translator, wait, message, message)).toEqual([
+      wait,
+      expect.objectContaining({
+        type: "t3.subagent_update",
+        taskKey: "first",
+        toolCallId: "task-1",
+        task: expect.objectContaining({ result: "Wait report" }),
+      }),
+      message,
+      expect.objectContaining({
+        type: "t3.subagent_update",
+        taskKey: "second",
+        toolCallId: "task-1",
+        task: expect.objectContaining({ result: "Async report" }),
+      }),
+      message,
+    ]);
+  });
+
   it("settles when the agent yields, not when the whole session is done", () => {
     const translator = makeOmpTranslator();
     expect(outbound(translator, { type: "agent_start" }, agentEnd({ yielded: true }))).toEqual([

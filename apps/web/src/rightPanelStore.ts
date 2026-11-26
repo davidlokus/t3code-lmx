@@ -3,7 +3,7 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, NodeId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { msg } from "gt-react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
@@ -31,6 +31,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-requests",
   "issue",
   "thread",
+  "subagent",
   "linked-thread",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
@@ -108,10 +109,54 @@ export type RightPanelSurface =
    * the thread's own lineage, so the surface only names it.
    */
   | ThreadSurface
+  | SubagentSurface
   /** A linked environment's thread, read through `viaEnvironmentId`; it has no thread here. */
   | LinkedThreadSurface;
 
 export type ThreadSurface = { id: `thread:${string}`; kind: "thread"; threadId: ThreadId };
+
+export type SubagentSurface = {
+  id: `subagent:${string}`;
+  kind: "subagent";
+  subagentId: NodeId;
+  title: string;
+  /** A hosted side thread owns the detail while its parent owns the panel. */
+  ownerThreadId?: ThreadId;
+};
+
+/** Persisted subagent surfaces must agree with the identity used to open and close the tab. */
+export function decodeSubagentSurface(surface: unknown): SubagentSurface | null {
+  if (!surface || typeof surface !== "object") return null;
+  const { id, kind, subagentId, title, ownerThreadId } = surface as Record<string, unknown>;
+  if (
+    kind !== "subagent" ||
+    typeof subagentId !== "string" ||
+    subagentId.length === 0 ||
+    subagentId !== subagentId.trim() ||
+    id !== `subagent:${subagentId}` ||
+    typeof title !== "string" ||
+    title.trim().length === 0 ||
+    (ownerThreadId !== undefined &&
+      (typeof ownerThreadId !== "string" ||
+        ownerThreadId.length === 0 ||
+        ownerThreadId !== ownerThreadId.trim()))
+  ) {
+    return null;
+  }
+  return {
+    id: `subagent:${subagentId}`,
+    kind,
+    subagentId: NodeId.make(subagentId),
+    title: title.trim(),
+    ...(ownerThreadId === undefined ? {} : { ownerThreadId: ThreadId.make(ownerThreadId) }),
+  };
+}
+
+export function subagentOwnerRef(panelRef: ScopedThreadRef, surface: SubagentSurface) {
+  return surface.ownerThreadId === undefined
+    ? panelRef
+    : scopeThreadRef(panelRef.environmentId, surface.ownerThreadId);
+}
 
 const threadSurface = (threadId: ThreadId): ThreadSurface => ({
   id: `thread:${threadId}`,
@@ -187,11 +232,18 @@ interface RightPanelStoreState {
     ref: ScopedThreadRef,
     kind: Exclude<
       RightPanelKind,
-      "file" | "terminal" | "pull-request" | "issue" | "thread" | "linked-thread"
+      "file" | "terminal" | "pull-request" | "issue" | "thread" | "linked-thread" | "subagent"
     >,
   ) => void;
   /** Opens a side chat or subagent of `ref`'s environment as a tab; `ref` itself has no tab. */
   openThread: (ref: ScopedThreadRef, threadId: ThreadId) => void;
+  /** Undo passes the saved owner when the owner and panel thread differ. */
+  openSubagent: (
+    ref: ScopedThreadRef,
+    subagentId: NodeId,
+    title: string,
+    ownerThreadId?: ThreadId,
+  ) => boolean;
   openLinkedThread: (ref: ScopedThreadRef, target: LinkedThreadTarget) => void;
   /** Records the title the linked environment gave, so the tab and a reopened one show it. */
   setLinkedThreadTitle: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -261,7 +313,7 @@ interface RightPanelStoreState {
     ref: ScopedThreadRef,
     kind: Exclude<
       RightPanelKind,
-      "file" | "terminal" | "pull-request" | "issue" | "thread" | "linked-thread"
+      "file" | "terminal" | "pull-request" | "issue" | "thread" | "linked-thread" | "subagent"
     >,
   ) => void;
   setThreadPanelOpen: (
@@ -287,7 +339,14 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 const singletonSurface = (
   kind: Exclude<
     RightPanelKind,
-    "file" | "preview" | "terminal" | "pull-request" | "issue" | "thread" | "linked-thread"
+    | "file"
+    | "preview"
+    | "terminal"
+    | "pull-request"
+    | "issue"
+    | "thread"
+    | "linked-thread"
+    | "subagent"
   >,
 ): RightPanelSurface => {
   switch (kind) {
@@ -610,6 +669,13 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
                     if (!surface || typeof surface !== "object") return [];
                     const kind = (surface as { kind?: string }).kind;
+                    if (
+                      surface.kind === "subagent" ||
+                      (typeof surface.id === "string" && surface.id.startsWith("subagent:"))
+                    ) {
+                      const decoded = decodeSubagentSurface(surface);
+                      return decoded === null ? [] : [decoded];
+                    }
                     if (kind === "thread" || kind === "side-chat") {
                       const decoded = decodeThreadSurface(surface);
                       return decoded === null ? [] : [decoded];
@@ -725,7 +791,9 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                   ? (surfaces.find((surface) => surface.kind === "pull-request")?.id ?? null)
                   : null;
               const isOpen =
-                surfaces.length > 0 &&
+                (surfaces.length > 0 ||
+                  (Array.isArray(validThreadState?.surfaces) &&
+                    validThreadState.surfaces.length === 0)) &&
                 (typeof validThreadState?.isOpen === "boolean"
                   ? validThreadState.isOpen
                   : persistedActiveSurfaceId !== null);
@@ -880,6 +948,38 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                 upsertSurface(current, threadSurface(threadId)),
               ),
         ),
+      openSubagent: (ref, subagentId, title, ownerThreadId = ref.threadId) => {
+        const hostRef = rightPanelHostRef(ref);
+        const surface = decodeSubagentSurface({
+          id: typeof subagentId === "string" ? `subagent:${subagentId}` : null,
+          kind: "subagent",
+          subagentId,
+          title,
+          ...(ownerThreadId === hostRef.threadId ? {} : { ownerThreadId }),
+        });
+        if (surface === null) return false;
+        set((state) =>
+          userActionOnThread(
+            state,
+            scopedThreadKey(hostRef),
+            (current) => {
+              const index = current.surfaces.findIndex((entry) => entry.id === surface.id);
+              const previous = current.surfaces[index];
+              const surfaces =
+                previous === undefined
+                  ? [...current.surfaces, surface]
+                  : previous.kind === "subagent" &&
+                      previous.title === surface.title &&
+                      previous.ownerThreadId === surface.ownerThreadId
+                    ? current.surfaces
+                    : current.surfaces.with(index, surface);
+              return { ...current, surfaces, isOpen: true, activeSurfaceId: surface.id };
+            },
+            false,
+          ),
+        );
+        return true;
+      },
       openLinkedThread: (ref, target) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
@@ -1405,6 +1505,11 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      // Zustand calls migrate only when the version differs. Validate same-version storage too.
+      merge: (persisted, current) =>
+        persisted === undefined
+          ? current
+          : { ...current, ...migratePersistedRightPanelState(persisted) },
     },
   ),
 );

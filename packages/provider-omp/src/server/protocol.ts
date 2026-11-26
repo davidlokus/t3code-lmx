@@ -115,6 +115,16 @@ export function makeOmpTranslator(): OmpTranslator {
   const askRequests = new Map<string, OmpAskRequest>();
   const formRequests = new Map<string, OmpFormRequest>();
   const subagents = new OmpSubagentTracker();
+  const endedToolCalls = new Set<string>();
+  const MAX_ENDED_TOOL_CALLS = 4_096;
+  const rememberEndedToolCall = (toolCallId: string): void => {
+    if (endedToolCalls.has(toolCallId)) return;
+    if (endedToolCalls.size >= MAX_ENDED_TOOL_CALLS) {
+      const oldest = endedToolCalls.values().next().value;
+      if (oldest !== undefined) endedToolCalls.delete(oldest);
+    }
+    endedToolCalls.add(toolCallId);
+  };
   let notices: Array<PiRpcRecord> = [];
   const frames = (...translated: ReadonlyArray<PiRpcRecord>): OmpTranslation => ({
     frames: translated,
@@ -223,10 +233,14 @@ export function makeOmpTranslator(): OmpTranslator {
       }
       case "message_end": {
         const message = frame["message"];
+        const role = recordString(message, "role");
+        if (role === "custom" && recordString(message, "customType") === "async-result") {
+          return frames(frame, ...subagents.fromAsyncResultMessage(frame));
+        }
         const stopReason = recordString(message, "stopReason");
         const usage = recordField(message, "usage");
         // Some backends only populate the final snapshot's counters.
-        return recordString(message, "role") === "assistant" &&
+        return role === "assistant" &&
           stopReason !== "error" &&
           stopReason !== "aborted" &&
           (recordNumber(usage, "totalTokens") ?? 0) > 0
@@ -248,8 +262,17 @@ export function makeOmpTranslator(): OmpTranslator {
         const update = subagents.fromSubscription(frame);
         return update === undefined ? frames() : frames(update);
       }
+      case "tool_execution_update": {
+        const toolCallId = recordString(frame, "toolCallId");
+        return toolCallId !== undefined && endedToolCalls.has(toolCallId)
+          ? frames()
+          : frames(frame);
+      }
       case "tool_execution_end": {
+        const toolCallId = recordString(frame, "toolCallId");
+        if (toolCallId !== undefined) rememberEndedToolCall(toolCallId);
         if (frame["toolName"] === "task") return frames(frame, ...subagents.fromTaskResult(frame));
+        if (frame["toolName"] === "wait") return frames(frame, ...subagents.fromWaitResult(frame));
         const todo = projectOmpTodoWrite(frame);
         return todo === undefined ? frames(frame) : frames(frame, todo);
       }

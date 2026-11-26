@@ -1,4 +1,5 @@
 import { secondTick } from "@t3tools/client-runtime/clock";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import type { EnvironmentThreadStructure } from "@t3tools/client-runtime/state/models";
 import {
@@ -35,7 +36,7 @@ import { getClientSettings, updateClientSettings } from "../../hooks/useSettings
 import { useResourceTelemetry } from "../../lib/resourceTelemetryState";
 import { openSideThread } from "../../lib/sideChatPane";
 import { useThreadDiscoveredPorts } from "../../portDiscoveryState";
-import { useRightPanelStore } from "../../rightPanelStore";
+import { selectActiveRightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
 import {
   useProject,
   useProjects,
@@ -519,15 +520,29 @@ function resetTestState() {
 
 describe("T3 Lab right-side Thread HUD", () => {
   it("renders B1–B7 cards, persists HUD display options, invokes /compact and subagent open, and gates System telemetry", async () => {
+    const beforePanel = useRightPanelStore.getState();
     using stack = new DisposableStack();
     stack.defer(() => {
       useHudOptionsStore.getState().resetHudOptions();
       window.localStorage.removeItem(HUD_OPTIONS_STORAGE_KEY);
-      useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
+      useRightPanelStore.setState(beforePanel);
     });
     resetTestState();
+    useRightPanelStore.setState({ byThreadKey: {} });
     vi.mocked(useResourceTelemetry).mockClear();
-    vi.mocked(useQuietThreadProjection).mockReturnValue(makeRichStructure());
+    const structure = makeRichStructure();
+    const localAgent = structure.projection.subagents[0]!;
+    const nativeAgent = {
+      ...localAgent,
+      id: NodeId.make("native-audit"),
+      origin: "provider_native" as const,
+      childThreadId: null,
+      title: "Subagent: Native Audit (scout)",
+    };
+    vi.mocked(useQuietThreadProjection).mockReturnValue({
+      ...structure,
+      projection: { ...structure.projection, subagents: [localAgent, nativeAgent] },
+    });
     vi.mocked(useThreadDiscoveredPorts).mockReturnValue([makeDiscoveredPort()]);
 
     const onCompact = vi.fn();
@@ -596,13 +611,27 @@ describe("T3 Lab right-side Thread HUD", () => {
 
     // B6 Activity: subagent model + accessible status + click navigation + partial-failure tool chip
     await expect.element(screen.getByTestId("hud-activity-card")).toBeVisible();
-    const subagentRow = screen.getByTestId("hud-subagent-row");
+    const subagentRow = screen.getByRole("button", { name: /Metrics Auditor/ });
     await expect.element(subagentRow.getByText("Metrics Auditor")).toBeVisible();
     await expect
       .element(subagentRow.getByTestId("hud-subagent-model"))
       .toHaveTextContent("claude-opus-4-6");
     await expect.element(subagentRow.getByText("Running,")).toBeInTheDocument();
     await userEvent.click(subagentRow);
+    const nativeRow = screen.getByRole("button", { name: /Native Audit \(scout\)/ });
+    nativeRow.element().focus();
+    await userEvent.keyboard("{Enter}");
+    expect(
+      selectActiveRightPanelSurface(
+        useRightPanelStore.getState().byThreadKey,
+        scopeThreadRef(ENV_ID, THREAD_ID),
+      ),
+    ).toMatchObject({
+      id: `subagent:${nativeAgent.id}`,
+      kind: "subagent",
+      subagentId: nativeAgent.id,
+      title: "Native Audit (scout)",
+    });
     expect(openSideThread).toHaveBeenCalledTimes(1);
     await expect
       .element(screen.getByTestId("hud-tool-chip"))
