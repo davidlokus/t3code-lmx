@@ -1,8 +1,15 @@
 import * as Schema from "effect/Schema";
-import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  ForwardCompatibleArray,
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
-export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi"]);
+// fork: omp terminal sessions can be imported alongside the upstream providers.
+export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi", "omp"]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 
 export const AgentSessionImportSource = Schema.Struct({
@@ -33,7 +40,7 @@ export const AgentSessionProjectCandidate = Schema.Struct({
   path: TrimmedNonEmptyString,
   title: TrimmedNonEmptyString,
   projectId: Schema.optional(ProjectId),
-  sources: Schema.Array(AgentSessionSource),
+  sources: ForwardCompatibleArray(AgentSessionSource),
   threadCount: NonNegativeInt,
   lastActiveAt: Schema.NullOr(IsoDateTime),
   alreadyImported: Schema.Boolean,

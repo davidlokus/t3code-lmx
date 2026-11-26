@@ -3,6 +3,8 @@ import type {
   ProviderAdapterDriverCreateInput,
 } from "@t3tools/provider-core/server/adapterDriver";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { ProviderAdapterThreadInUseError } from "@t3tools/provider-core/server/ProviderAdapter";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -12,6 +14,7 @@ import {
   type PiDiscoveredCommands,
 } from "@t3tools/provider-pi/server/commands";
 import type { PiDialectConnectOptions } from "@t3tools/provider-pi/server/dialect";
+import { PiRpcError } from "@t3tools/provider-pi/server/rpc";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -22,8 +25,10 @@ import { OMP_DIALECT, OMP_PROVIDER, resolveOmpSettingsLaunchArgs } from "./diale
 import { makeOmpRpcConnection } from "./connection.ts";
 import type { OmpInstancePaths } from "./paths.ts";
 import { projectOmpCommands } from "./protocol.ts";
+import { acquireOmpSessionLease, OmpSessionLeaseConflictError } from "./sessionLease.ts";
 
 const DEFAULT_OMP_SETTINGS = Schema.decodeSync(OmpSettings)({});
+const isLeaseConflict = Schema.is(OmpSessionLeaseConflictError);
 
 // The shared replay harness passes the legacy Pi-shaped config to either adapter.
 type OmpAdapterConfig = PiSettings & Partial<OmpSettings>;
@@ -116,6 +121,7 @@ export const OmpAdapterV2Driver = {
     ) {
       const { onCommands } = input;
       const { env, launchArgs } = yield* ompInstanceEnvironment(input.config, input.environment);
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
       return yield* makePiAdapterV2({
         instanceId: input.instanceId,
@@ -125,41 +131,64 @@ export const OmpAdapterV2Driver = {
         dialect: {
           ...OMP_DIALECT,
           resolveLaunchArgs: () => launchArgs,
-          ...(onCommands === undefined
-            ? {}
-            : {
-                connect: Effect.fn("OmpAdapter.connect")(function* (
-                  options: PiDialectConnectOptions,
-                ) {
-                  const cwd = options.cwd;
-                  // Fork inspection cannot report the catalog of the live session.
-                  if (cwd === undefined || options.args.at(-2) === "--fork") {
-                    return yield* OMP_DIALECT.connect(options);
-                  }
-                  let pushedCatalog = false;
-                  const connection = yield* makeOmpRpcConnection({
-                    ...options,
-                    onCommands: (frame) =>
-                      Effect.suspend(() => {
-                        pushedCatalog = true;
-                        return onCommands(
-                          cwd,
-                          parsePiDiscoveredCommands(projectOmpCommands(frame)),
-                        );
-                      }),
-                  });
-                  yield* connection.request({ type: "get_commands" }).pipe(
-                    Effect.flatMap((data) =>
-                      pushedCatalog
-                        ? Effect.void
-                        : onCommands(cwd, parsePiDiscoveredCommands(data)),
-                    ),
-                    Effect.ignore,
-                    Effect.forkScoped,
-                  );
-                  return connection;
+          connect: Effect.fn("OmpAdapter.connect")(function* (options: PiDialectConnectOptions) {
+            const { args, cwd } = options;
+            const fork = args.at(-2) === "--fork";
+            const resumeIndex = args.indexOf("--resume");
+            const sessionPath = resumeIndex === -1 ? undefined : args[resumeIndex + 1];
+            if (
+              launchArgs.ok &&
+              sessionPath !== undefined &&
+              !fork &&
+              !args.includes("--no-session")
+            ) {
+              yield* acquireOmpSessionLease({
+                agentDir: launchArgs.paths.agentDir,
+                sessionPath,
+                threadId: options.env.T3CODE_THREAD_ID ?? "",
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new PiRpcError({
+                      operation: "acquire omp session lease",
+                      cause: isLeaseConflict(cause)
+                        ? new ProviderAdapterThreadInUseError({
+                            driver: OMP_PROVIDER,
+                            providerThreadId: idAllocator.derive.providerThread({
+                              driver: OMP_PROVIDER,
+                              providerInstanceId: input.instanceId,
+                              nativeThreadId: sessionPath,
+                            }),
+                            detail: cause.message,
+                            cause,
+                          })
+                        : cause,
+                    }),
+                ),
+              );
+            }
+            // Fork inspection cannot report the catalog of the live session.
+            if (onCommands === undefined || cwd === undefined || fork) {
+              return yield* OMP_DIALECT.connect(options);
+            }
+            let pushedCatalog = false;
+            const connection = yield* makeOmpRpcConnection({
+              ...options,
+              onCommands: (frame) =>
+                Effect.suspend(() => {
+                  pushedCatalog = true;
+                  return onCommands(cwd, parsePiDiscoveredCommands(projectOmpCommands(frame)));
                 }),
-              }),
+            });
+            yield* connection.request({ type: "get_commands" }).pipe(
+              Effect.flatMap((data) =>
+                pushedCatalog ? Effect.void : onCommands(cwd, parsePiDiscoveredCommands(data)),
+              ),
+              Effect.ignore,
+              Effect.forkScoped,
+            );
+            return connection;
+          }),
         },
       });
     },
