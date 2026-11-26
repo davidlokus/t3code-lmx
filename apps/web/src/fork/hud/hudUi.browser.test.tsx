@@ -13,9 +13,11 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  UsageLimitSourceId,
   type DiscoveredLocalServer,
   type ResourceTelemetrySnapshot,
   type ServerProvider,
+  type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -1044,5 +1046,123 @@ describe("T3 Lab right-side Thread HUD", () => {
       .element(screen.getByTestId("hud-kpi-model").getByText("High · Full"))
       .toBeVisible();
     await expect.element(screen.getByTestId("hud-tool-chip").getByText("Read")).toBeVisible();
+  });
+
+  it("maps omp HUD Quota exclusively to the active model sub-backend and hides when unmatched", async () => {
+    using stack = new DisposableStack();
+    stack.defer(() => {
+      useHudOptionsStore.getState().resetHudOptions();
+      window.localStorage.removeItem(HUD_OPTIONS_STORAGE_KEY);
+      useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
+    });
+    resetTestState();
+
+    const ompId = ProviderInstanceId.make("omp");
+    const ompProvider: ServerProvider = {
+      ...makeProviderWithLimits(),
+      instanceId: ompId,
+      driver: ProviderDriverKind.make("omp"),
+      displayName: "omp",
+      usageLimits: undefined,
+    };
+    const ompSource: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("omp-instance:omp"),
+      kind: "omp",
+      label: "omp",
+      checkedAt: "2026-11-23T11:59:00.000Z",
+      accounts: [
+        {
+          id: "codex:1",
+          driver: ProviderDriverKind.make("codex"),
+          email: "dev@example.com",
+          usageLimits: {
+            checkedAt: "2026-11-23T11:59:00.000Z",
+            windows: [
+              {
+                id: "primary",
+                kind: "session",
+                label: "Codex 5h",
+                usedPercent: 30,
+                windowDurationMins: 300,
+                resetsAt: new Date(BASE_NOW_MS + 90 * 60_000).toISOString(),
+              },
+            ],
+          },
+        },
+        {
+          id: "claudeAgent:1",
+          driver: ProviderDriverKind.make("claudeAgent"),
+          email: "dev@example.com",
+          usageLimits: {
+            checkedAt: "2026-11-23T11:59:00.000Z",
+            windows: [
+              {
+                id: "five_hour",
+                kind: "session",
+                label: "Claude 5h",
+                usedPercent: 85,
+                windowDurationMins: 300,
+                resetsAt: new Date(BASE_NOW_MS + 45 * 60_000).toISOString(),
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const base = makeThreadProjectionFixture();
+    vi.mocked(useQuietThreadProjection).mockReturnValue({
+      environmentId: ENV_ID,
+      projection: {
+        ...base,
+        thread: {
+          ...base.thread,
+          id: THREAD_ID,
+          projectId: PROJECT_ID,
+          providerInstanceId: ompId,
+          activeProviderThreadId: PROVIDER_THREAD_ID,
+          modelSelection: { instanceId: ompId, model: "openai-codex/gpt-6.2-sol" },
+        },
+      },
+    });
+
+    await using matchedScreen = await render(
+      <div className="w-[280px]">
+        <ThreadHudSections
+          environmentId={ENV_ID}
+          threadId={THREAD_ID}
+          usage={{
+            providerInstanceId: ompId,
+            model: "openai-codex/gpt-6.2-sol",
+            providers: [ompProvider],
+            sources: [ompSource],
+            contextWindow: null,
+          }}
+        />
+      </div>,
+    );
+
+    const quotaCard = matchedScreen.getByTestId("hud-quota-card");
+    await expect.element(quotaCard).toBeVisible();
+    await expect.element(quotaCard.getByText("Codex 5h")).toBeVisible();
+    await expect.element(quotaCard.getByText("70%")).toBeVisible();
+    await expect.element(quotaCard.getByText("Claude 5h")).not.toBeInTheDocument();
+
+    await using unmatchedScreen = await render(
+      <div className="w-[280px]">
+        <ThreadHudSections
+          environmentId={ENV_ID}
+          threadId={THREAD_ID}
+          usage={{
+            providerInstanceId: ompId,
+            model: "devin/swe-2-1",
+            providers: [ompProvider],
+            sources: [ompSource],
+            contextWindow: null,
+          }}
+        />
+      </div>,
+    );
+    await expect.element(unmatchedScreen.getByTestId("hud-quota-card")).not.toBeInTheDocument();
   });
 });

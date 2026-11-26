@@ -97,6 +97,8 @@ export interface OmpTranslator {
 
 export function makeOmpTranslator(): OmpTranslator {
   let agentRunning = false;
+  let noticeSeq = 0;
+  const emittedErrorNotices = new Set<string>();
   // Prompts sent while the agent ran are queued behind it; omp's acknowledgement does not say so.
   const sentWhileRunning = new Map<string, boolean>();
   const approvals = new Map<string, ApprovalChoices>();
@@ -124,16 +126,50 @@ export function makeOmpTranslator(): OmpTranslator {
   const fromOmp = (frame: PiRpcRecord): OmpTranslation => {
     switch (frame["type"]) {
       case "ready":
-      case "prompt_result":
+        return frames();
+      case "notice": {
+        const message = recordString(frame, "message")?.trim();
+        if (!message) return frames();
+        const level = frame["level"];
+        const notifyType = level === "error" || level === "warning" ? level : "info";
+        if (notifyType === "error") emittedErrorNotices.add(message);
+        return frames({
+          type: "extension_ui_request",
+          id: `omp:notice:${++noticeSeq}`,
+          method: "notify",
+          notifyType,
+          message,
+        });
+      }
+      case "prompt_result": {
+        if (frame["status"] !== "error") return frames();
+        const error = recordField(frame, "error");
+        if (recordString(error, "code") !== "cost_cap") return frames();
+        const message =
+          recordString(error, "message")?.trim() ||
+          "Session reached its configured cost cap (--max-cost).";
+        if (emittedErrorNotices.has(message)) return frames();
+        emittedErrorNotices.add(message);
+        return frames({
+          type: "extension_ui_request",
+          id: `omp:cost-cap:${++noticeSeq}`,
+          method: "notify",
+          notifyType: "error",
+          message,
+        });
+      }
       // The yield settles a turn (see agent_end); omp's quiescence frame would settle it twice.
       case "session_settled":
+        emittedErrorNotices.clear();
         return frames();
       case "agent_start":
         agentRunning = true;
+        emittedErrorNotices.clear();
         return frames(frame);
       case "agent_end": {
         if (!settled(frame)) return frames(frame);
         agentRunning = false;
+        emittedErrorNotices.clear();
         return frames(frame, {
           type: "agent_settled",
           aborted: lastAssistantStopReason(frame) === "aborted",

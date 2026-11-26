@@ -289,6 +289,23 @@ const PACKAGE_FIELD_TEXT: ReadonlyMap<string, string> = new Map([
   ["Scale", msg("Scale", { $context: "OpenAI service tier option" })],
   ["Priority", msg("Priority", { $context: "OpenAI service tier option" })],
   ["Ultrafast", msg("Ultrafast", { $context: "OpenAI service tier option" })],
+  // fork: omp Wave 2a cost and run-time guardrail labels, descriptions, and placeholder
+  ["Cost warning (USD)", msg("Cost warning (USD)")],
+  ["Max cost (USD)", msg("Max cost (USD)")],
+  ["Max run time", msg("Max run time")],
+  [
+    "Warn when session spend reaches this USD threshold (--warn-cost).",
+    msg("Warn when session spend reaches this USD threshold (--warn-cost)."),
+  ],
+  [
+    "Stop sending new model requests once session spend reaches this USD cap (--max-cost).",
+    msg("Stop sending new model requests once session spend reaches this USD cap (--max-cost)."),
+  ],
+  [
+    "Stop a run after this duration in seconds or with s, m, or h units (--max-time).",
+    msg("Stop a run after this duration in seconds or with s, m, or h units (--max-time)."),
+  ],
+  ["e.g. 30m", msg("e.g. 30m")],
 ]);
 
 function packageFieldText(text: string, resolve: MessageResolver): string {

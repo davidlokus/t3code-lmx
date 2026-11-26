@@ -108,6 +108,47 @@ const ARGUMENTS_WITH_VALUES = new Set([
   "--max-cost",
 ]);
 
+const SESSION_ONLY_ARGS: Readonly<Record<string, true>> = {
+  "--add-dir": true,
+  "--advisor": true,
+  "--warn-cost": true,
+  "--max-cost": true,
+  "--max-time": true,
+};
+const DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
+const DURATION_WITH_UNIT = /^(\d+(?:\.\d+)?)([smh])$/;
+
+function isPositiveDecimal(value: string): boolean {
+  if (!DECIMAL.test(value)) return false;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0;
+}
+
+function isValidOmpDuration(raw: string): boolean {
+  const value = raw.trim();
+  const duration = DURATION_WITH_UNIT.exec(value);
+  if (!duration) return isPositiveDecimal(value);
+  const [, amount, unit] = duration;
+  const seconds = Number(amount) * (unit === "h" ? 3_600 : unit === "m" ? 60 : 1);
+  return Number.isFinite(seconds) && seconds > 0;
+}
+
+function guardrailValueError(flag: string, value: string): string | undefined {
+  switch (flag) {
+    case "--warn-cost":
+    case "--max-cost":
+      return isPositiveDecimal(value.trim())
+        ? undefined
+        : `${flag} requires a positive USD amount.`;
+    case "--max-time":
+      return isValidOmpDuration(value)
+        ? undefined
+        : `${flag} requires positive seconds or a duration such as 30m.`;
+    default:
+      return undefined;
+  }
+}
+
 const RESERVED_SHORT_FLAGS = new Set(["c", "r", "p", "h", "v"]);
 
 const INVALID_PROFILE = {
@@ -126,7 +167,7 @@ function reservedShortFlag(arg: string): string | undefined {
   return undefined;
 }
 
-function resolveOmpLaunchArgs(launchArgs: string): PiLaunchArgsResolution {
+export function resolveOmpLaunchArgs(launchArgs: string): PiLaunchArgsResolution {
   const tokens = tokenizeCliArgs(launchArgs);
   const args: Array<string> = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -156,6 +197,8 @@ function resolveOmpLaunchArgs(launchArgs: string): PiLaunchArgsResolution {
         };
       }
       if (option === "--profile" && !isValidOmpProfileName(value)) return INVALID_PROFILE;
+      const invalid = guardrailValueError(option, value);
+      if (invalid !== undefined) return { ok: false, message: invalid };
       // The bundled plan extension can treat --plan as a boolean; equals keeps its value out of argv.
       if (option === "--plan") args.push(`${option}=${value}`);
       else args.push(option, value);
@@ -176,6 +219,9 @@ const SETTINGS_FLAGS = [
   ["slowModel", "--slow"],
   ["planModel", "--plan"],
   ["advisor", "--advisor"],
+  ["warnCostUsd", "--warn-cost"],
+  ["maxCostUsd", "--max-cost"],
+  ["maxTime", "--max-time"],
 ] as const;
 
 type OmpLaunchArgsResolution =
@@ -199,10 +245,16 @@ export const resolveOmpSettingsLaunchArgs = Effect.fn("OmpDialect.resolveSetting
           message: `omp setting '${setting}' conflicts with '${flag}' in launch arguments. Keep only one.`,
         };
       }
-      if (value === true) args.push(flag);
-      else if (value.startsWith("-")) {
+      if (value === true) {
+        args.push(flag);
+        continue;
+      }
+      const invalid = guardrailValueError(flag, value);
+      if (invalid !== undefined) return { ok: false, message: invalid };
+      if (value.startsWith("-")) {
         return { ok: false, message: `omp setting '${setting}' requires a non-flag value.` };
-      } else if (flag === "--plan") args.push(`${flag}=${value}`);
+      }
+      if (flag === "--plan") args.push(`${flag}=${value}`);
       else args.push(flag, value);
     }
     const paths = yield* resolveOmpInstancePaths(settings, args, environment);
@@ -238,18 +290,20 @@ function withoutDisabledLaunchArgs(
   const filtered: Array<string> = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
-    const nextIsValue = ARGUMENTS_WITH_VALUES.has(arg);
+    const equals = arg.indexOf("=");
+    const option = equals < 0 ? arg : arg.slice(0, equals);
+    const nextIsValue = equals < 0 && ARGUMENTS_WITH_VALUES.has(option);
     const dropExtension =
       disableExtensions &&
-      (arg === "--extension" ||
-        arg === "-e" ||
-        arg === "--trusted-extension" ||
-        arg === "--hook" ||
-        arg === "--plugin-dir");
+      (option === "--extension" ||
+        option === "-e" ||
+        option === "--trusted-extension" ||
+        option === "--hook" ||
+        option === "--plugin-dir");
     if (
       dropExtension ||
-      (disableTools && arg === "--tools") ||
-      (shortLived && arg === "--add-dir")
+      (disableTools && option === "--tools") ||
+      (shortLived && Object.hasOwn(SESSION_ONLY_ARGS, option))
     ) {
       if (nextIsValue) index += 1;
       continue;

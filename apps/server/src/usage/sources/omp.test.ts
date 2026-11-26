@@ -58,11 +58,13 @@ function wrapped(value: unknown, expiresAt = NOW + 60_000) {
   return JSON.stringify({ value, expiresAt });
 }
 
-it("resolves explicit paths and uses only the OMP agent directory for the default", () => {
+it("resolves explicit paths and named profiles without inheriting Pi paths", () => {
   const home = NodePath.resolve("fixture-home");
   const piEnvironment = {
     PI_CODING_AGENT_DIR: "/wrong/agent",
     PI_CODING_AGENT_SESSION_DIR: "/wrong/sessions",
+    PI_PROFILE: "wrong",
+    PI_CONFIG_DIR: "/wrong/config",
   };
   expect(resolveOmpDbPath("omp://default", piEnvironment, home)).toBe(
     NodePath.join(home, ".omp", "agent", "agent.db"),
@@ -71,12 +73,31 @@ it("resolves explicit paths and uses only the OMP agent directory for the defaul
   expect(resolveOmpDbPath("omp://default", env, home)).toBe(
     NodePath.join(home, "custom-omp", "agent.db"),
   );
+  const profilePath = NodePath.join(home, ".omp", "profiles", "team.dev", "agent", "agent.db");
+  expect(resolveOmpDbPath("omp://default", { ...env, OMP_PROFILE: " team.dev " }, home)).toBe(
+    profilePath,
+  );
+  expect(resolveOmpDbPath("omp://default", { ...env, OMP_PROFILE: "default" }, home)).toBe(
+    NodePath.join(home, "custom-omp", "agent.db"),
+  );
+  expect(resolveOmpDbPath("omp://profile/team.dev", { ...env, OMP_PROFILE: "other" }, home)).toBe(
+    profilePath,
+  );
+  expect(resolveOmpDbPath("omp://profile/default", { ...env, OMP_PROFILE: "other" }, home)).toBe(
+    NodePath.join(home, ".omp", "agent", "agent.db"),
+  );
   expect(resolveOmpDbPath("~/explicit/agent.db", env, home)).toBe(
     NodePath.join(home, "explicit", "agent.db"),
   );
   expect(resolveOmpDbPath("relative/agent.db", env, home)).toBe(
     NodePath.resolve("relative/agent.db"),
   );
+});
+
+it.each(["../other", "A", "con.txt", "team."])("rejects invalid OMP profile %s", (profile) => {
+  const env = { OMP_CODING_AGENT_DIR: "/custom/agent", OMP_PROFILE: profile };
+  expect(resolveOmpDbPath("omp://default", env)).toBeNull();
+  expect(resolveOmpDbPath(`omp://profile/${profile}`, env)).toBeNull();
 });
 
 it.effect("maps native providers and preserves distinct identities", () =>
@@ -93,6 +114,7 @@ it.effect("maps native providers and preserves distinct identities", () =>
       ["claude", "claudeAgent"],
     ] as const;
     seed(dbPath, (db) => {
+      db.exec("PRAGMA journal_mode = WAL");
       db.exec(CACHE_TABLE);
       const insert = db.prepare("INSERT INTO cache VALUES (?, ?, ?)");
       for (const [provider] of drivers) {
@@ -119,6 +141,7 @@ it.effect("maps native providers and preserves distinct identities", () =>
     });
 
     const original = NodeFS.readFileSync(dbPath);
+    expect(NodeFS.readdirSync(NodePath.dirname(dbPath))).toEqual(["agent.db"]);
     const reading = yield* readOmpUsage(dbPath);
     expect(reading.error).toBeUndefined();
     // Email-less native-driver rows (e.g. api_key opencode-go) stay in quotaAccounts so they never
@@ -439,5 +462,56 @@ it.effect("returns a clean error for missing or unreadable caches", () =>
       db.exec("CREATE VIEW cache AS SELECT key, value, expires_at FROM auth_credentials");
     });
     expect(yield* readOmpUsage(dbPath)).toEqual(failed);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reads committed WAL frames through a symlink without opening an orphan WAL", () =>
+  Effect.gen(function* () {
+    const dbPath = yield* fixture;
+    using writer = new NodeSqlite.DatabaseSync(dbPath);
+    writer.exec("PRAGMA journal_mode = WAL");
+    writer.exec(CACHE_TABLE);
+    writer
+      .prepare("INSERT INTO cache VALUES (?, ?, ?)")
+      .run(
+        "usage_cache:report:kimi-code:default:oauth|account:work",
+        wrapped(report("kimi-code")),
+        RETAIN_UNTIL,
+      );
+
+    const directory = NodePath.dirname(dbPath);
+    const link = NodePath.join(directory, "alias.db");
+    NodeFS.symlinkSync(dbPath, link);
+    expect(yield* readOmpUsage(link)).toMatchObject({
+      quotaAccounts: [{ label: "kimi-code", windows: [{ usedPercent: 20 }] }],
+    });
+    expect(NodeFS.existsSync(`${link}-wal`)).toBe(false);
+    expect(NodeFS.existsSync(`${link}-shm`)).toBe(false);
+
+    const orphan = NodePath.join(directory, "orphan.db");
+    NodeFS.copyFileSync(dbPath, orphan);
+    NodeFS.copyFileSync(`${dbPath}-wal`, `${orphan}-wal`);
+    expect(yield* readOmpUsage(orphan)).toMatchObject({ accounts: [], error: expect.any(String) });
+    expect(NodeFS.existsSync(`${orphan}-shm`)).toBe(false);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refuses a rollback journal instead of reading stale quota rows", () =>
+  Effect.gen(function* () {
+    const dbPath = yield* fixture;
+    seed(dbPath, (db) => {
+      db.exec(CACHE_TABLE);
+      db.prepare("INSERT INTO cache VALUES (?, ?, ?)").run(
+        "usage_cache:report:kimi-code:default:oauth|account:work",
+        wrapped(report("kimi-code")),
+        RETAIN_UNTIL,
+      );
+    });
+    NodeFS.writeFileSync(`${dbPath}-journal`, "");
+    expect(yield* readOmpUsage(dbPath)).toMatchObject({ accounts: [], error: expect.any(String) });
+    expect(NodeFS.readdirSync(NodePath.dirname(dbPath)).sort()).toEqual([
+      "agent.db",
+      "agent.db-journal",
+    ]);
   }).pipe(Effect.scoped),
 );

@@ -9,17 +9,22 @@ import {
   NodeId,
   PlanId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
   ThreadId,
   TurnItemId,
+  UsageLimitSourceId,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type ResourceTelemetryProcess,
   type ResourceTelemetrySnapshot,
+  type ServerProvider,
+  type ServerProviderUsageLimits,
   type TurnTokenUsage,
+  type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -33,6 +38,7 @@ import {
   deriveHudSystemMetrics,
   derivePromptCacheCountdown,
   formatHudCompactDuration,
+  resolveOmpThreadHudLimits,
 } from "./hudMetrics.logic";
 import {
   isDefaultHudUiOptions,
@@ -1243,4 +1249,294 @@ describe("HUD system metrics", () => {
 it("formats real zero and rolls rounded seconds over to minutes", () => {
   expect(formatHudCompactDuration(0)).toBe("0ms");
   expect(formatHudCompactDuration(59_600)).toBe("1m 0s");
+});
+
+function makeServerProvider(
+  instanceId: string,
+  driver: string,
+  options?: { readonly enabled?: boolean; readonly usageLimits?: ServerProviderUsageLimits },
+): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make(driver),
+    displayName: instanceId,
+    enabled: options?.enabled ?? true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: iso(),
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...(options?.usageLimits ? { usageLimits: options.usageLimits } : {}),
+  };
+}
+
+function makeUsageLimits(
+  windowId: string,
+  label: string,
+  usedPercent: number,
+): ServerProviderUsageLimits {
+  return {
+    checkedAt: iso(),
+    windows: [
+      {
+        id: windowId,
+        kind: "session",
+        label,
+        usedPercent,
+        windowDurationMins: 300,
+        resetsAt: iso(3_600_000),
+      },
+    ],
+  };
+}
+
+describe("resolveOmpThreadHudLimits", () => {
+  const ompPersonal = makeServerProvider("omp-personal", "omp");
+  const ompWork = makeServerProvider("omp-work", "omp");
+
+  it("matches only the active sub-backend from this omp instance snapshot and hides unmatched or default models", () => {
+    const ownSource: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("omp-instance:omp-personal"),
+      kind: "omp",
+      label: "omp (personal)",
+      checkedAt: iso(),
+      accounts: [
+        {
+          id: "codex:1",
+          driver: ProviderDriverKind.make("codex"),
+          email: "dev@example.com",
+          usageLimits: makeUsageLimits("primary", "5h", 35),
+        },
+        {
+          id: "claudeAgent:1",
+          driver: ProviderDriverKind.make("claudeAgent"),
+          email: "dev@example.com",
+          usageLimits: makeUsageLimits("five_hour", "Claude 5h", 80),
+        },
+      ],
+      quotaAccounts: [
+        {
+          id: "zai:abc",
+          label: "zai · dev@example.com",
+          windows: makeUsageLimits("tokens", "Z.ai 5h", 22).windows,
+        },
+      ],
+    };
+
+    const codex = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "openai-codex/gpt-6.2-sol",
+      providers: [ompPersonal],
+      sources: [ownSource],
+      nowMs: NOW,
+    });
+    expect(codex?.kind).toBe("instance");
+    if (codex?.kind === "instance") {
+      expect(codex.limits.windows.map((window) => window.label)).toEqual(["5h"]);
+      expect(codex.limits.windows[0]?.usedPercent).toBe(35);
+    }
+
+    const zai = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "zai/glm-4.7",
+      providers: [ompPersonal],
+      sources: [ownSource],
+      nowMs: NOW,
+    });
+    expect(zai?.kind).toBe("instance");
+    if (zai?.kind === "instance") {
+      expect(zai.limits.windows.map((window) => window.label)).toEqual(["Z.ai 5h"]);
+    }
+
+    expect(
+      resolveOmpThreadHudLimits({
+        provider: ompPersonal,
+        model: "devin/swe-2-1",
+        providers: [ompPersonal],
+        sources: [ownSource],
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+    expect(
+      resolveOmpThreadHudLimits({
+        provider: ompPersonal,
+        model: "default",
+        providers: [ompPersonal],
+        sources: [ownSource],
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+
+    // Served failover sub-backend wins over requested model; unprefixed served falls back to prefixed requested
+    const failover = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "anthropic/claude-opus-4-6",
+      fallbackModel: "openai-codex/gpt-6.2-sol",
+      providers: [ompPersonal],
+      sources: [ownSource],
+      nowMs: NOW,
+    });
+    expect(failover?.kind).toBe("instance");
+    if (failover?.kind === "instance") {
+      expect(failover.limits.windows[0]?.label).toBe("Claude 5h");
+    }
+
+    const unprefixedServed = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "gpt-6.2-sol",
+      fallbackModel: "openai-codex/gpt-6.2-sol",
+      providers: [ompPersonal],
+      sources: [ownSource],
+      nowMs: NOW,
+    });
+    expect(unprefixedServed?.kind).toBe("instance");
+    if (unprefixedServed?.kind === "instance") {
+      expect(unprefixedServed.limits.windows[0]?.label).toBe("5h");
+    }
+  });
+
+  it("never borrows another omp instance snapshot and falls back only to an unambiguous native provider", () => {
+    const personalSource: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("omp-instance:omp-personal"),
+      kind: "omp",
+      label: "omp (personal)",
+      checkedAt: iso(),
+      accounts: [
+        {
+          id: "codex:1",
+          driver: ProviderDriverKind.make("codex"),
+          email: "personal@example.com",
+          usageLimits: makeUsageLimits("primary", "Personal 5h", 15),
+        },
+      ],
+    };
+
+    // omp-work has no snapshot of its own and must NOT borrow omp-personal's snapshot
+    expect(
+      resolveOmpThreadHudLimits({
+        provider: ompWork,
+        model: "openai-codex/gpt-6.2-sol",
+        providers: [ompPersonal, ompWork],
+        sources: [personalSource],
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+
+    // Unambiguous single enabled native provider fallback works when omp snapshot lacks that sub-backend
+    const nativeCodex = makeServerProvider("codex", "codex", {
+      usageLimits: makeUsageLimits("primary", "Native 5h", 42),
+    });
+    const fallback = resolveOmpThreadHudLimits({
+      provider: ompWork,
+      model: "openai-codex/gpt-6.2-sol",
+      providers: [ompPersonal, ompWork, nativeCodex],
+      sources: [personalSource],
+      nowMs: NOW,
+    });
+    expect(fallback?.kind).toBe("instance");
+    if (fallback?.kind === "instance") {
+      expect(fallback.limits.windows[0]?.label).toBe("Native 5h");
+    }
+
+    // Two enabled native codex providers are ambiguous -> return null instead of guessing
+    const secondCodex = makeServerProvider("codex-2", "codex", {
+      usageLimits: makeUsageLimits("primary", "Second 5h", 90),
+    });
+    expect(
+      resolveOmpThreadHudLimits({
+        provider: ompWork,
+        model: "openai-codex/gpt-6.2-sol",
+        providers: [ompPersonal, ompWork, nativeCodex, secondCodex],
+        sources: [personalSource],
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  it("pools multiple matching sub-backend accounts, filters Antigravity windows by model, and accepts a single manual omp source", () => {
+    const manualSource: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("manual-omp"),
+      kind: "omp",
+      label: "OMP Local Cache",
+      checkedAt: iso(),
+      accounts: [
+        {
+          id: "codex:1",
+          driver: ProviderDriverKind.make("codex"),
+          email: "a@example.com",
+          usageLimits: makeUsageLimits("primary", "5h", 20),
+        },
+        {
+          id: "codex:2",
+          driver: ProviderDriverKind.make("codex"),
+          email: "b@example.com",
+          usageLimits: makeUsageLimits("primary", "5h", 60),
+        },
+        {
+          id: "antigravity:1",
+          driver: ProviderDriverKind.make("antigravity"),
+          email: "a@example.com",
+          usageLimits: {
+            checkedAt: iso(),
+            windows: [
+              {
+                id: "gemini-5h",
+                kind: "session",
+                label: "Gemini 5h",
+                usedPercent: 10,
+                windowDurationMins: 300,
+                resetsAt: iso(3_600_000),
+              },
+              {
+                id: "claude-5h",
+                kind: "session",
+                label: "Claude 5h",
+                usedPercent: 70,
+                windowDurationMins: 300,
+                resetsAt: iso(3_600_000),
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const pooled = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "openai-codex/gpt-6.2-sol",
+      providers: [ompPersonal],
+      sources: [manualSource],
+      nowMs: NOW,
+    });
+    expect(pooled?.kind).toBe("pool");
+    if (pooled?.kind === "pool") {
+      expect(pooled.windows[0]?.usedPercent).toBe(40);
+    }
+
+    const antigravity = resolveOmpThreadHudLimits({
+      provider: ompPersonal,
+      model: "google-antigravity/gemini-3-pro",
+      providers: [ompPersonal],
+      sources: [manualSource],
+      nowMs: NOW,
+    });
+    expect(antigravity?.kind).toBe("instance");
+    if (antigravity?.kind === "instance") {
+      expect(antigravity.limits.windows.map((window) => window.id)).toEqual(["gemini-5h"]);
+    }
+
+    // Manual source is NOT borrowed when multiple enabled omp instances exist without an exact omp-instance match
+    expect(
+      resolveOmpThreadHudLimits({
+        provider: ompWork,
+        model: "openai-codex/gpt-6.2-sol",
+        providers: [ompPersonal, ompWork],
+        sources: [manualSource],
+        nowMs: NOW,
+      }),
+    ).toBeNull();
+  });
 });

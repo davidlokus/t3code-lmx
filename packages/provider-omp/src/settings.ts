@@ -105,6 +105,32 @@ export const OmpSettings = makeProviderSettingsSchema(
         providerSettingsForm: { control: "switch", clearWhenEmpty: "omit" },
       }),
     ),
+    warnCostUsd: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Cost warning (USD)",
+        description: "Warn when session spend reaches this USD threshold (--warn-cost).",
+        providerSettingsForm: { placeholder: "Optional", clearWhenEmpty: "omit" },
+      }),
+    ),
+    maxCostUsd: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Max cost (USD)",
+        description:
+          "Stop sending new model requests once session spend reaches this USD cap (--max-cost).",
+        providerSettingsForm: { placeholder: "Optional", clearWhenEmpty: "omit" },
+      }),
+    ),
+    maxTime: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Max run time",
+        description:
+          "Stop a run after this duration in seconds or with s, m, or h units (--max-time).",
+        providerSettingsForm: { placeholder: "e.g. 30m", clearWhenEmpty: "omit" },
+      }),
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -128,6 +154,9 @@ export const OmpSettings = makeProviderSettingsSchema(
       "slowModel",
       "planModel",
       "advisor",
+      "warnCostUsd",
+      "maxCostUsd",
+      "maxTime",
       "launchArgs",
     ],
   },

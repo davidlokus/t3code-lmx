@@ -1,9 +1,15 @@
+// @effect-diagnostics nodeBuiltinImport:off - canonical OMP cache paths are checked during atomic publication.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import {
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
   HttpQuotaResponse,
   UsageLimitSourceError,
   type UsageLimitSourceConsumeResetCreditInput,
   type ProviderConsumeResetCreditResult,
+  type ProviderInstanceConfig,
+  resolveProviderInstanceEnabled,
   type SecretReference,
   type ProviderDriverKind,
   type ServerSettings,
@@ -12,6 +18,14 @@ import {
   UsageLimitSourceId,
   type UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  ompBaseEnvironment,
+  resolveOmpInstancePaths,
+  resolveOmpLaunchArgs,
+  type OmpInstancePaths,
+} from "@t3tools/provider-omp/server";
+import { OmpSettings } from "@t3tools/provider-omp/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { antigravityWindowLimitsModel, hubRoutes } from "@t3tools/shared/usageLimits";
@@ -24,6 +38,8 @@ import * as Equal from "effect/Equal";
 import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -302,15 +318,66 @@ function managementKeyReference(config: UsageLimitSourceConfig): SecretReference
 // fork: Virtual snapshot ID for opt-in read-only local claude-swap cache accounts.
 const CLAUDE_SWAP_SOURCE_ID = UsageLimitSourceId.make("claude-swap-local");
 
-function sameUsageSourcesAndReferencedProviders(
-  before: Pick<ServerSettings, "usageLimitSources" | "secretProviders"> & {
-    readonly claudeSwapEnabled: boolean;
-  },
-  after: Pick<ServerSettings, "usageLimitSources" | "secretProviders"> & {
-    readonly claudeSwapEnabled: boolean;
-  },
+const decodeOmpSettings = Schema.decodeUnknownOption(OmpSettings);
+
+interface OmpInstanceSource {
+  readonly id: UsageLimitSourceId;
+  readonly label: string;
+  readonly paths: OmpInstancePaths;
+}
+
+type OmpInstanceEntry = readonly [id: string, instance: ProviderInstanceConfig];
+type UsageSourceSettings = Pick<ServerSettings, "usageLimitSources" | "secretProviders"> & {
+  readonly claudeSwapEnabled: boolean;
+  readonly ompInstances: readonly OmpInstanceEntry[];
+};
+
+function enabledOmpInstances(
+  providerInstances: ServerSettings["providerInstances"],
+): readonly OmpInstanceEntry[] {
+  return Object.entries(providerInstances).filter(
+    ([, instance]) => instance.driver === "omp" && resolveProviderInstanceEnabled(instance),
+  );
+}
+
+function sameOmpInstances(
+  before: readonly OmpInstanceEntry[],
+  after: readonly OmpInstanceEntry[],
 ): boolean {
-  if (before.claudeSwapEnabled !== after.claudeSwapEnabled) return false;
+  return (
+    before.length === after.length &&
+    before.every(([id, instance], index) => {
+      const [nextId, next] = after[index]!;
+      return (
+        id === nextId &&
+        instance.enabled === next.enabled &&
+        instance.displayName === next.displayName &&
+        sameJsonValue(instance.config, next.config) &&
+        sameJsonValue(instance.environment, next.environment)
+      );
+    })
+  );
+}
+
+function resolveOmpCacheFile(dbPath: string) {
+  try {
+    return { target: NodeFS.realpathSync(dbPath), missing: false };
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    return { target: NodePath.resolve(dbPath), missing: code === "ENOENT" || code === "ENOTDIR" };
+  }
+}
+
+function sameUsageSourcesAndReferencedProviders(
+  before: UsageSourceSettings,
+  after: UsageSourceSettings,
+): boolean {
+  if (
+    before.claudeSwapEnabled !== after.claudeSwapEnabled ||
+    !sameOmpInstances(before.ompInstances, after.ompInstances)
+  ) {
+    return false;
+  }
   const beforeEntries = Object.entries(before.usageLimitSources);
   const afterEntries = Object.entries(after.usageLimitSources);
   if (beforeEntries.length !== afterEntries.length) return false;
@@ -331,18 +398,10 @@ function sameUsageSourcesAndReferencedProviders(
   return true;
 }
 
-function sameEffectiveSourceIdentity(
-  left: UsageLimitSourceConfig,
-  right: UsageLimitSourceConfig,
-): boolean {
-  return (
-    left.kind === right.kind &&
-    resolveSourceEndpoint(left).target === resolveSourceEndpoint(right).target &&
-    sameSecretField(left.managementKey, right.managementKey)
-  );
-}
-
-function resolveSourceEndpoint(config: UsageLimitSourceConfig): {
+function resolveSourceEndpoint(
+  config: UsageLimitSourceConfig,
+  resolveOmpPath: (url: string) => string | null,
+): {
   readonly webUrl: URL | null;
   readonly hubOrigin: string | undefined;
   readonly hubEndpoint: string | undefined;
@@ -365,7 +424,7 @@ function resolveSourceEndpoint(config: UsageLimitSourceConfig): {
   const target = (() => {
     switch (config.kind) {
       case "omp":
-        return resolveOmpDbPath(config.url);
+        return resolveOmpPath(config.url) ?? "";
       case "kimi":
         return kimiUsageEndpoint(config.region);
       case "zai":
@@ -395,10 +454,61 @@ export const make = Effect.gen(function* () {
   const digest = yield* Digest.Digest;
   const http = yield* HttpClient.HttpClient;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const settingsService = yield* Settings.ServerSettingsService;
   const secrets = yield* SecretResolver.SecretResolver;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const hostEnvironment = yield* HostProcess.Environment;
+  const resolveOmpPath = (url: string) => resolveOmpDbPath(url, hostEnvironment, homeDirectory);
+  const resolveEndpoint = (config: UsageLimitSourceConfig) =>
+    resolveSourceEndpoint(config, resolveOmpPath);
+
+  const resolveOmpSources = Effect.fn("UsageLimitSources.resolveOmpSources")(function* (
+    settings: ServerSettings,
+  ) {
+    const instances = enabledOmpInstances(settings.providerInstances);
+    const sources: OmpInstanceSource[] = [];
+    if (instances.length === 0) return sources;
+    const base = ompBaseEnvironment(hostEnvironment);
+    for (const [id, instance] of instances) {
+      const config = decodeOmpSettings(instance.config ?? {});
+      if (Option.isNone(config)) continue;
+      const launch = resolveOmpLaunchArgs(config.value.launchArgs);
+      if (!launch.ok) continue;
+      const env = yield* mergeProviderInstanceEnvironment(instance.environment, base);
+      const paths = yield* resolveOmpInstancePaths(config.value, launch.args, env).pipe(
+        Effect.provideService(Path.Path, path),
+      );
+      if (paths === null) continue;
+      sources.push({
+        id: UsageLimitSourceId.make(`omp-instance:${id}`),
+        label: instance.displayName?.trim() || (paths.profile ? `omp (${paths.profile})` : "omp"),
+        paths,
+      });
+    }
+    return sources;
+  });
+
+  const selectOmpSources = (settings: ServerSettings, instances: readonly OmpInstanceSource[]) => {
+    const selected = new Map<UsageLimitSourceId, { target: string; label: string }>();
+    if (instances.length === 0) return selected;
+    const claimed = new Set<string>();
+    for (const config of Object.values(settings.usageLimitSources)) {
+      if (!config.enabled || config.kind !== "omp") continue;
+      const dbPath = resolveOmpPath(config.url);
+      if (dbPath !== null) claimed.add(resolveOmpCacheFile(dbPath).target);
+    }
+    for (const { id, label, paths } of instances) {
+      if (settings.usageLimitSources[id]?.enabled) continue;
+      const { target, missing } = resolveOmpCacheFile(paths.dbPath);
+      if (missing || claimed.has(target)) continue;
+      claimed.add(target);
+      selected.set(id, { target, label });
+    }
+    return selected;
+  };
+
   const readSecretRevision = (reference: SecretReference | undefined) =>
     reference === undefined || secrets.revision === undefined
       ? Effect.undefined
@@ -424,7 +534,7 @@ export const make = Effect.gen(function* () {
   const resolveCacheTarget = Effect.fn("UsageLimitSources.resolveCacheTarget")(function* (
     config: UsageLimitSourceConfig,
   ) {
-    const { target } = resolveSourceEndpoint(config);
+    const { target } = resolveEndpoint(config);
     if (config.kind === "omp") return target;
     if (config.kind === "ollama") {
       const keyIdentity = yield* readOllamaKeyIdentity(target).pipe(
@@ -473,7 +583,7 @@ export const make = Effect.gen(function* () {
     config: UsageLimitSourceConfig,
   ) {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const { webUrl, hubOrigin, hubEndpoint, target } = resolveSourceEndpoint(config);
+    const { webUrl, hubOrigin, hubEndpoint, target } = resolveEndpoint(config);
     const base = {
       id,
       kind: config.kind,
@@ -492,7 +602,11 @@ export const make = Effect.gen(function* () {
       ...(scope === undefined ? {} : { scope }),
       snapshot: { ...base, ...result },
     });
-    if (config.kind === "omp") return finish(yield* readOmpUsage(target));
+    if (config.kind === "omp") {
+      return finish(
+        target ? yield* readOmpUsage(target) : { accounts: [], error: "Invalid OMP profile name." },
+      );
+    }
     if (config.kind === "ollama") {
       const { keyIdentity, result } = yield* readOllamaUsage(target, requestQuotaJson).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -588,6 +702,19 @@ export const make = Effect.gen(function* () {
     const entries = Object.entries(settings?.usageLimitSources ?? {}).filter(
       ([, config]) => config.enabled,
     );
+    const ompSources = settings === null ? [] : yield* resolveOmpSources(settings);
+    const ompReadings = yield* Effect.forEach(
+      settings === null ? [] : selectOmpSources(settings, ompSources),
+      ([id, { target, label }]) =>
+        Effect.gen(function* () {
+          const checkedAt = DateTime.formatIso(yield* DateTime.now);
+          const reading = yield* readOmpUsage(target);
+          return {
+            target,
+            snapshot: { id, kind: "omp", label, checkedAt, ...reading },
+          } satisfies SourceReading;
+        }),
+    );
     const results = yield* Effect.forEach(
       entries,
       ([id, config]) =>
@@ -645,7 +772,7 @@ export const make = Effect.gen(function* () {
         let checkedRevision: string | undefined;
         let afterRevision: string | undefined;
         if (checkedConfig.kind === "ollama") {
-          checkedOllamaPath = resolveSourceEndpoint(checkedConfig).target;
+          checkedOllamaPath = resolveEndpoint(checkedConfig).target;
           const generationBefore = readOllamaKeyGenerationSync(checkedOllamaPath);
           const latestTarget = yield* resolveCacheTarget(checkedConfig);
           const generationAfter = readOllamaKeyGenerationSync(checkedOllamaPath);
@@ -684,6 +811,12 @@ export const make = Effect.gen(function* () {
     yield* settingsService
       .withSettingsSnapshot((committed) =>
         Effect.gen(function* () {
+          const currentOmpSources =
+            ompReadings.length === 0
+              ? []
+              : settings?.providerInstances === committed.providerInstances
+                ? ompSources
+                : yield* resolveOmpSources(committed);
           // Only custom test stubs without revisionSync need an Effect-level revision lookup;
           // real SecretResolver instances expose revisionSync so final validation + commit run in one Effect.sync.
           let fallbackRevisions: Map<string, string | undefined> | undefined;
@@ -709,7 +842,14 @@ export const make = Effect.gen(function* () {
             for (const candidate of candidates) {
               const current = committed.usageLimitSources[candidate.id];
               if (!current || !current.enabled) continue;
-              if (!sameEffectiveSourceIdentity(candidate.checkedConfig, current)) continue;
+              if (
+                candidate.checkedConfig.kind !== current.kind ||
+                resolveEndpoint(candidate.checkedConfig).target !==
+                  resolveEndpoint(current).target ||
+                !sameSecretField(candidate.checkedConfig.managementKey, current.managementKey)
+              ) {
+                continue;
+              }
               if (current.kind === "ollama") {
                 if (
                   candidate.checkedOllamaPath === undefined ||
@@ -745,6 +885,18 @@ export const make = Effect.gen(function* () {
                       ...candidate.reading,
                       snapshot: { ...candidate.reading.snapshot, label: latestLabel },
                     },
+              );
+            }
+            const selectedOmpSources = selectOmpSources(committed, currentOmpSources);
+            for (const reading of ompReadings) {
+              const { id, label } = reading.snapshot;
+              const current = selectedOmpSources.get(id);
+              if (current?.target !== reading.target) continue;
+              visibleIds.add(id);
+              visible.push(
+                current.label === label
+                  ? reading
+                  : { ...reading, snapshot: { ...reading.snapshot, label: current.label } },
               );
             }
             // fork: Include opt-in claude-swap snapshot only if still enabled in committed settings.
@@ -821,6 +973,7 @@ export const make = Effect.gen(function* () {
       usageLimitSources: settings.usageLimitSources,
       secretProviders: settings.secretProviders,
       claudeSwapEnabled: settings.usageLocalHistorySources.claudeSwap,
+      ompInstances: enabledOmpInstances(settings.providerInstances),
     })),
     Stream.changesWith(sameUsageSourcesAndReferencedProviders),
     Stream.runForEach(() => refresh),
