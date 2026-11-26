@@ -1,9 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
+import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
   parseTimestampMs,
   tokenCount,
@@ -12,11 +11,10 @@ import {
   type TranscriptUsageFormat,
   type UsageRecord,
 } from "@t3tools/provider-core/server/usage";
-import { piHome } from "@t3tools/provider-pi/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import type { OmpSettings } from "../settings.ts";
-import { ompLaunchSessionDir } from "./dialect.ts";
+import { resolveOmpSettingsLaunchArgs } from "./dialect.ts";
 
 const OmpScanState = Schema.Struct({
   sessionId: Schema.mutableKey(Schema.String),
@@ -129,7 +127,7 @@ function parseRecord(parsed: unknown, state: typeof OmpScanState.Type): readonly
   ];
 }
 
-export const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
+const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
   selectFields: {
     type: true,
     id: true,
@@ -157,43 +155,24 @@ export const ompUsageFormat: TranscriptUsageFormat<typeof OmpScanState.Type> = {
   state: { initial: () => ({ sessionId: "" }), schema: OmpScanState },
 };
 
-export const ompUsageReader: ProviderUsageReader<OmpSettings, Path.Path> = {
+export const ompUsageReader = {
   kind: "transcripts",
   provider: "omp",
   format: ompUsageFormat,
   rateModel: (model) => model.slice(model.indexOf("/") + 1),
-  directories: Effect.fn("ompUsageReader.directories")(function* ({ config, environment }) {
-    const path = yield* Path.Path;
-    const home = yield* HostProcess.HomeDirectory;
-    const platform = yield* HostProcess.Platform;
-    const launchHome = piHome(environment, home, platform);
-    const sessionDirArg = config === undefined ? undefined : ompLaunchSessionDir(config.launchArgs);
-    const launchDir =
-      sessionDirArg === undefined ? undefined : expandHomePath(sessionDirArg, launchHome);
-    const defaultDir = resolveOmpSessionsDir(environment, launchHome, path);
-    const resolvedLaunchDir =
-      launchDir !== undefined && path.isAbsolute(launchDir) ? path.resolve(launchDir) : undefined;
-    return [
-      ...(resolvedLaunchDir !== undefined && resolvedLaunchDir !== defaultDir
-        ? [{ dir: resolvedLaunchDir }]
-        : []),
-      { dir: defaultDir },
-    ];
+  directories: Effect.fn("ompUsageReader.directories")(function* ({
+    config,
+    configured,
+    environment,
+  }) {
+    // The merged history env has no provenance for an OMP_PROFILE identical to the host's.
+    const pathsEnvironment =
+      environment.OMP_PROFILE !== undefined &&
+      (!configured || environment.OMP_PROFILE === (yield* HostProcess.Environment).OMP_PROFILE)
+        ? { ...environment, OMP_PROFILE: undefined }
+        : environment;
+    const launch = yield* resolveOmpSettingsLaunchArgs(config ?? {}, pathsEnvironment);
+    if (!launch.ok) return [];
+    return [...launch.paths.extraSessionDirs, launch.paths.sessionsDir].map((dir) => ({ dir }));
   }),
-};
-
-/** Where omp stores session JSONL files for a provider environment. */
-export function resolveOmpSessionsDir(
-  environment: NodeJS.ProcessEnv,
-  home: string,
-  path: Path.Path,
-): string {
-  // Never inherit ambient PI_CODING_AGENT_* here, or omp would double-count Pi's sessions.
-  const sessionDir = environment.OMP_CODING_AGENT_SESSION_DIR?.trim();
-  if (sessionDir) return path.resolve(expandHomePath(sessionDir, home));
-  const agentDir = environment.OMP_CODING_AGENT_DIR?.trim();
-  return path.resolve(
-    agentDir ? expandHomePath(agentDir, home) : path.join(home, ".omp", "agent"),
-    "sessions",
-  );
-}
+} satisfies ProviderUsageReader<OmpSettings, Path.Path>;

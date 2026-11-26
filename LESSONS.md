@@ -1,4 +1,4 @@
-<!-- reviewed-through: 7eb4478701 (2026-11-25) -->
+<!-- reviewed-through: 5991b5ec4f (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -46,9 +46,9 @@
 
 - **规则**：凡涉及读取或展示 Provider 运行时数据（usage、cost、model options、tools、transcripts），写 `design.md` 和测试夹具前，必须抽样核对 `omp`（`~/.omp/agent/sessions/*.jsonl`、`omp --mode rpc`）与至少 1 个上游 Provider 的真实载荷，把字段真值表写进设计文档；涉及 UI / Provider 强感知体验的改动，优先在 worktree 内跑 `bash fork/scripts/install-local-mac.sh <ver>` 真机试装验收后再提 PR 合并。
 - **原因**：`Replay (dev)` 与理想 fixture 无法暴露真实 CLI 方言差异。仅凭猜测假定字段形状会写出全部通过测试但真机缺字段的代码。
-- **铁证**：PR #11（`82588d0e53`）47 个单元/浏览器测试、两轮跨模型 Review 与 `Replay (dev)` 视觉 QA 全绿合并后，真机运行 `omp` 立刻暴露 4 处缺口：`thinking` 存的是字符串 `{ id: "thinking", value: "high" }` 而非布尔、第 1 轮运行中速度为空、`usage.cost.total` 与 `reasoningTokens` 被 Pi/omp 适配器丢弃、`omp` JSONL 独有 `model_usage` 记录；不得不追加 PR #12（`bc15649e28`）补齐。
-- **代码守卫**：`apps/web/src/fork/hud/hudMetrics.logic.test.ts`、`apps/web/src/fork/hud/hudUi.browser.test.tsx`、`packages/provider-omp/src/server/adapter.test.ts`、`packages/provider-omp/src/server/usage.test.ts`。
-- **Seen**：1（2026-11-24，PR #11 → PR #12）
+- **铁证**：① PR #11（`82588d0e53`）47 个单元/浏览器测试、两轮跨模型 Review 与 `Replay (dev)` 视觉 QA 全绿合并后，真机运行 `omp` 立刻暴露 4 处缺口：`thinking` 存的是字符串 `{ id: "thinking", value: "high" }` 而非布尔、第 1 轮运行中速度为空、`usage.cost.total` 与 `reasoningTokens` 被 Pi/omp 适配器丢弃、`omp` JSONL 独有 `model_usage` 记录，不得不追加 PR #12（`bc15649e28`）补齐；② `feat/omp-ecosystem-wave1`（`5991b5ec4f`）跨模型只读 Review 对照 `omp v19.2.1` 真实内嵌源码，抓出 `omp update --check` 真实输出为 ANSI `New version available: <ver>`（原臆测正则 `New version:`/`Latest version:` 永远解析为 `null`）以及 `profile="default"` 实测归并为 `~/.omp/agent` 的路径分裂。已按 ≥ 2 次规则升级写入 `FORK.md` 硬条款。
+- **代码守卫**：`apps/web/src/fork/hud/hudMetrics.logic.test.ts`、`apps/web/src/fork/hud/hudUi.browser.test.tsx`、`packages/provider-omp/src/server/{adapter,usage,maintenance,paths}.test.ts`。
+- **Seen**：2（2026-11-24 PR #11 → PR #12；2026-11-25 `feat/omp-ecosystem-wave1`）
 
 ## 6. `omp` 用量目录解析绝不继承 `PI_CODING_AGENT_*` 环境变量
 

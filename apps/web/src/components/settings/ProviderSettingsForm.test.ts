@@ -8,6 +8,7 @@ import {
 import * as Schema from "effect/Schema";
 
 import { providerClients } from "./providerDriverMeta";
+import type { MessageResolver } from "../../i18n/messages";
 import {
   deriveProviderSettingsFields,
   nextProviderConfigWithFieldValue,
@@ -84,6 +85,59 @@ describe("ProviderSettingsForm helpers", () => {
     );
 
     expect(next).toEqual({ experimental: false });
+  });
+
+  it("derives and translates omp Wave 1 settings in order while omitting defaults", () => {
+    const omp = providerClients.get(ProviderDriverKind.make("omp"));
+    expect(omp).toBeDefined();
+
+    const translated: string[] = [];
+    const resolve = ((value: string | null | undefined) => {
+      if (typeof value === "string") {
+        translated.push(value);
+        return `t:${value}`;
+      }
+      return value;
+    }) as MessageResolver;
+    const fields = deriveProviderSettingsFields(omp!, undefined, resolve);
+
+    expect(fields.map((field) => field.key)).toEqual([
+      "binaryPath",
+      "profile",
+      "agentDir",
+      "serviceTier",
+      "smolModel",
+      "slowModel",
+      "planModel",
+      "advisor",
+      "launchArgs",
+    ]);
+
+    const serviceTier = fields.find((field) => field.key === "serviceTier");
+    expect(serviceTier?.control).toBe("select");
+    expect(serviceTier?.options?.map((option) => option.value)).toEqual([
+      "",
+      "none",
+      "auto",
+      "default",
+      "flex",
+      "scale",
+      "priority",
+      "ultrafast",
+    ]);
+    expect(serviceTier?.options?.every((option) => option.label.startsWith("t:"))).toBe(true);
+
+    const profile = fields.find((field) => field.key === "profile");
+    expect(profile?.label.startsWith("t:")).toBe(true);
+    expect(profile?.description?.startsWith("t:")).toBe(true);
+
+    const advisor = fields.find((field) => field.key === "advisor");
+    expect(advisor?.control).toBe("switch");
+    expect(nextProviderConfigWithFieldValue({ advisor: true }, advisor!, false)).toBeUndefined();
+    expect(
+      nextProviderConfigWithFieldValue({ serviceTier: "priority" }, serviceTier!, ""),
+    ).toBeUndefined();
+    expect(translated.length).toBeGreaterThan(15);
   });
 });
 

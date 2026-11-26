@@ -6,12 +6,23 @@ import {
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Predicate from "effect/Predicate";
 
-const OMP_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const THINKING_LEVELS = [
+  "off",
+  "auto",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export const OMP_THINKING_LEVELS: ReadonlySet<string> = new Set(THINKING_LEVELS);
 
-type OmpThinkingLevel = (typeof OMP_THINKING_LEVELS)[number];
+type OmpThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 const LABELS: Record<OmpThinkingLevel, string> = {
   off: "Off",
+  auto: "Auto",
   minimal: "Minimal",
   low: "Low",
   medium: "Medium",
@@ -25,7 +36,7 @@ export const EMPTY_OMP_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabi
 });
 
 const isOmpThinkingLevel = (value: unknown): value is OmpThinkingLevel =>
-  OMP_THINKING_LEVELS.some((level) => level === value);
+  typeof value === "string" && OMP_THINKING_LEVELS.has(value);
 
 const field = (input: unknown, key: string): unknown =>
   Predicate.isObject(input) ? input[key] : undefined;
@@ -39,9 +50,11 @@ export function ompModelCapabilities(
   const thinking = field(model, "thinking");
   const efforts = Array.isArray(thinking) ? thinking : field(thinking, "efforts");
   if (!Array.isArray(efforts)) return EMPTY_OMP_MODEL_CAPABILITIES;
-  const supported = new Set<OmpThinkingLevel>(["off", ...efforts.filter(isOmpThinkingLevel)]);
-  const levels = OMP_THINKING_LEVELS.filter((level) => supported.has(level));
-  if (levels.length <= 1) return EMPTY_OMP_MODEL_CAPABILITIES;
+  const supported = new Set<OmpThinkingLevel>(["off", "auto"]);
+  for (const level of efforts) {
+    if (isOmpThinkingLevel(level)) supported.add(level);
+  }
+  const levels = THINKING_LEVELS.filter((level) => supported.has(level));
   const defaultLevel = levels.find((level) => level === currentThinkingLevel);
   const descriptor: ProviderOptionDescriptor = {
     id: "thinking",

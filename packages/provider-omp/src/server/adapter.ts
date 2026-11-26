@@ -15,12 +15,18 @@ import type { PiDialectConnectOptions } from "@t3tools/provider-pi/server/dialec
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { PiSettings } from "@t3tools/provider-pi/settings";
+
 import { OmpSettings } from "../settings.ts";
-import { OMP_DIALECT, OMP_PROVIDER } from "./dialect.ts";
+import { OMP_DIALECT, OMP_PROVIDER, resolveOmpSettingsLaunchArgs } from "./dialect.ts";
 import { makeOmpRpcConnection } from "./connection.ts";
+import type { OmpInstancePaths } from "./paths.ts";
 import { projectOmpCommands } from "./protocol.ts";
 
 const DEFAULT_OMP_SETTINGS = Schema.decodeSync(OmpSettings)({});
+
+// The shared replay harness passes the legacy Pi-shaped config to either adapter.
+type OmpAdapterConfig = PiSettings & Partial<OmpSettings>;
 
 const INHERITED_OMP_ENV: Readonly<Record<string, true>> = {
   PATH: true,
@@ -59,10 +65,7 @@ const INHERITED_OMP_ENV: Readonly<Record<string, true>> = {
   T3CODE_OMP_PROBE_TIMEOUT_MS: true,
 };
 
-export const ompInstanceEnvironment = Effect.fn("OmpAdapter.instanceEnvironment")(function* (
-  environment: ProviderAdapterDriverCreateInput<OmpSettings>["environment"],
-) {
-  const host = yield* HostProcess.Environment;
+export function ompBaseEnvironment(host: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {};
   // OMP accepts credentials from many providers, so only inherit environment needed to run it.
   for (const [name, value] of Object.entries(host)) {
@@ -71,7 +74,31 @@ export const ompInstanceEnvironment = Effect.fn("OmpAdapter.instanceEnvironment"
       base[name] = value;
     }
   }
-  return yield* mergeProviderInstanceEnvironment(environment, base);
+  return base;
+}
+
+export function withOmpAgentDir(
+  settings: Pick<Partial<OmpSettings>, "agentDir">,
+  env: NodeJS.ProcessEnv,
+  paths: OmpInstancePaths,
+): NodeJS.ProcessEnv {
+  return settings.agentDir &&
+    paths.profile === undefined &&
+    env.PI_CODING_AGENT_DIR !== paths.agentDir
+    ? { ...env, PI_CODING_AGENT_DIR: paths.agentDir }
+    : env;
+}
+
+export const ompInstanceEnvironment = Effect.fn("OmpAdapter.instanceEnvironment")(function* (
+  config: Partial<OmpSettings>,
+  environment: ProviderAdapterDriverCreateInput<OmpSettings>["environment"],
+) {
+  const env = yield* mergeProviderInstanceEnvironment(
+    environment,
+    ompBaseEnvironment(yield* HostProcess.Environment),
+  );
+  const launchArgs = yield* resolveOmpSettingsLaunchArgs(config, env);
+  return { env: launchArgs.ok ? withOmpAgentDir(config, env, launchArgs.paths) : env, launchArgs };
 });
 
 /** The Pi adapter running against omp's RPC dialect. */
@@ -81,25 +108,26 @@ export const OmpAdapterV2Driver = {
   defaultConfig: (): OmpSettings => DEFAULT_OMP_SETTINGS,
   create: Effect.fn("OmpAdapterV2Driver.create")(
     function* (
-      input: ProviderAdapterDriverCreateInput<OmpSettings> & {
+      input: ProviderAdapterDriverCreateInput<OmpAdapterConfig> & {
         readonly onCommands?:
           | ((cwd: string, catalog: PiDiscoveredCommands) => Effect.Effect<void>)
           | undefined;
       },
     ) {
       const { onCommands } = input;
-      const environment = yield* ompInstanceEnvironment(input.environment);
+      const { env, launchArgs } = yield* ompInstanceEnvironment(input.config, input.environment);
       const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
       return yield* makePiAdapterV2({
         instanceId: input.instanceId,
         settings: { ...input.config, enabled: input.enabled },
-        environment,
+        environment: env,
         continuationRequests,
-        dialect:
-          onCommands === undefined
-            ? OMP_DIALECT
+        dialect: {
+          ...OMP_DIALECT,
+          resolveLaunchArgs: () => launchArgs,
+          ...(onCommands === undefined
+            ? {}
             : {
-                ...OMP_DIALECT,
                 connect: Effect.fn("OmpAdapter.connect")(function* (
                   options: PiDialectConnectOptions,
                 ) {
@@ -131,7 +159,8 @@ export const OmpAdapterV2Driver = {
                   );
                   return connection;
                 }),
-              },
+              }),
+        },
       });
     },
     (effect, input) =>

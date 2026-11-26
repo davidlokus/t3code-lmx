@@ -3,9 +3,14 @@ import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts"
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
-import { buildOmpRpcLaunch, ompInventoryLaunchArgs, resolveOmpLaunchArgs } from "./dialect.ts";
+import { OmpSettings } from "../settings.ts";
+import { OMP_DIALECT, ompInventoryLaunchArgs, resolveOmpSettingsLaunchArgs } from "./dialect.ts";
 import { ompModelCapabilities } from "./modelCapabilities.ts";
+
+const { buildLaunch: buildOmpRpcLaunch, resolveLaunchArgs: resolveOmpLaunchArgs } = OMP_DIALECT;
+const decodeSettings = Schema.decodeUnknownSync(OmpSettings);
 
 const launch = (input: Partial<Parameters<typeof buildOmpRpcLaunch>[0]> = {}) =>
   buildOmpRpcLaunch({
@@ -110,6 +115,84 @@ describe("omp launch arguments", () => {
       ]);
     }).pipe(Effect.provide(Path.layer)),
   );
+
+  it.effect("keeps legacy settings and launch flags valid without adding role flags", () =>
+    Effect.gen(function* () {
+      const legacy = {
+        enabled: true,
+        binaryPath: "/tools/omp",
+        launchArgs: "--profile shared --smol demo/lite",
+        customModels: [],
+      };
+      const settings = decodeSettings(legacy);
+      expect(settings).toEqual({
+        ...legacy,
+        profile: "",
+        agentDir: "",
+        serviceTier: "",
+        smolModel: "",
+        slowModel: "",
+        planModel: "",
+        advisor: false,
+      });
+      const resolved = yield* resolveOmpSettingsLaunchArgs(settings, {});
+      expect(resolved).toMatchObject({
+        ok: true,
+        args: ["--profile", "shared", "--smol", "demo/lite"],
+      });
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  it.effect("forwards session settings using omp's native CLI forms", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        launchArgs: "--no-lsp",
+        profile: "shared",
+        serviceTier: "priority",
+        smolModel: "openai/gpt-5-mini",
+        slowModel: "anthropic/claude-opus-4-6",
+        planModel: "anthropic/claude-sonnet-4-6",
+        advisor: true,
+      });
+      const resolved = yield* resolveOmpSettingsLaunchArgs(settings, {});
+      expect(resolved).toMatchObject({
+        ok: true,
+        args: [
+          "--no-lsp",
+          "--profile",
+          "shared",
+          "--service-tier",
+          "priority",
+          "--smol",
+          "openai/gpt-5-mini",
+          "--slow",
+          "anthropic/claude-opus-4-6",
+          "--plan=anthropic/claude-sonnet-4-6",
+          "--advisor",
+        ],
+      });
+    }).pipe(Effect.provide(Path.layer)),
+  );
+
+  it.effect.each([
+    { key: "profile", value: "shared", args: "--profile=other" },
+    { key: "serviceTier", value: "priority", args: "--service-tier flex" },
+    { key: "smolModel", value: "demo/lite", args: "--smol=demo/other" },
+    { key: "slowModel", value: "demo/slow", args: "--slow demo/other" },
+    { key: "planModel", value: "demo/plan", args: "--plan demo/other" },
+    { key: "advisor", value: true, args: "--advisor" },
+  ])("rejects setting $key alongside its manual launch flag", ({ key, value, args }) =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveOmpSettingsLaunchArgs(
+        decodeSettings({ [key]: value, launchArgs: args }),
+        {},
+      );
+      expect(resolved).toMatchObject({
+        ok: false,
+        message: expect.stringContaining(`'${key}' conflicts`),
+      });
+    }).pipe(Effect.provide(Path.layer)),
+  );
 });
 
 describe("omp launch command line", () => {
@@ -141,12 +224,17 @@ describe("omp launch command line", () => {
       "--no-session",
       "--no-extensions",
       "--no-tools",
+      "--no-title",
+      "--no-lsp",
+      "--no-skills",
+      "--no-rules",
+      "--no-context-files",
     ]);
   });
 
   it("strips explicit extension roots, hooks, and tool overrides from a short-lived fork", () => {
     const launchArgs = resolveOmpLaunchArgs(
-      "--profile team --extension=/e.ts -e /x.ts --trusted-extension /t.ts --hook /h.ts --plugin-dir /plugins --tools bash --thinking high",
+      "--profile team --extension=/e.ts -e /x.ts --trusted-extension /t.ts --hook /h.ts --plugin-dir /plugins --tools bash --add-dir /root --thinking high",
     );
     if (!launchArgs.ok) throw new Error(launchArgs.message);
     expect(
@@ -154,6 +242,7 @@ describe("omp launch command line", () => {
         shortLived: true,
         disableExtensions: true,
         disableTools: true,
+        extraRoots: ["/more"],
         launchArgs: launchArgs.args,
       }).args,
     ).toEqual([
@@ -196,12 +285,19 @@ describe("omp thinking catalog", () => {
     const rpc = ompModelCapabilities({ reasoning: true, thinking: { efforts } }, "xhigh");
     const cli = ompModelCapabilities({ reasoning: true, thinking: efforts }, undefined);
     expect(rpc.optionDescriptors?.[0]).toMatchObject({
-      options: [{ id: "off" }, { id: "low" }, { id: "xhigh", isDefault: true }, { id: "max" }],
+      options: [
+        { id: "off" },
+        { id: "auto", label: "Auto" },
+        { id: "low" },
+        { id: "xhigh", isDefault: true },
+        { id: "max" },
+      ],
     });
     const cliDescriptor = cli.optionDescriptors?.[0];
     if (cliDescriptor?.type !== "select") throw new Error("Expected thinking choices");
     expect(cliDescriptor.options).toMatchObject([
       { id: "off" },
+      { id: "auto", label: "Auto" },
       { id: "low" },
       { id: "xhigh" },
       { id: "max" },

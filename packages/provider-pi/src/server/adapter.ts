@@ -607,6 +607,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             mcpSession,
             extensionPath,
             sessionPath,
+            extraRoots: input.runtimePolicy.workspace?.extraRoots, // fork:
             runtimeMode: input.runtimePolicy.runtimeMode,
           });
           const scopedLaunch = yield* agentScope.wrap({
@@ -3439,7 +3440,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         if (
           thinking !== undefined &&
           thinking !== appliedThinking &&
-          PI_THINKING_LEVELS.has(thinking)
+          (dialect.thinkingLevels ?? PI_THINKING_LEVELS).has(thinking) // fork:
         ) {
           yield* request({ type: "set_thinking_level", level: thinking });
           appliedThinking = thinking;

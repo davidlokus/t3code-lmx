@@ -20,6 +20,8 @@ export interface PiDialectLaunchInput {
   readonly mcpSession: McpProviderSessionConfig | undefined;
   readonly extensionPath: string | undefined;
   readonly sessionPath?: string | undefined;
+  // fork: OMP forwards extra roots via --add-dir.
+  readonly extraRoots?: ReadonlyArray<string> | undefined;
   readonly ephemeral?: boolean;
   readonly shortLived?: boolean;
   readonly disableExtensions?: boolean;
@@ -36,6 +38,8 @@ export interface PiDialect {
   readonly driverKind: ProviderDriverKind;
   readonly defaultBinary: string;
   readonly capabilities: OrchestrationV2ProviderCapabilities;
+  // fork: OMP accepts auto, which Pi does not.
+  readonly thinkingLevels?: ReadonlySet<string>;
   // Extension statuses are shown in a Pi-specific banner.
   readonly showsExtensionStatuses?: boolean;
   // A native session grant is enforced by the agent, not by Pi's host-side approval cache.

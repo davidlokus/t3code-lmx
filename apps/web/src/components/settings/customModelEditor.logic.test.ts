@@ -179,4 +179,29 @@ describe("customModelEditor.logic", () => {
     ).toBe('Option 1: choice "a" is used twice.');
     expect(validateDraft(draft({ descriptors: [select("effort", [{ id: "a" }])] }))).toBeNull();
   });
+
+  it("advertises auto thinking in omp presets without changing Pi presets", () => {
+    const ompPreset = DESCRIPTOR_PRESETS_BY_KIND[ProviderDriverKind.make("omp")]?.[0];
+    const piPreset = DESCRIPTOR_PRESETS_BY_KIND[ProviderDriverKind.make("pi")]?.[0];
+
+    expect(ompPreset?.choices?.map((choice) => choice.id)).toEqual([
+      "off",
+      "auto",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(piPreset?.choices?.map((choice) => choice.id)).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
 });

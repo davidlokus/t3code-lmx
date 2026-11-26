@@ -252,6 +252,43 @@ const PACKAGE_FIELD_TEXT: ReadonlyMap<string, string> = new Map([
   ["Google account", msg("Google account")],
   ["Gemini API key", msg("Gemini API key")],
   ["Local command", msg("Local command")],
+  // fork: omp Wave 1 settings labels, descriptions, and service-tier options
+  ["Profile", msg("Profile", { $context: "omp named profile setting" })],
+  ["Agent directory", msg("Agent directory")],
+  ["Service tier", msg("Service tier")],
+  ["Smol model", msg("Smol model")],
+  ["Slow model", msg("Slow model")],
+  ["Plan model", msg("Plan model")],
+  ["Advisor", msg("Advisor")],
+  [
+    "Named omp profile (~/.omp/profiles/NAME/agent). Takes precedence over Agent directory.",
+    msg("Named omp profile (~/.omp/profiles/NAME/agent). Takes precedence over Agent directory."),
+  ],
+  [
+    "Custom omp agent directory (passed as PI_CODING_AGENT_DIR to this instance only).",
+    msg("Custom omp agent directory (passed as PI_CODING_AGENT_DIR to this instance only)."),
+  ],
+  [
+    "OpenAI service tier applied on session start.",
+    msg("OpenAI service tier applied on session start."),
+  ],
+  [
+    "Fast lightweight model for auxiliary work and default text generation (--smol).",
+    msg("Fast lightweight model for auxiliary work and default text generation (--smol)."),
+  ],
+  ["Deep reasoning model override (--slow).", msg("Deep reasoning model override (--slow).")],
+  ["Model used for planning (--plan).", msg("Model used for planning (--plan).")],
+  [
+    "Enable omp's passive turn-review advisor (--advisor).",
+    msg("Enable omp's passive turn-review advisor (--advisor)."),
+  ],
+  ["None", msg("None", { $context: "OpenAI service tier option" })],
+  ["Auto", msg("Auto", { $context: "OpenAI service tier option" })],
+  ["Default", msg("Default", { $context: "OpenAI service tier option" })],
+  ["Flex", msg("Flex", { $context: "OpenAI service tier option" })],
+  ["Scale", msg("Scale", { $context: "OpenAI service tier option" })],
+  ["Priority", msg("Priority", { $context: "OpenAI service tier option" })],
+  ["Ultrafast", msg("Ultrafast", { $context: "OpenAI service tier option" })],
 ]);
 
 function packageFieldText(text: string, resolve: MessageResolver): string {

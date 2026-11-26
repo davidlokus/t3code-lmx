@@ -33,11 +33,12 @@ import {
 } from "@t3tools/provider-pi/server/rpc";
 
 import type { OmpSettings } from "../settings.ts";
+import { withOmpAgentDir } from "./adapter.ts";
 import {
   OMP_DIALECT,
   OMP_PROVIDER,
   ompInventoryLaunchArgs,
-  resolveOmpLaunchArgs,
+  resolveOmpSettingsLaunchArgs,
 } from "./dialect.ts";
 import { EMPTY_OMP_MODEL_CAPABILITIES, ompModelCapabilities } from "./modelCapabilities.ts";
 
@@ -81,7 +82,7 @@ export function parseOmpModels(
     const provider = recordString(model, "provider");
     const id = recordString(model, "id");
     // Image-generation catalog entries have no chat input and cannot start a turn.
-    if (provider === undefined || id === undefined || recordField(model, "kind") === "image") {
+    if (!provider?.trim() || !id?.trim() || recordField(model, "kind") === "image") {
       continue;
     }
     const slug = `${provider}/${id}`;
@@ -96,7 +97,9 @@ export function parseOmpModels(
       isCustom: false,
       capabilities: ompModelCapabilities(
         model,
-        isActive ? recordString(state, "thinkingLevel") : undefined,
+        isActive
+          ? (recordString(state, "configuredThinkingLevel") ?? recordString(state, "thinkingLevel"))
+          : undefined,
       ),
     });
   }
@@ -106,7 +109,7 @@ export function parseOmpModels(
 const decodeCatalog = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 const readOmpModels = Effect.fn("OmpProviderStatus.readOmpModels")(function* (
-  settings: OmpSettings,
+  binaryPath: string | undefined,
   launchArgs: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv,
   cwd: string | undefined,
@@ -114,8 +117,8 @@ const readOmpModels = Effect.fn("OmpProviderStatus.readOmpModels")(function* (
   // Plain RPC starts user MCP servers even with --no-session and --no-extensions. Only use
   // the catalog command here; session launch arguments may explicitly load extensions.
   const path = yield* Path.Path;
-  const result = yield* runInventoryCommand(
-    settings,
+  const result = yield* runOmpInventoryCommand(
+    binaryPath,
     ["models", "--json", "--no-extensions", ...ompInventoryLaunchArgs(launchArgs, path.isAbsolute)],
     environment,
     cwd,
@@ -125,13 +128,13 @@ const readOmpModels = Effect.fn("OmpProviderStatus.readOmpModels")(function* (
     : undefined;
 });
 
-const runInventoryCommand = Effect.fn("OmpProviderStatus.runInventoryCommand")(function* (
-  settings: OmpSettings,
+export const runOmpInventoryCommand = Effect.fn("OmpStatus.runInventoryCommand")(function* (
+  binaryPath: string | undefined,
   args: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv,
   cwd?: string,
 ) {
-  const command = settings.binaryPath || OMP_DIALECT.defaultBinary;
+  const command = binaryPath || OMP_DIALECT.defaultBinary;
   const spawnCommand = yield* resolveSpawnCommand(command, [...args], { env: environment });
   return yield* spawnAndCollect(
     command,
@@ -177,8 +180,8 @@ export const buildInitialOmpProviderSnapshot = Effect.fn(
 });
 
 export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(function* (
-  settings: OmpSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  settings: Partial<OmpSettings>,
+  environment: NodeJS.ProcessEnv,
   cwd?: string,
   compatibility: ProviderCompatibilityLookup = noCompatibilityPolicy,
 ): Effect.fn.Return<
@@ -187,24 +190,26 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
   ChildProcessSpawner.ChildProcessSpawner | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const enabled = settings.enabled === true;
   const fallbackModels = modelsFromSettings(settings.customModels);
   const draft = (
     probe: Parameters<typeof buildServerProvider>[0]["probe"],
     models = fallbackModels,
+    hasUsableModels = false,
   ) => ({
     ...buildServerProvider({
       driver: OMP_PROVIDER,
       presentation: OMP_PRESENTATION,
-      enabled: settings.enabled,
+      enabled,
       checkedAt,
       models,
-      slashCommands: settings.enabled ? withPiBuiltinSlashCommands([]) : [],
+      slashCommands: enabled ? withPiBuiltinSlashCommands([]) : [],
       probe,
     }),
-    supportsTextGeneration: false,
+    supportsTextGeneration: enabled && hasUsableModels,
   });
 
-  if (!settings.enabled) {
+  if (!enabled) {
     return draft({
       installed: false,
       version: null,
@@ -214,9 +219,21 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
     });
   }
 
-  const probeEnvironment = providerProbeEnvironment(environment);
-  const versionResult = yield* runInventoryCommand(
-    settings,
+  const launchArgs = yield* resolveOmpSettingsLaunchArgs(settings, environment);
+  if (!launchArgs.ok) {
+    return draft({
+      installed: false,
+      version: null,
+      status: "error",
+      auth: { status: "unknown" },
+      message: launchArgs.message,
+    });
+  }
+  const probeEnvironment = providerProbeEnvironment(
+    withOmpAgentDir(settings, environment, launchArgs.paths),
+  );
+  const versionResult = yield* runOmpInventoryCommand(
+    settings.binaryPath,
     ["--version"],
     probeEnvironment,
     cwd,
@@ -282,18 +299,13 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       message: broken,
     });
   }
-  const launchArgs = resolveOmpLaunchArgs(settings.launchArgs);
-  if (!launchArgs.ok) {
-    return draft({
-      installed: true,
-      version,
-      status: "error",
-      auth: { status: "unknown" },
-      message: launchArgs.message,
-    });
-  }
 
-  const discoveryExit = yield* readOmpModels(settings, launchArgs.args, probeEnvironment, cwd).pipe(
+  const discoveryExit = yield* readOmpModels(
+    settings.binaryPath,
+    launchArgs.args,
+    probeEnvironment,
+    cwd,
+  ).pipe(
     Effect.timeoutOption(resolveProviderProbeTimeoutMs("omp", DISCOVERY_TIMEOUT_MS, environment)),
     Effect.exit,
   );
@@ -338,5 +350,6 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
           }),
     },
     modelsFromSettings(settings.customModels, discovery),
+    authenticated,
   );
 });
