@@ -1,4 +1,4 @@
-<!-- reviewed-through: 5991b5ec4f (2026-11-25) -->
+<!-- reviewed-through: 3f26ab16ad (2026-11-25) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -124,3 +124,11 @@
 - **铁证**：Wave 2 PR 3a（`feat/usage-sources-omp-cn`）在 8 轮跨模型只读 Review（`gpt-6.2-sol:max`）内存探针中先后复现上述 3 类真实缺口（换行 key 进入 trace sink、旧 `httpUsageLimitSources` 客户端解码失败、以及 `secretProviders` 换绑 / `{ fresh: true }` 轮换 / 晚 `invalidate` / 核销重推的并发交错），全部补齐代码与确定性并发回归测试后通过 Round 8 终审。
 - **代码守卫**：`apps/server/src/usage/UsageLimitSources.test.ts`、`apps/server/src/serverSettings.test.ts`、`packages/client-runtime/src/connection/{compatibility,resolver}.test.ts`、`apps/web/src/components/settings/AddUsageLimitSourceDialog.{logic,browser}.test.*`。
 - **Seen**：1（2026-11-25，Wave 2 `feat/usage-sources-omp-cn`）
+
+## 15. 外部本地数据源扫描须核实上游计费语义、跟随合法软链并防共享组织误排
+
+- **规则**：① 扫描外部网关/CLI 日志时，不得凭直觉以路由或尝试级 ID（如 Magpie `route_id`/`rid`）做首次命中去重；必须核对上游写入源码语义，仅对响应级唯一标识（如 `response_id`）或完整行内容哈希去重，并保留无 ID 行。② 读取外部本地配置与缓存文件时，不得用 `lstat().isFile()` 或 `Dirent.isFile()` 拒绝合法 dotfiles 软链；应使用跟随软链的 `stat().isFile()`（含 `Dirent.isSymbolicLink()`），并在 `ENOENT` 时以 `lstat` 区分断链以维持 fail-closed。③ 多账号活跃排重在双边均带 `organizationUuid` 时须同时比对用户身份（`accountUuid`/`email`），不得仅凭组织相等误排共享团队/企业组织内的其他成员席位。
+- **原因**：Magpie 在多尝试 HandedOn 失败后会为已产生真实计费（如 `cache_write`）的尝试写入共享 `route_id` 且无 `response_id` 的独立行，且 `route_id` 按启动时间戳播种会在重启后碰撞，按 `route_id` 去重会静默吞掉真实用量；`chezmoi`/dotfiles 软链管理 `~/.claude.json` 极常见，`lstat().isFile()` 返回 `false` 会触发 fail-closed 导致整源静默清空；共享团队 org 成员拥有相同 `organizationUuid` 但不同席位。
+- **铁证**：Wave 3b `feat/usage-local-history-sources` Round 1 独立只读审查（`devin/swe-2-1`）对照 Magpie Go 源码（`internal/gateway/gateway.go` / `trace.go`）与软链复现探针揪出 2 CRITICAL + 2 WARNING，修复并补齐多尝试计费、跨重启碰撞、软链/断链与共享组织回归用例后通过 Round 2 `VERDICT: PASS`。
+- **代码守卫**：`apps/server/src/usage/localSources/{magpie,claudeSwap}.test.ts`。
+- **Seen**：1（2026-11-25，Wave 3b `feat/usage-local-history-sources`）
