@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -9,7 +10,11 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { OmpSettings } from "../settings.ts";
 import { OMP_PROVIDER } from "./dialect.ts";
-import { checkOmpProviderStatus, parseOmpModels } from "./status.ts";
+import {
+  buildInitialOmpProviderSnapshot,
+  checkOmpProviderStatus,
+  parseOmpModels,
+} from "./status.ts";
 
 // Trimmed from `get_state` and `get_available_models` of omp 18.20.2.
 const state = {
@@ -137,7 +142,7 @@ describe("omp model discovery", () => {
   );
 
   it.effect(
-    "does not advertise text generation when disabled or all catalog entries are unusable",
+    "offers PTY sign-in without usable models, but disables setup when the instance is disabled",
     () =>
       Effect.gen(function* () {
         const { spawner, launches } = probeSpawner("19.2.1", {
@@ -149,12 +154,26 @@ describe("omp model discovery", () => {
         const environment = { HOME: "/fixture-home" };
         const config = { ...settings, profile: "", agentDir: "~/alternate" };
         const probe = (enabled: boolean) =>
-          checkOmpProviderStatus({ ...config, enabled }, environment, probeCwd).pipe(
+          checkOmpProviderStatus(
+            { ...config, enabled },
+            environment,
+            probeCwd,
+            undefined,
+            true,
+          ).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provide(Path.layer),
           );
-        expect((yield* probe(true)).supportsTextGeneration).toBe(false);
-        expect((yield* probe(false)).supportsTextGeneration).toBe(false);
+        expect(yield* probe(true)).toMatchObject({
+          supportsTextGeneration: false,
+          auth: { status: "unknown", canLogout: false },
+          setup: { canInstall: false, canAuthenticate: true },
+        });
+        expect(yield* probe(false)).toMatchObject({
+          supportsTextGeneration: false,
+          auth: { canLogout: false },
+          setup: { canInstall: false, canAuthenticate: false },
+        });
         expect(launches).toEqual([
           { args: ["--version"], cwd: probeCwd, agentDir: "/fixture-home/alternate" },
           {
@@ -172,13 +191,20 @@ describe("omp model discovery", () => {
   ])("rejects $profile / $launchArgs before spawning omp", ({ error, ...config }) =>
     Effect.gen(function* () {
       const { spawner, launches } = probeSpawner("19.2.1");
-      const snapshot = yield* checkOmpProviderStatus({ ...settings, ...config }, {}, probeCwd).pipe(
+      const snapshot = yield* checkOmpProviderStatus(
+        { ...settings, ...config },
+        {},
+        probeCwd,
+        undefined,
+        true,
+      ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provide(Path.layer),
       );
       expect(snapshot).toMatchObject({
         status: "error",
         supportsTextGeneration: false,
+        setup: { canInstall: false, canAuthenticate: false },
         message: expect.stringContaining(error),
       });
       expect(launches).toEqual([]);
@@ -207,3 +233,36 @@ describe("omp model discovery", () => {
     }),
   );
 });
+
+it.effect("does not advertise setup before the CLI has been checked", () =>
+  Effect.gen(function* () {
+    expect(yield* buildInitialOmpProviderSnapshot(settings)).toMatchObject({
+      auth: { canLogout: false },
+      setup: { canInstall: false, canAuthenticate: false },
+    });
+  }),
+);
+
+it.effect("does not offer PTY sign-in when the omp executable is missing", () =>
+  Effect.gen(function* () {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.fail(
+        PlatformError.systemError({
+          _tag: "NotFound",
+          module: "ChildProcess",
+          method: "spawn",
+          description: "omp not found",
+        }),
+      ),
+    );
+    const snapshot = yield* checkOmpProviderStatus(settings, {}, probeCwd, undefined, true).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provide(Path.layer),
+    );
+    expect(snapshot).toMatchObject({
+      installed: false,
+      auth: { canLogout: false },
+      setup: { canInstall: false, canAuthenticate: false },
+    });
+  }),
+);

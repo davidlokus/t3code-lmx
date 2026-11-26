@@ -34,7 +34,7 @@ Directly verified on `/Users/liamx/.local/bin/omp` in an isolated temporary `HOM
   - Uses `processEnv` from `ompInstanceEnvironment` (strict allowlist, zero inherited host `PI_*`, includes `PI_CODING_AGENT_DIR` when `agentDir` is configured and `profile` is unset).
   - Sets `credentialBinding` to `{ owner: "provider", key: \`omp:${canonicalAgentDir}\` }`(canonicalizing via`fileSystem.realPath`with`path.resolve`fallback so symlinks sharing an`agentDir` coordinate safely while distinct profiles stay isolated).
   - Streams PTY output, forwards user terminal input (`write`) and `resize`, cleanly terminates the PTY and detaches listeners on cancel/scope close, reports the last 5 stripped ANSI lines in `ProviderSetupError` on non-zero exit, and triggers `onChanged` (`snapshot.refresh`) on exit code `0`.
-  - Does NOT implement `logout` (honest boundary).
+  - Overrides `logout` on the returned `ProviderAuthController` (`logout: () => Effect.fail(ProviderSetupError)`) while keeping `auth.canLogout: false`, ensuring zero upstream `provider-core`/`apps/server` edits and guaranteeing direct RPC `logout` calls fail without invoking `stopSessions` or disturbing active sign-in flows.
 - **Wire into `packages/provider-omp/src/server/driver.ts` and `status.ts`**:
   - Obtain `pty = yield* Effect.serviceOption(PtyAdapter.PtyAdapter)` in `OmpDriver.create`.
   - Construct `auth = yield* makeOmpAuth(...)` and attach `auth` to the returned `ProviderInstance`.

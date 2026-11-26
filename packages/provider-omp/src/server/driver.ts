@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -34,9 +35,11 @@ import {
   withPiBuiltinSlashCommands,
   type PiDiscoveredCommands,
 } from "@t3tools/provider-pi/server/commands";
+import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 
 import { OmpSettings } from "../settings.ts";
 import { OmpAdapterV2Driver, ompInstanceEnvironment } from "./adapter.ts";
+import { makeOmpAuth } from "./auth.ts";
 import { OMP_DIALECT, OMP_PROVIDER, ompInventoryLaunchArgs } from "./dialect.ts";
 import { OMP_MAINTENANCE_RESOLVER } from "./maintenance.ts";
 import {
@@ -81,6 +84,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const host = yield* ProviderHost.ProviderHost;
+    const pty = yield* Effect.serviceOption(PtyAdapter.PtyAdapter);
     const probeCwd = pathService.join(host.paths.providerStatusCacheDir, "omp-status-probe");
     const effectiveConfig = { ...config, enabled } satisfies OmpSettings;
     const { env: processEnv, launchArgs } = yield* ompInstanceEnvironment(
@@ -142,7 +146,13 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
       .pipe(Effect.ignore);
     const checkProvider = prepareProbeCwd.pipe(
       Effect.andThen(
-        checkOmpProviderStatus(effectiveConfig, processEnv, probeCwd, host.compatibility),
+        checkOmpProviderStatus(
+          effectiveConfig,
+          processEnv,
+          probeCwd,
+          host.compatibility,
+          Option.isSome(pty),
+        ),
       ),
       Effect.map(stampIdentity),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -225,6 +235,16 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
           }),
       ),
     );
+    const auth = yield* makeOmpAuth({
+      instanceId,
+      enabled,
+      binaryPath: effectiveConfig.binaryPath || OMP_DIALECT.defaultBinary,
+      cwd: probeCwd,
+      processEnv,
+      launchArgs,
+      pty,
+      onChanged: () => snapshot.refresh.pipe(Effect.asVoid),
+    });
 
     return {
       instanceId,
@@ -252,6 +272,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
         ),
       orchestrationAdapter,
       textGeneration,
+      auth,
       ...(enabled ? { refreshModels } : {}),
     } satisfies ProviderInstance;
   }),
