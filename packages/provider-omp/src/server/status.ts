@@ -51,6 +51,7 @@ const OMP_PRESENTATION = {
 
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const DISCOVERY_TIMEOUT_MS = 30_000;
+const UNKNOWN_OMP_AUTH = { status: "unknown", canLogout: false } as const;
 
 const OMP_DEFAULT_MODEL: ServerProviderModel = {
   slug: "default",
@@ -164,14 +165,14 @@ export const buildInitialOmpProviderSnapshot = Effect.fn(
             installed: true,
             version: null,
             status: "warning",
-            auth: { status: "unknown" },
+            auth: UNKNOWN_OMP_AUTH,
             message: "Checking omp CLI availability...",
           }
         : {
             installed: false,
             version: null,
             status: "warning",
-            auth: { status: "unknown" },
+            auth: UNKNOWN_OMP_AUTH,
             message: "omp is disabled in T3 Code settings.",
           },
     }),
@@ -184,6 +185,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
   environment: NodeJS.ProcessEnv,
   cwd?: string,
   compatibility: ProviderCompatibilityLookup = noCompatibilityPolicy,
+  hasPty = false,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -191,6 +193,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const enabled = settings.enabled === true;
+  const launchArgs = enabled ? yield* resolveOmpSettingsLaunchArgs(settings, environment) : null;
   const fallbackModels = modelsFromSettings(settings.customModels);
   const draft = (
     probe: Parameters<typeof buildServerProvider>[0]["probe"],
@@ -206,26 +209,29 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       slashCommands: enabled ? withPiBuiltinSlashCommands([]) : [],
       probe,
     }),
+    setup: {
+      canInstall: false,
+      canAuthenticate: enabled && probe.installed && hasPty && launchArgs?.ok === true,
+    },
     supportsTextGeneration: enabled && hasUsableModels,
   });
 
-  if (!enabled) {
+  if (launchArgs === null) {
     return draft({
       installed: false,
       version: null,
       status: "warning",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: "omp is disabled in T3 Code settings.",
     });
   }
 
-  const launchArgs = yield* resolveOmpSettingsLaunchArgs(settings, environment);
   if (!launchArgs.ok) {
     return draft({
       installed: false,
       version: null,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: launchArgs.message,
     });
   }
@@ -250,7 +256,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: !isCommandMissingCause(error),
       version: null,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: isCommandMissingCause(error)
         ? "omp CLI (`omp`) is not installed or not on PATH. See https://github.com/can1357/oh-my-pi."
         : "Failed to execute omp CLI health check.",
@@ -261,7 +267,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version: null,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: "omp CLI is installed but timed out while running `omp --version`.",
     });
   }
@@ -272,7 +278,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: "omp CLI is installed but failed to run.",
     });
   }
@@ -281,7 +287,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version: null,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: "T3 Code could not determine the omp version. Update omp, then refresh its status.",
     });
   }
@@ -295,7 +301,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version,
       status: "error",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: broken,
     });
   }
@@ -319,7 +325,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version,
       status: "ready",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message:
         "omp is available, but T3 Code could not refresh its models. The live session will retry startup.",
     });
@@ -330,7 +336,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       installed: true,
       version,
       status: "ready",
-      auth: { status: "unknown" },
+      auth: UNKNOWN_OMP_AUTH,
       message: "omp returned an unreadable model catalog. The live session will retry startup.",
     });
   }
@@ -341,7 +347,9 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
       version,
       status: authenticated ? "ready" : "warning",
       // The safe catalog excludes extension models, so an empty result does not prove sign-out.
-      auth: authenticated ? { status: "authenticated", type: "omp" } : { status: "unknown" },
+      auth: authenticated
+        ? { status: "authenticated", type: "omp", canLogout: false }
+        : UNKNOWN_OMP_AUTH,
       ...(authenticated
         ? {}
         : {
