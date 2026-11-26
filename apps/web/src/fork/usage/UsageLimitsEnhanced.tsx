@@ -1,22 +1,18 @@
-import type { EnvironmentId, UsageProviderKind } from "@t3tools/contracts";
 import type { LimitPresentations } from "@t3tools/shared/usageLimits";
-import {
-  collectLimitsIntelligence,
-  type NormalizedLimitAccount,
-} from "@t3tools/shared/usageLimitsIntelligence";
+import { collectLimitsIntelligence } from "@t3tools/shared/usageLimitsIntelligence";
 import { Link } from "@tanstack/react-router";
 import { T, useGT } from "gt-react";
-import { Settings2Icon } from "lucide-react";
+import { AlertTriangleIcon, LayoutGridIcon, ListIcon, Settings2Icon } from "lucide-react";
 import { useState } from "react";
 
-import { providerClients } from "~/components/settings/providerDriverMeta";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
-import { UsageLimitsSection } from "~/components/usage/UsageLimits";
 import { useNowMinute } from "~/hooks/useNowMinute";
 import { cn } from "~/lib/utils";
 import { UsageLimitsAlertsView } from "./UsageLimitsAlertsView";
 import { UsageLimitsExpiriesView } from "./UsageLimitsExpiriesView";
 import { UsageLimitsMatrixView } from "./UsageLimitsMatrixView";
+import { UsageLimitsPoolTableView } from "./UsageLimitsPoolTableView";
+import { accountDisplayLabel, isAccountAtRisk } from "./usageLimitsPresentation";
 import { UsageLimitsResetsView } from "./UsageLimitsResetsView";
 import {
   type UsageLimitsLayout,
@@ -32,12 +28,6 @@ function resolveLimitsNow(nowMinute: string, refreshTickNow: number): number {
   return Math.max(refreshTickNow, Number.isFinite(parsedMinute) ? parsedMinute : 0);
 }
 
-function accountDisplayLabel(account: NormalizedLimitAccount): string {
-  if (account.displayName) return account.displayName;
-  if (account.driver) return providerClients.get(account.driver)?.label ?? String(account.driver);
-  return account.sourceLabel ?? account.key;
-}
-
 /**
  * Isolated minute-clock wrapper around the four-lens Limits view so countdowns update quietly
  * every minute without forcing full-page repaints when viewing Overview.
@@ -45,14 +35,10 @@ function accountDisplayLabel(account: NormalizedLimitAccount): string {
 export function UsageLimitsEnhanced({
   presentations,
   identityPresentations,
-  selectedEnvironmentIds,
-  hiddenProviders,
   refreshTickNow,
 }: {
   readonly presentations: LimitPresentations;
   readonly identityPresentations: LimitPresentations;
-  readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
-  readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly refreshTickNow: number;
 }) {
   const gt = useGT();
@@ -80,6 +66,7 @@ export function UsageLimitsEnhanced({
   );
 
   const [editingAccountKey, setEditingAccountKey] = useState<string | null>(null);
+  const [riskOnly, setRiskOnly] = useState(false);
 
   const intelligence = collectLimitsIntelligence({
     presentations,
@@ -88,6 +75,10 @@ export function UsageLimitsEnhanced({
     alertThresholdPercent,
     manualOverrides: manualSubscriptionOverrides,
   });
+
+  const atRiskAccounts = intelligence.accounts.filter(isAccountAtRisk);
+  const effectiveRiskOnly = riskOnly && atRiskAccounts.length > 0;
+  const visiblePoolAccounts = effectiveRiskOnly ? atRiskAccounts : intelligence.accounts;
 
   const editingAccount =
     editingAccountKey === null
@@ -105,92 +96,157 @@ export function UsageLimitsEnhanced({
         ? "bg-warning/15 text-warning-foreground"
         : "bg-muted text-muted-foreground";
 
+  const lenses: readonly {
+    readonly value: UsageLimitsLens;
+    readonly testId: string;
+    readonly label: string;
+    readonly badge?: number;
+    readonly badgeTone?: string;
+  }[] = [
+    { value: "pools", testId: "usage-limits-lens-pools", label: gt("Pools") },
+    { value: "resets", testId: "usage-limits-lens-resets", label: gt("Resets") },
+    {
+      value: "alerts",
+      testId: "usage-limits-lens-alerts",
+      label: gt("Alerts"),
+      ...(totalAlerts > 0 ? { badge: totalAlerts, badgeTone: alertBadgeTone } : {}),
+    },
+    {
+      value: "expiries",
+      testId: "usage-limits-lens-expiries",
+      label: gt("Expiries"),
+      ...(intelligence.expiries.length > 0
+        ? { badge: intelligence.expiries.length, badgeTone: "bg-muted text-muted-foreground" }
+        : {}),
+    },
+  ];
+
   return (
-    <div data-testid="usage-limits-enhanced" className="flex flex-col gap-5">
-      <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card/65 px-4 py-3">
+    <div data-testid="usage-limits-enhanced" className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-col gap-0.5">
-            <h2 className="text-sm font-medium text-foreground">
-              <T>Subscription quota intelligence</T>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">
+              <T>Subscription quotas</T>
             </h2>
-            <p className="text-xs text-muted-foreground tabular-nums">
-              {gt("{accounts} accounts · {windows} windows · {alerts} alerts", {
-                accounts: intelligence.summary.accountCount,
-                windows: intelligence.summary.windowCount,
-                alerts: totalAlerts,
-              })}
-            </p>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground tabular-nums">
+              <span>
+                {gt("{count, plural, one {{count} account} other {{count} accounts}}", {
+                  count: intelligence.summary.accountCount,
+                })}
+              </span>
+              <span aria-hidden className="h-3 w-px bg-border/70" />
+              <span>
+                {gt("{count, plural, one {{count} window} other {{count} windows}}", {
+                  count: intelligence.summary.windowCount,
+                })}
+              </span>
+              {totalAlerts > 0 ? (
+                <>
+                  <span aria-hidden className="h-3 w-px bg-border/70" />
+                  <button
+                    type="button"
+                    onClick={() => setLimitsLens("alerts")}
+                    className={cn(
+                      "inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium transition-opacity outline-none hover:opacity-85 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                      alertBadgeTone,
+                    )}
+                  >
+                    <AlertTriangleIcon className="size-3" aria-hidden />
+                    <span>
+                      {gt("{count, plural, one {{count} alert} other {{count} alerts}}", {
+                        count: totalAlerts,
+                      })}
+                    </span>
+                  </button>
+                </>
+              ) : null}
+            </div>
           </div>
+
           <Link
             to="/settings/providers"
             hash="usage-providers"
             data-testid="usage-manage-hubs-link"
             aria-label={gt("Manage usage limit hubs")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <Settings2Icon className="size-3.5 text-muted-foreground" aria-hidden />
+            <Settings2Icon className="size-3.5" aria-hidden />
             <span>
               <T>Manage limit hubs</T>
             </span>
           </Link>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5">
-          <ToggleGroup
-            aria-label={gt("Limits lens")}
-            variant="segmented"
-            value={[limitsLens]}
-            onValueChange={(next) => {
-              const value = next[0] as UsageLimitsLens | undefined;
-              if (
-                value === "pools" ||
-                value === "resets" ||
-                value === "alerts" ||
-                value === "expiries"
-              ) {
-                setLimitsLens(value);
-              }
-            }}
-          >
-            <Toggle value="pools" data-testid="usage-limits-lens-pools">
-              <T>Pools</T>
-            </Toggle>
-            <Toggle value="resets" data-testid="usage-limits-lens-resets">
-              <T>Resets</T>
-            </Toggle>
-            <Toggle value="alerts" data-testid="usage-limits-lens-alerts">
-              <span className="inline-flex items-center gap-1.5">
-                <span>
-                  <T>Alerts</T>
-                </span>
-                {totalAlerts > 0 ? (
-                  <span
-                    data-testid="usage-limits-alerts-count"
-                    className={cn(
-                      "rounded-full px-1.5 py-0.5 text-2xs font-semibold tabular-nums",
-                      alertBadgeTone,
-                    )}
-                  >
-                    {totalAlerts}
-                  </span>
-                ) : null}
-              </span>
-            </Toggle>
-            <Toggle value="expiries" data-testid="usage-limits-lens-expiries">
-              <span className="inline-flex items-center gap-1.5">
-                <span>
-                  <T>Expiries</T>
-                </span>
-                {intelligence.expiries.length > 0 ? (
-                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-2xs font-semibold text-muted-foreground tabular-nums">
-                    {intelligence.expiries.length}
-                  </span>
-                ) : null}
-              </span>
-            </Toggle>
-          </ToggleGroup>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border/60 pb-1.5">
+          <div role="tablist" aria-label={gt("Limits lens")} className="flex items-center gap-1">
+            {lenses.map((lens) => {
+              const active = limitsLens === lens.value;
+              return (
+                <button
+                  key={lens.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  data-testid={lens.testId}
+                  onClick={() => setLimitsLens(lens.value)}
+                  className={cn(
+                    "relative inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )}
+                >
+                  <span>{lens.label}</span>
+                  {lens.badge !== undefined ? (
+                    <span
+                      data-testid={
+                        lens.value === "alerts" ? "usage-limits-alerts-count" : undefined
+                      }
+                      className={cn(
+                        "rounded-full px-1.5 py-0.5 text-3xs leading-none font-semibold tabular-nums",
+                        lens.badgeTone,
+                      )}
+                    >
+                      {lens.badge}
+                    </span>
+                  ) : null}
+                  {active ? (
+                    <span
+                      aria-hidden
+                      className="absolute inset-x-2 -bottom-1.5 h-0.5 rounded-full bg-foreground"
+                    />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {limitsLens === "pools" && atRiskAccounts.length > 0 ? (
+              <button
+                type="button"
+                data-testid="usage-limits-risk-filter"
+                aria-pressed={effectiveRiskOnly}
+                onClick={() => setRiskOnly((prev) => !prev)}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-1 rounded-md border px-2 py-1 text-2xs font-medium transition-colors outline-none tabular-nums focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  effectiveRiskOnly
+                    ? "border-warning/40 bg-warning/15 text-warning-foreground"
+                    : "border-border/60 bg-transparent text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    intelligence.summary.criticalAlertCount > 0 ? "bg-error" : "bg-warning",
+                  )}
+                />
+                <span>{gt("At risk ({count})", { count: atRiskAccounts.length })}</span>
+              </button>
+            ) : null}
+
             {limitsLens === "pools" ? (
               <ToggleGroup
                 aria-label={gt("Pools layout")}
@@ -201,48 +257,58 @@ export function UsageLimitsEnhanced({
                   if (value === "pool" || value === "matrix") setLimitsLayout(value);
                 }}
               >
-                <Toggle value="pool" data-testid="usage-limits-layout-pool">
-                  <T>Pool</T>
-                </Toggle>
                 <Toggle value="matrix" data-testid="usage-limits-layout-matrix">
-                  <T>Matrix</T>
+                  <LayoutGridIcon className="size-3.5" aria-hidden />
+                  <span>
+                    <T context="quota layout view">Cards</T>
+                  </span>
+                </Toggle>
+                <Toggle value="pool" data-testid="usage-limits-layout-pool">
+                  <ListIcon className="size-3.5" aria-hidden />
+                  <span>
+                    <T context="quota layout view">Table</T>
+                  </span>
                 </Toggle>
               </ToggleGroup>
             ) : null}
 
-            <ToggleGroup
-              aria-label={gt("Quota display mode")}
-              variant="segmented"
-              value={[quotaDisplayMode]}
-              onValueChange={(next) => {
-                const value = next[0] as UsageQuotaDisplayMode | undefined;
-                if (value === "remaining" || value === "used") setQuotaDisplayMode(value);
-              }}
-            >
-              <Toggle value="remaining" data-testid="usage-quota-mode-remaining">
-                <T context="remaining usage percentage">Left</T>
-              </Toggle>
-              <Toggle value="used" data-testid="usage-quota-mode-used">
-                <T context="consumed usage percentage">Used</T>
-              </Toggle>
-            </ToggleGroup>
+            {limitsLens === "pools" || limitsLens === "resets" || limitsLens === "alerts" ? (
+              <ToggleGroup
+                aria-label={gt("Quota display mode")}
+                variant="segmented"
+                value={[quotaDisplayMode]}
+                onValueChange={(next) => {
+                  const value = next[0] as UsageQuotaDisplayMode | undefined;
+                  if (value === "remaining" || value === "used") setQuotaDisplayMode(value);
+                }}
+              >
+                <Toggle value="remaining" data-testid="usage-quota-mode-remaining">
+                  <T context="remaining usage percentage">Left</T>
+                </Toggle>
+                <Toggle value="used" data-testid="usage-quota-mode-used">
+                  <T context="consumed usage percentage">Used</T>
+                </Toggle>
+              </ToggleGroup>
+            ) : null}
 
-            <ToggleGroup
-              aria-label={gt("Reset time format")}
-              variant="segmented"
-              value={[resetTimeMode]}
-              onValueChange={(next) => {
-                const value = next[0] as UsageResetTimeMode | undefined;
-                if (value === "countdown" || value === "exact") setResetTimeMode(value);
-              }}
-            >
-              <Toggle value="countdown" data-testid="usage-reset-mode-countdown">
-                <T>Countdown</T>
-              </Toggle>
-              <Toggle value="exact" data-testid="usage-reset-mode-exact">
-                <T>Exact</T>
-              </Toggle>
-            </ToggleGroup>
+            {limitsLens === "pools" || limitsLens === "resets" ? (
+              <ToggleGroup
+                aria-label={gt("Reset time format")}
+                variant="segmented"
+                value={[resetTimeMode]}
+                onValueChange={(next) => {
+                  const value = next[0] as UsageResetTimeMode | undefined;
+                  if (value === "countdown" || value === "exact") setResetTimeMode(value);
+                }}
+              >
+                <Toggle value="countdown" data-testid="usage-reset-mode-countdown">
+                  <T>Countdown</T>
+                </Toggle>
+                <Toggle value="exact" data-testid="usage-reset-mode-exact">
+                  <T>Exact</T>
+                </Toggle>
+              </ToggleGroup>
+            ) : null}
           </div>
         </div>
       </div>
@@ -250,19 +316,20 @@ export function UsageLimitsEnhanced({
       {limitsLens === "pools" ? (
         limitsLayout === "matrix" ? (
           <UsageLimitsMatrixView
-            accounts={intelligence.accounts}
+            accounts={visiblePoolAccounts}
             now={now}
             quotaDisplayMode={quotaDisplayMode}
             resetTimeMode={resetTimeMode}
             onEditOverride={(account) => setEditingAccountKey(account.key)}
           />
         ) : (
-          <UsageLimitsSection
-            selectedEnvironmentIds={selectedEnvironmentIds}
-            hiddenProviders={hiddenProviders}
+          <UsageLimitsPoolTableView
+            accounts={visiblePoolAccounts}
+            presentations={presentations}
             now={now}
             quotaDisplayMode={quotaDisplayMode}
             resetTimeMode={resetTimeMode}
+            onEditOverride={(account) => setEditingAccountKey(account.key)}
           />
         )
       ) : limitsLens === "resets" ? (

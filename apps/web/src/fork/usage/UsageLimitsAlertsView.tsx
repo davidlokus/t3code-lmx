@@ -13,45 +13,39 @@ import {
   InfoIcon,
 } from "lucide-react";
 
-import { providerClients } from "~/components/settings/providerDriverMeta";
 import { Button } from "~/components/ui/button";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
+import { accountDisplayLabel } from "./usageLimitsPresentation";
 import type { UsageQuotaDisplayMode } from "./usageOptionsStore";
 
 const THRESHOLD_PRESETS = [70, 80, 90] as const;
 
 function severityStyles(severity: LimitAlertSeverity): {
   readonly badge: string;
-  readonly border: string;
+  readonly accentBar: string;
   readonly icon: typeof AlertOctagonIcon;
 } {
   switch (severity) {
     case "critical":
       return {
         badge: "bg-error/15 text-error-foreground",
-        border: "border-error/35",
+        accentBar: "bg-error",
         icon: AlertOctagonIcon,
       };
     case "warning":
       return {
-        badge: "bg-warning/15 text-warning-foreground",
-        border: "border-warning/35",
+        badge: "bg-warning/12 text-warning-foreground",
+        accentBar: "bg-warning",
         icon: AlertTriangleIcon,
       };
     case "info":
       return {
         badge: "bg-info/12 text-info-foreground",
-        border: "border-info/35",
+        accentBar: "bg-info",
         icon: InfoIcon,
       };
   }
-}
-
-function accountDisplayLabel(account: NormalizedLimitAccount): string {
-  if (account.displayName) return account.displayName;
-  if (account.driver) return providerClients.get(account.driver)?.label ?? String(account.driver);
-  return account.sourceLabel ?? account.key;
 }
 
 export function UsageLimitsAlertsView({
@@ -92,7 +86,7 @@ export function UsageLimitsAlertsView({
     switch (alert.kind) {
       case "window-exhausted":
         return {
-          title: gt("{subject} · {window} exhausted", { subject, window: windowLabel }),
+          title: gt("{subject}: {window} exhausted", { subject, window: windowLabel }),
           detail: resetsIn
             ? gt("100% used ({resetsIn}).", { resetsIn })
             : gt("100% of this quota window has been used."),
@@ -108,14 +102,14 @@ export function UsageLimitsAlertsView({
             ? gt("{percent}% used", { percent: usedRounded })
             : gt("{percent}% left", { percent: remainingRounded });
         return {
-          title: gt("{subject} · {window} burning fast", { subject, window: windowLabel }),
+          title: gt("{subject}: {window} burning fast", { subject, window: windowLabel }),
           detail: eta
-            ? gt("{pct} · {ratio}× pace, projected to run out in {eta}.", {
+            ? gt("{pct}, {ratio}× pace, projected to run out in {eta}.", {
                 pct,
                 ratio: alert.window?.pace?.paceRatio ?? "-",
                 eta,
               })
-            : gt("{pct} · projected to exhaust before the window resets.", { pct }),
+            : gt("{pct}, projected to exhaust before the window resets.", { pct }),
         };
       }
       case "window-low": {
@@ -124,7 +118,7 @@ export function UsageLimitsAlertsView({
             ? gt("{percent}% used", { percent: usedRounded })
             : gt("{percent}% left", { percent: remainingRounded });
         return {
-          title: gt("{subject} · {window} running low", { subject, window: windowLabel }),
+          title: gt("{subject}: {window} running low", { subject, window: windowLabel }),
           detail: resetsIn
             ? gt("{pct} ({resetsIn}).", { pct, resetsIn })
             : gt("{pct} remaining in this window.", { pct }),
@@ -181,8 +175,8 @@ export function UsageLimitsAlertsView({
   };
 
   return (
-    <div data-testid="usage-limits-alerts" className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/65 px-4 py-2.5">
+    <div data-testid="usage-limits-alerts" className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/55 bg-card/45 px-4 py-2.5">
         <div className="flex flex-col gap-0.5">
           <span className="text-xs font-medium text-foreground">
             <T>Low-quota warning threshold</T>
@@ -221,9 +215,9 @@ export function UsageLimitsAlertsView({
       {alerts.length === 0 ? (
         <div
           data-testid="usage-limits-alerts-empty"
-          className="flex flex-col items-center gap-2 rounded-xl border border-border/70 bg-card/65 px-5 py-10 text-center"
+          className="flex flex-col items-center gap-1.5 rounded-xl border border-border/55 bg-card/45 px-5 py-10 text-center"
         >
-          <CheckCircle2Icon className="size-6 text-success-foreground" aria-hidden />
+          <CheckCircle2Icon className="size-5 text-muted-foreground" aria-hidden />
           <p className="text-sm font-medium text-foreground">
             <T>All limits look healthy</T>
           </p>
@@ -232,7 +226,7 @@ export function UsageLimitsAlertsView({
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-2.5">
+        <div className="flex flex-col divide-y divide-border/45 overflow-hidden rounded-xl border border-border/55 bg-card/45">
           {alerts.map((alert) => {
             const style = severityStyles(alert.severity);
             const Icon = style.icon;
@@ -243,26 +237,27 @@ export function UsageLimitsAlertsView({
                 data-testid="usage-alert-card"
                 data-severity={alert.severity}
                 data-kind={alert.kind}
-                className={cn(
-                  "flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card/65 px-4 py-3",
-                  style.border,
-                )}
+                className="relative flex flex-wrap items-center justify-between gap-3 px-4 py-3 ps-5"
               >
-                <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  aria-hidden
+                  className={cn("absolute inset-y-2 left-1.5 w-0.5 rounded-full", style.accentBar)}
+                />
+                <div className="flex min-w-0 flex-1 items-start gap-2.5">
                   <span
                     className={cn(
-                      "mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md",
+                      "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded",
                       style.badge,
                     )}
                   >
-                    <Icon className="size-3.5" aria-hidden />
+                    <Icon className="size-3" aria-hidden />
                   </span>
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{copy.title}</span>
                       <span
                         className={cn(
-                          "rounded-full px-1.5 py-0.5 text-2xs font-medium uppercase",
+                          "rounded px-1.5 py-0.5 text-3xs font-medium uppercase",
                           style.badge,
                         )}
                       >

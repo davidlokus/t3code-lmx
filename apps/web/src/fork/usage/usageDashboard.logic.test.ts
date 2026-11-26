@@ -198,7 +198,7 @@ describe("usage options", () => {
       budgetScope: "reportedOnly",
       hiddenProviders: ["claude"],
       limitsLens: "pools",
-      limitsLayout: "pool",
+      limitsLayout: "matrix",
       quotaDisplayMode: "remaining",
       resetTimeMode: "countdown",
       alertThresholdPercent: 80,
@@ -243,7 +243,7 @@ describe("usage options", () => {
       metric: "tokens",
       monthlyBudgetUsd: 20,
       limitsLens: "resets",
-      limitsLayout: "pool",
+      limitsLayout: "matrix",
       quotaDisplayMode: "used",
       resetTimeMode: "countdown",
       alertThresholdPercent: 80,
@@ -280,7 +280,7 @@ describe("usage options", () => {
     try {
       initial.resetUsageUiOptions();
       initial.setLimitsLens("expiries");
-      initial.setLimitsLayout("matrix");
+      initial.setLimitsLayout("pool");
       initial.setQuotaDisplayMode("used");
       initial.setResetTimeMode("exact");
       initial.setAlertThresholdPercent(90);
@@ -298,7 +298,7 @@ describe("usage options", () => {
       });
       expect(readPersistedUsageUiOptions(localStorage)).toMatchObject({
         limitsLens: "expiries",
-        limitsLayout: "matrix",
+        limitsLayout: "pool",
         quotaDisplayMode: "used",
         resetTimeMode: "exact",
         alertThresholdPercent: 90,

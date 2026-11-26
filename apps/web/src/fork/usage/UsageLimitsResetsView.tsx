@@ -1,18 +1,20 @@
 import { formatDuration, formatResetsIn } from "@t3tools/shared/usageLimitsCopy";
 import type {
-  NormalizedLimitAccount,
   ResetTimelineEntry,
   ResetTimelineGroup,
 } from "@t3tools/shared/usageLimitsIntelligence";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react";
-import { ClockIcon, GlobeIcon } from "lucide-react";
+import { ClockIcon } from "lucide-react";
 
-import { ProviderInstanceIcon } from "~/components/chat/ProviderInstanceIcon";
-import { providerClients } from "~/components/settings/providerDriverMeta";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { formatUpcomingOrBareUtcDate } from "~/timestampFormat";
-import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
+import { LimitSourceIcon, RestrainedQuotaBar } from "./UsageLimitPrimitives";
+import {
+  accountDisplayLabel,
+  effectiveWindowTone,
+  restrainedTextClass,
+} from "./usageLimitsPresentation";
 import type { UsageQuotaDisplayMode, UsageResetTimeMode } from "./usageOptionsStore";
 
 const GROUP_ORDER: readonly ResetTimelineGroup[] = ["next24h", "next7d", "later", "unscheduled"];
@@ -23,34 +25,6 @@ const GROUP_TITLES: Record<ResetTimelineGroup, string> = {
   later: msg("Later"),
   unscheduled: msg("No reset schedule"),
 };
-
-function toneTextClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "text-error-foreground";
-    case "warning":
-      return "text-warning-foreground";
-    case "normal":
-      return "text-success-foreground";
-  }
-}
-
-function toneBarClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "bg-error";
-    case "warning":
-      return "bg-warning";
-    case "normal":
-      return "bg-success";
-  }
-}
-
-function accountDisplayLabel(account: NormalizedLimitAccount): string {
-  if (account.displayName) return account.displayName;
-  if (account.driver) return providerClients.get(account.driver)?.label ?? String(account.driver);
-  return account.sourceLabel ?? account.key;
-}
 
 export function UsageLimitsResetsView({
   resets,
@@ -72,7 +46,7 @@ export function UsageLimitsResetsView({
     return (
       <div
         data-testid="usage-limits-resets-empty"
-        className="rounded-xl border border-border/70 bg-card/65 px-5 py-10 text-center text-sm text-muted-foreground"
+        className="rounded-xl border border-border/55 bg-card/45 px-5 py-10 text-center text-sm text-muted-foreground"
       >
         <T>No quota reset windows reported on the selected environments.</T>
       </div>
@@ -88,10 +62,10 @@ export function UsageLimitsResetsView({
           <section
             key={group}
             data-testid={`usage-resets-group-${group}`}
-            className="flex flex-col gap-2.5"
+            className="flex flex-col gap-2"
           >
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-medium tracking-wide text-muted-foreground">
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <h3 className="text-xs font-medium text-muted-foreground">
                 {m(GROUP_TITLES[group])}
               </h3>
               <span className="text-2xs text-muted-foreground tabular-nums">
@@ -101,7 +75,7 @@ export function UsageLimitsResetsView({
               </span>
             </div>
 
-            <div className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/65">
+            <div className="flex flex-col divide-y divide-border/45 overflow-hidden rounded-xl border border-border/55 bg-card/45">
               {items.map((entry) => {
                 const { account, window } = entry;
                 const label = accountDisplayLabel(account);
@@ -111,7 +85,7 @@ export function UsageLimitsResetsView({
                 const usedRounded = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
                 const displayedPercent =
                   quotaDisplayMode === "used" ? usedRounded : remainingRounded;
-                const tone = quotaRiskTone(remainingRounded);
+                const tone = effectiveWindowTone(window);
                 const countdown = formatResetsIn(window, now, m, "in") || null;
                 const exactTime =
                   window.resetsAt && window.resetsAtMs !== null
@@ -137,29 +111,26 @@ export function UsageLimitsResetsView({
                   <div
                     key={`${account.key}:${window.id}`}
                     data-testid="usage-reset-row"
-                    className="grid grid-cols-1 items-center gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]"
+                    className="grid grid-cols-1 items-center gap-3 px-4 py-2.5 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
-                      {account.driver ? (
-                        <ProviderInstanceIcon
-                          driverKind={account.driver}
-                          displayName={label}
-                          accentColor={account.accentColor}
-                          indicatorBackground="var(--card)"
-                          className="size-5 shrink-0"
-                          iconClassName="size-4 text-foreground/80"
-                        />
-                      ) : (
-                        <GlobeIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                      )}
+                      <LimitSourceIcon
+                        driver={account.driver}
+                        sourceKind={account.sourceKind}
+                        label={label}
+                        accentColor={account.accentColor}
+                        size="sm"
+                      />
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="truncate text-sm font-medium text-foreground">
                             {label}
                           </span>
-                          <span className="text-xs text-muted-foreground">· {window.label}</span>
+                          <span className="truncate text-xs text-muted-foreground">
+                            {window.label}
+                          </span>
                           {account.plan ? (
-                            <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
+                            <span className="rounded bg-muted/80 px-1.5 py-0.5 text-3xs text-muted-foreground">
                               {account.plan}
                             </span>
                           ) : null}
@@ -176,9 +147,9 @@ export function UsageLimitsResetsView({
                       </div>
                     </div>
 
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
-                        <span className={cn("font-semibold", toneTextClass(tone))}>
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <div className="flex items-baseline justify-between gap-2 text-xs tabular-nums">
+                        <span className={cn("font-semibold", restrainedTextClass(tone))}>
                           {quotaDisplayMode === "used"
                             ? gt("{percent}% used", { percent: displayedPercent })
                             : gt("{percent}% left", { percent: displayedPercent })}
@@ -189,12 +160,7 @@ export function UsageLimitsResetsView({
                           </span>
                         ) : null}
                       </div>
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className={cn("h-full rounded-full", toneBarClass(tone))}
-                          style={{ width: `${displayedPercent}%` }}
-                        />
-                      </div>
+                      <RestrainedQuotaBar percent={displayedPercent} tone={tone} height="xs" />
                     </div>
 
                     <div className="flex items-center gap-1.5 text-xs tabular-nums sm:flex-col sm:items-end sm:gap-0.5">

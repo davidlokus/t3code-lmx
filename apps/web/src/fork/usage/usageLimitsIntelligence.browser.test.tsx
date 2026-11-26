@@ -356,35 +356,45 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
     const firstStripChip = page.getByTestId("usage-quota-strip-chip").first();
     await expect.element(firstStripChip.getByText("25%")).toBeVisible();
 
-    // Switch to Limits view.
+    // Switch to Limits view (defaults to Bento Cards layout sorted risk-first).
     await userEvent.click(page.getByTestId("usage-view-limits"));
-    await expect.element(page.getByTestId("usage-limits-enhanced")).toBeVisible();
-
-    // Default Pool view displays remaining % ("left"); switch to Used mode.
-    const firstWindowCard = page.getByTestId("usage-limit-window-card").first();
-    await expect.element(firstWindowCard.getByText("25%", { exact: true }).first()).toBeVisible();
-    await expect.element(firstWindowCard.getByText("left", { exact: true })).toBeVisible();
-    await userEvent.click(page.getByTestId("usage-quota-mode-used"));
-    await expect.element(firstWindowCard.getByText("75%", { exact: true }).first()).toBeVisible();
-    await expect.element(firstWindowCard.getByText("used", { exact: true })).toBeVisible();
-
-    // Switch to Matrix layout inside Pools: displays burn pace badge, balances, and HTTP quota source.
-    await userEvent.click(page.getByTestId("usage-limits-layout-matrix"));
+    const limitsRoot = page.getByTestId("usage-limits-enhanced");
+    await expect.element(limitsRoot).toBeVisible();
     await expect.element(page.getByTestId("usage-limits-matrix")).toBeVisible();
-    await expect.element(page.getByText("Claude Work")).toBeVisible();
-    await expect.element(page.getByText("Shared Pool")).toBeVisible();
-    await expect.element(page.getByText("75 credits / 100 credits")).toBeVisible();
-    await expect.element(page.getByTestId("usage-matrix-balance-pill")).toBeVisible();
-    await expect
-      .element(page.getByTestId("usage-matrix-pace-badge").first())
-      .toHaveAttribute("data-pace", "will-exhaust");
+    expect(limitsRoot.element().textContent ?? "").not.toContain("·");
 
-    // Toggle Exact reset format and confirm matrix reset text actually switches from countdown to a formatted clock time.
-    const firstMatrixReset = page.getByTestId("usage-matrix-window-reset").first();
-    await expect.element(firstMatrixReset).toHaveTextContent("resets in 2h 30m");
+    // Risk-first sorting places critical Shared Pool (92% used) ahead of warning accounts.
+    const accountCards = page.getByTestId("usage-matrix-account-card");
+    await expect.element(accountCards.first().getByText("Shared Pool")).toBeVisible();
+    const claudeCard = accountCards.filter({ hasText: "Claude Work" }).first();
+    await expect.element(claudeCard).toBeVisible();
+    await expect.element(claudeCard.getByTestId("usage-matrix-balance-pill")).toBeVisible();
+    await expect
+      .element(claudeCard.getByTestId("usage-matrix-pace-badge").first())
+      .toHaveAttribute("data-pace", "will-exhaust");
+    await expect
+      .element(claudeCard.getByTestId("usage-matrix-window-percent").first())
+      .toHaveTextContent("25% left");
+
+    // Switch to Used mode and verify Bento Cards + Platform Table stay in sync.
+    await userEvent.click(page.getByTestId("usage-quota-mode-used"));
+    await expect
+      .element(claudeCard.getByTestId("usage-matrix-window-percent").first())
+      .toHaveTextContent("75% used");
+    await expect.element(claudeCard.getByText("75 credits / 100 credits")).toBeVisible();
+
+    await userEvent.click(page.getByTestId("usage-limits-layout-pool"));
+    await expect.element(page.getByTestId("usage-limits-pool-table")).toBeVisible();
+    const firstWindowCard = page.getByTestId("usage-limit-window-card").first();
+    await expect.element(firstWindowCard.getByText("75% used", { exact: true })).toBeVisible();
+
+    // Switch back to Bento Cards and toggle Exact reset format.
+    await userEvent.click(page.getByTestId("usage-limits-layout-matrix"));
+    const claudeReset = claudeCard.getByTestId("usage-matrix-window-reset").first();
+    await expect.element(claudeReset).toHaveTextContent("resets in 2h 30m");
     await userEvent.click(page.getByTestId("usage-reset-mode-exact"));
-    await expect.element(firstMatrixReset).not.toHaveTextContent("resets in 2h 30m");
-    await expect.element(firstMatrixReset.getByText(/Resets /)).toBeVisible();
+    await expect.element(claudeReset).not.toHaveTextContent("resets in 2h 30m");
+    await expect.element(claudeReset.getByText(/Resets /)).toBeVisible();
 
     // Returning to Overview reflects Used % and Exact reset format on the Quota Strip too.
     await userEvent.click(page.getByTestId("usage-view-overview"));
@@ -398,7 +408,7 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
     await userEvent.click(page.getByTestId("usage-options-threshold-70"));
     await userEvent.keyboard("{Escape}");
     await expect
-      .element(page.getByTestId("usage-matrix-window-percent").first())
+      .element(claudeCard.getByTestId("usage-matrix-window-percent").first())
       .toHaveTextContent("25% left");
     expect(useUsageOptionsStore.getState().alertThresholdPercent).toBe(70);
   });
@@ -424,11 +434,11 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
     await userEvent.click(page.getByTestId("usage-limits-lens-alerts"));
     await expect.element(page.getByTestId("usage-limits-alerts")).toBeVisible();
     await expect
-      .element(page.getByText(/Codex Personal · Session running low/))
+      .element(page.getByText(/Codex Personal: Session running low/))
       .not.toBeInTheDocument();
 
     await userEvent.click(page.getByTestId("usage-alert-threshold-70"));
-    await expect.element(page.getByText(/Codex Personal · Session running low/)).toBeVisible();
+    await expect.element(page.getByText(/Codex Personal: Session running low/)).toBeVisible();
 
     // 3. Expiries lens shows credit & balance expiries and lets user record & clear a manual renewal.
     await userEvent.click(page.getByTestId("usage-limits-lens-expiries"));
@@ -537,12 +547,12 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
       </AppAtomRegistryProvider>,
     );
 
-    // Pool layout hides the Codex-bound HTTP quota while keeping the unbound HTTP source.
+    // Default Bento Cards layout hides the Codex-bound HTTP quota while keeping the unbound HTTP source.
     await expect.element(page.getByText("Unbound Team HTTP")).toBeVisible();
     await expect.element(page.getByText("Bound Codex HTTP")).not.toBeInTheDocument();
 
-    // Matrix layout matches the exact same bound-HTTP projection.
-    await userEvent.click(page.getByTestId("usage-limits-layout-matrix"));
+    // Platform Table layout matches the exact same bound-HTTP projection.
+    await userEvent.click(page.getByTestId("usage-limits-layout-pool"));
     await expect.element(page.getByText("Unbound Team HTTP")).toBeVisible();
     await expect.element(page.getByText("Bound Codex HTTP")).not.toBeInTheDocument();
 
@@ -969,5 +979,115 @@ describe("Usage Limits Intelligence four-lens UI & Overview streak", () => {
     const unscheduled = page.getByTestId("usage-resets-group-unscheduled");
     await expect.element(unscheduled).toBeVisible();
     await expect.element(unscheduled.getByText(/Rollover Window/)).toBeVisible();
+  });
+
+  it("deduplicates OMP/plan metadata, filters at-risk Bento cards, and expands multi-account platform table rows", async () => {
+    vi.clearAllMocks();
+    window.localStorage.removeItem(USAGE_UI_OPTIONS_STORAGE_KEY);
+    useUsageOptionsStore.getState().resetUsageUiOptions();
+    useUsageOptionsStore.setState({ manualSubscriptionOverrides: {} });
+    useUsageOptionsStore.getState().setView("limits");
+    useUsageOptionsStore.getState().setLimitsLens("pools");
+    useUsageOptionsStore.getState().setLimitsLayout("matrix");
+
+    const ompSource: UsageLimitSourceSnapshot = {
+      id: UsageLimitSourceId.make("omp-local"),
+      kind: "omp",
+      label: "OMP Local Cache",
+      checkedAt: NOW_ISO,
+      accounts: [
+        {
+          id: "cursor-1",
+          driver: ProviderDriverKind.make("cursor"),
+          email: "first@example.com",
+          usageLimits: {
+            checkedAt: NOW_ISO,
+            windows: [
+              {
+                id: "auto",
+                kind: "monthly",
+                label: "Cursor Models",
+                usedPercent: 10,
+                resetsAt: "2099-06-20T10:00:00.000Z",
+              },
+            ],
+          },
+        },
+        {
+          id: "cursor-2",
+          driver: ProviderDriverKind.make("cursor"),
+          email: "second@example.com",
+          usageLimits: {
+            checkedAt: NOW_ISO,
+            windows: [
+              {
+                id: "auto",
+                kind: "monthly",
+                label: "Cursor Models",
+                usedPercent: 85,
+                resetsAt: "2099-06-18T10:00:00.000Z",
+              },
+            ],
+          },
+        },
+        {
+          id: "muse-1",
+          driver: ProviderDriverKind.make("muse"),
+          email: "muse@example.com",
+          usageLimits: {
+            checkedAt: NOW_ISO,
+            planTier: "Muse Code Power Usage",
+            windows: [
+              {
+                id: "five_hour",
+                kind: "session",
+                label: "5 Hours",
+                scopeLabel: "Muse Code Power Usage",
+                usedPercent: 2,
+                resetsAt: "2099-06-15T15:00:00.000Z",
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    setPresentations([], [ompSource]);
+    installUsageMock(["2099-06-15"]);
+
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <UsagePage />
+      </AppAtomRegistryProvider>,
+    );
+
+    // 3 Bento cards initially, risk account sorted first; duplicate "OMP cache" badge suppressed when "OMP Local Cache" is shown.
+    expect(page.getByTestId("usage-matrix-account-card").elements()).toHaveLength(3);
+    await expect
+      .element(page.getByTestId("usage-matrix-account-card").first().getByText("15% left"))
+      .toBeVisible();
+    await expect.element(page.getByText("OMP cache")).not.toBeInTheDocument();
+    // Muse Code Power Usage appears once in the plan badge, not duplicated inside the window row.
+    expect(page.getByText("Muse Code Power Usage").elements()).toHaveLength(1);
+
+    // Risk filter narrows Bento cards down to the single at-risk Cursor account, then restores all 3.
+    const riskFilter = page.getByTestId("usage-limits-risk-filter");
+    await expect.element(riskFilter).toHaveTextContent("At risk (1)");
+    await userEvent.click(riskFilter);
+    expect(page.getByTestId("usage-matrix-account-card").elements()).toHaveLength(1);
+    await userEvent.click(riskFilter);
+    expect(page.getByTestId("usage-matrix-account-card").elements()).toHaveLength(3);
+
+    // Switch to Table layout: Cursor's 2 accounts aggregate into one expandable row (×2).
+    await userEvent.click(page.getByTestId("usage-limits-layout-pool"));
+    await expect.element(page.getByTestId("usage-limits-pool-table")).toBeVisible();
+    expect(page.getByTestId("usage-pool-group").elements()).toHaveLength(2);
+    expect(page.getByTestId("usage-pool-account-subrow").elements()).toHaveLength(0);
+
+    await userEvent.click(page.getByTestId("usage-pool-expand-btn"));
+    expect(page.getByTestId("usage-pool-account-subrow").elements()).toHaveLength(2);
+    expect(page.getByTestId("usage-limits-enhanced").element().textContent ?? "").not.toContain(
+      "·",
+    );
   });
 });
