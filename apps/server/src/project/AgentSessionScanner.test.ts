@@ -96,7 +96,7 @@ const layerScannerTest = (input: ScannerTestInput) =>
         Layer.provide(input.processRunner),
       )
   ).pipe(
-    Layer.provide(
+    Layer.provideMerge(
       Layer.mergeAll(
         ServerSettings.layerTest({
           providerInstances: {
@@ -199,6 +199,27 @@ const codexRolloutLine = (cwd: string) =>
 const decodeImportSource = Schema.decodeUnknownSync(AgentSessionImportSource);
 
 const encodeTranscriptRecord = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+const ompHeader = (cwd: string, id: string, title = "") =>
+  [
+    { type: "title", v: 1, title },
+    { type: "session", version: 3, id, cwd },
+  ] as const;
+
+const ompMessage = (
+  id: string,
+  parentId: string | null,
+  role: "user" | "assistant",
+  text: string,
+) => ({
+  type: "message",
+  id,
+  parentId,
+  message: { role, content: [{ type: "text", text }] },
+});
+
+const encodeTranscript = (records: ReadonlyArray<unknown>) =>
+  records.map((record) => encodeTranscriptRecord(record)).join("\n");
 
 function makeRecordLimitTranscript(cwd: string, overflow: boolean): string {
   const records =
@@ -929,6 +950,176 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           [codexWorkspace, ["codex"]],
           [claudeWorkspace, ["claudeAgent"]],
         ]);
+      }),
+    );
+
+    it.effect("does not touch default or explicitly disabled omp session roots", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("t3code-omp-home-");
+        const workspace = yield* makeTempDir("t3code-omp-workspace-");
+        const disabledAgentDir = path.join(home, "disabled-omp");
+        const roots = [
+          path.join(home, ".omp", "agent", "sessions"),
+          path.join(disabledAgentDir, "sessions"),
+        ];
+        for (const root of roots) {
+          yield* writeTranscript({
+            filePath: path.join(root, "ignored.jsonl"),
+            contents: encodeTranscript(ompHeader(workspace, "ignored")),
+            mtimeMs: Date.parse("2026-08-23T12:00:00.000Z"),
+          });
+        }
+        const visited = new Set<string>();
+        const result = yield* runScan({
+          claudeHomePath: path.join(home, "claude"),
+          codexHomePath: path.join(home, "codex"),
+          providerInstances: {
+            [ProviderInstanceId.make("omp-disabled")]: {
+              driver: ProviderDriverKind.make("omp"),
+              enabled: false,
+              config: { agentDir: disabledAgentDir },
+            },
+          },
+        }).pipe(
+          Effect.provideService(HostProcess.Environment, { HOME: home, USERPROFILE: home }),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fileSystem,
+            stat: (target) => {
+              visited.add(target);
+              return fileSystem.stat(target);
+            },
+            readDirectory: (target, options) => {
+              visited.add(target);
+              return fileSystem.readDirectory(target, options);
+            },
+          }),
+        );
+        expect(roots.filter((root) => visited.has(root))).toEqual([]);
+        expect(result.candidates).toEqual([]);
+      }),
+    );
+
+    it.effect("scans enabled omp profiles and agent dirs once, without ambient Pi roots", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("t3code-omp-home-");
+        const workspaceRoot = yield* makeTempDir("t3code-omp-workspace-");
+        const ignoredWorkspace = yield* makeTempDir("t3code-omp-ignored-workspace-");
+        const workRoot = path.join(
+          home,
+          ".omp",
+          "profiles",
+          "work",
+          "agent",
+          "sessions",
+          "--work--",
+        );
+        const extraRoot = path.join(home, "extra sessions");
+        const ambientAgent = path.join(home, "ambient");
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+
+        const sources = [
+          ["default", "omp", path.join(home, ".omp", "agent", "sessions")],
+          ["work", "omp-work", workRoot],
+          [
+            "personal",
+            "omp-personal",
+            path.join(home, ".omp", "profiles", "personal", "agent", "sessions"),
+          ],
+          ["custom", "omp-custom", path.join(home, "custom", "sessions")],
+          ["extra", "omp-custom", extraRoot],
+        ] as const;
+        for (const [id, , root] of sources) {
+          yield* writeTranscript({
+            filePath: path.join(root, `${id}.jsonl`),
+            contents: encodeTranscript([
+              ...ompHeader(workspaceRoot, id),
+              ompMessage("prompt", null, "user", `Resume ${id}`),
+            ]),
+            mtimeMs: nowMs - 1_000,
+          });
+        }
+        for (const root of [
+          path.join(ambientAgent, "sessions"),
+          path.join(home, "ignored", "sessions"),
+        ]) {
+          yield* writeTranscript({
+            filePath: path.join(root, "ignored.jsonl"),
+            contents: encodeTranscript(ompHeader(ignoredWorkspace, "ignored")),
+            mtimeMs: nowMs - 1_000,
+          });
+        }
+
+        const driver = ProviderDriverKind.make("omp");
+        const testInput = {
+          claudeHomePath: path.join(home, "claude"),
+          codexHomePath: path.join(home, "codex"),
+          providerInstances: {
+            [ProviderInstanceId.make("omp")]: { driver, enabled: true },
+            [ProviderInstanceId.make("omp-duplicate")]: {
+              driver,
+              enabled: true,
+              config: { profile: "default" },
+            },
+            [ProviderInstanceId.make("omp-work")]: {
+              driver,
+              enabled: true,
+              config: {
+                profile: "work",
+                agentDir: "~/ignored",
+                launchArgs: `--session-dir "${workRoot}"`,
+              },
+            },
+            [ProviderInstanceId.make("omp-personal")]: {
+              driver,
+              enabled: true,
+              config: { launchArgs: "--profile=personal" },
+            },
+            [ProviderInstanceId.make("omp-custom")]: {
+              driver,
+              enabled: true,
+              config: { agentDir: "~/custom", launchArgs: `--session-dir="${extraRoot}"` },
+            },
+          },
+        };
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          expect((yield* scanner.scan).candidates).toMatchObject([
+            { path: workspaceRoot, sources: ["omp"], threadCount: sources.length },
+          ]);
+          const threads = yield* scanner.recentThreads(workspaceRoot).pipe(Stream.runCollect);
+          expect(
+            Array.from(threads).map((outcome) =>
+              outcome._tag === "Importable"
+                ? [
+                    outcome.thread.providerSessionId,
+                    outcome.thread.providerInstanceId,
+                    outcome.source.filePath,
+                  ]
+                : outcome,
+            ),
+          ).toEqual(
+            sources
+              .map(
+                ([id, instance, root]) => [id, instance, path.join(root, `${id}.jsonl`)] as const,
+              )
+              .sort((left, right) => left[2].localeCompare(right[2])),
+          );
+        }).pipe(
+          Effect.provide(layerScannerTest(testInput)),
+          Effect.provideService(HostProcess.Environment, {
+            HOME: home,
+            USERPROFILE: home,
+            PI_CODING_AGENT_DIR: ambientAgent,
+            PI_CODING_AGENT_SESSION_DIR: path.join(ambientAgent, "sessions"),
+            PI_PROFILE: "ambient",
+            PI_CONFIG_DIR: ambientAgent,
+            OMP_CODING_AGENT_DIR: ambientAgent,
+          }),
+        );
       }),
     );
 
@@ -1763,6 +1954,154 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           ["Legacy prompt", "Legacy answer"],
         ]);
         expect(threads[0]).toMatchObject({ source: "pi", title: "Pi refactor" });
+      }),
+    );
+
+    it.effect("reads the omp session header, active message branch, and both model formats", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("t3code-omp-home-");
+        const workspaceRoot = yield* makeTempDir("t3code-omp-workspace-");
+        const decoy = yield* makeTempDir("t3code-omp-decoy-");
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const omp = ProviderInstanceId.make("omp");
+        const cases = [
+          {
+            id: "named",
+            title: "Title prelude",
+            name: "Renamed session",
+            model: { provider: "fixture", modelId: "selected" },
+            expected: ["Renamed session", "fixture/selected"],
+          },
+          {
+            id: "titled",
+            title: "Title prelude",
+            name: "",
+            model: { model: "fixture/recorded" },
+            expected: ["Title prelude", "fixture/recorded"],
+          },
+          {
+            id: "untitled",
+            title: "",
+            name: undefined,
+            model: { modelId: "model-without-provider" },
+            expected: ["First prompt", "model-without-provider"],
+          },
+        ];
+        for (const fixture of cases) {
+          const [title, session] = ompHeader(workspaceRoot, fixture.id, fixture.title);
+          yield* writeTranscript({
+            filePath: path.join(home, "agent", "sessions", `file-${fixture.id}.jsonl`),
+            contents: encodeTranscript([
+              { ...title, cwd: decoy },
+              session,
+              {
+                type: "model_change",
+                id: "initial-model",
+                parentId: null,
+                model: "fixture/initial",
+              },
+              ompMessage("user", "initial-model", "user", "First prompt"),
+              {
+                type: "model_change",
+                id: "other-model",
+                parentId: "user",
+                model: "fixture/abandoned",
+              },
+              ompMessage("other-answer", "other-model", "assistant", "Abandoned answer"),
+              ...(fixture.name === undefined
+                ? []
+                : [
+                    {
+                      type: "session_info",
+                      id: "name",
+                      parentId: "other-answer",
+                      name: fixture.name,
+                    },
+                  ]),
+              { type: "model_change", id: "chosen-model", parentId: "user", ...fixture.model },
+              {
+                type: "model_usage",
+                id: "usage",
+                parentId: "chosen-model",
+                provider: "aux",
+                model: "title-model",
+                usage: { input: 10 },
+              },
+              ompMessage("answer", "usage", "assistant", "Active answer"),
+              { type: "model_usage", id: "detached-usage", model: "aux/title-model" },
+            ]),
+            mtimeMs: nowMs - 1_000,
+          });
+        }
+        const threads = yield* runRecentThreads({
+          claudeHomePath: path.join(home, "claude"),
+          codexHomePath: path.join(home, "codex"),
+          providerInstances: {
+            [omp]: {
+              driver: ProviderDriverKind.make("omp"),
+              enabled: true,
+              config: { agentDir: path.join(home, "agent") },
+            },
+          },
+          workspaceRoot,
+        });
+        expect(
+          threads.map((thread) => ({
+            source: thread.source,
+            id: thread.providerSessionId,
+            title: thread.title,
+            model: thread.model,
+            messages: thread.messages.map((message) => message.text),
+          })),
+        ).toEqual(
+          cases.map(({ id, expected: [title, model] }) => ({
+            source: "omp",
+            id,
+            title,
+            model,
+            messages: ["First prompt", "Active answer"],
+          })),
+        );
+      }),
+    );
+
+    it.effect("skips cached omp history when its instance is disabled", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const home = yield* makeTempDir("t3code-omp-home-");
+        const workspaceRoot = yield* makeTempDir("t3code-omp-workspace-");
+        const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const omp = ProviderInstanceId.make("omp");
+        const driver = ProviderDriverKind.make("omp");
+        const agentDir = path.join(home, "agent");
+        yield* writeTranscript({
+          filePath: path.join(agentDir, "sessions", "previously-scanned.jsonl"),
+          contents: encodeTranscript([
+            ...ompHeader(workspaceRoot, "previously-scanned"),
+            ompMessage("prompt", null, "user", "Previously scanned"),
+          ]),
+          mtimeMs: nowMs - 1_000,
+        });
+        yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const settings = yield* ServerSettings.ServerSettingsService;
+          expect((yield* scanner.scan).candidates).toMatchObject([{ sources: ["omp"] }]);
+          yield* settings.updateSettings({
+            providerInstances: { [omp]: { driver, enabled: false } },
+          });
+          expect(yield* scanner.recentThreads(workspaceRoot).pipe(Stream.runCollect)).toEqual([]);
+        }).pipe(
+          Effect.provide(
+            layerScannerTest({
+              claudeHomePath: path.join(home, "claude"),
+              codexHomePath: path.join(home, "codex"),
+              providerInstances: { [omp]: { driver, enabled: true, config: { agentDir } } },
+            }),
+          ),
+        );
       }),
     );
 

@@ -21,12 +21,14 @@ import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { knownProviderFailureMessage } from "@t3tools/provider-core/server/failure";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -40,6 +42,7 @@ import type { OmpSettings } from "../settings.ts";
 import { OmpAdapterV2Driver } from "./adapter.ts";
 import { OMP_PROVIDER } from "./dialect.ts";
 import { type FakeOmp, makeFakeOmp } from "./fakeOmp.testkit.ts";
+import { makeOmpTextGeneration } from "./textGeneration.ts";
 
 const layerTest = Layer.mergeAll(
   NodeServices.layer,
@@ -349,6 +352,90 @@ describe("OmpAdapterV2", () => {
         ["workspace"],
       );
       assert.isFalse(fake.allRequests().some((request) => request["type"] === "prompt"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("holds the lease before spawning a resume and rejects duplicate launches", () =>
+    Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const agentDir = yield* fileSystem.makeTempDirectoryScoped();
+      const sessionPath = path.join(agentDir, "imported.jsonl");
+      const leaseDir = path.join(agentDir, "t3-session-leases");
+      yield* fileSystem.writeFileString(
+        sessionPath,
+        `${JSON.stringify({ type: "title", v: 1, title: "Imported" })}\n${JSON.stringify({ type: "session", version: 3, id: "imported", cwd: host.paths.cwd })}\n`,
+      );
+      const options = { config: { agentDir }, initialNativeThreadId: sessionPath };
+      const running = yield* makeFakeOmp();
+      const protectedProcess = {
+        ...running,
+        spawner: ChildProcessSpawner.make((command) =>
+          fileSystem.readDirectory(leaseDir).pipe(
+            Effect.tap((files) => Effect.sync(() => assert.lengthOf(files, 1))),
+            Effect.andThen(running.spawner.spawn(command)),
+          ),
+        ),
+      };
+      const duplicate = yield* makeFakeOmp();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* openRuntime(protectedProcess, "full-access", options);
+          const args = running.lastSpawnArgs();
+          assert.deepEqual(args.slice(0, 4), ["--mode", "rpc", "--resume", sessionPath]);
+          assert.lengthOf(yield* fileSystem.readDirectory(leaseDir), 1);
+          const failure = yield* openRuntime(duplicate, "full-access", options).pipe(
+            Effect.scoped,
+            Effect.flip,
+          );
+          assert.include(knownProviderFailureMessage(failure), "Close the other session");
+          assert.deepEqual(duplicate.lastSpawnArgs(), []);
+        }),
+      );
+      assert.deepEqual(yield* fileSystem.readDirectory(leaseDir), []);
+      yield* openRuntime(duplicate, "full-access", options);
+      assert.include(duplicate.lastSpawnArgs(), "--resume");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("does not create leases for a new session or ephemeral text generation", () =>
+    Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const agentDir = yield* fileSystem.makeTempDirectoryScoped();
+      const leaseDir = path.join(agentDir, "t3-session-leases");
+      const fresh = yield* makeFakeOmp();
+      yield* openRuntime(fresh, "full-access", { config: { agentDir } });
+      assert.isFalse(yield* fileSystem.exists(leaseDir));
+
+      const reply = { subject: "Document the change", body: "Update the notes." };
+      const ephemeral = yield* makeFakeOmp({
+        get_last_assistant_text: { text: JSON.stringify(reply) },
+      });
+      const generation = yield* makeOmpTextGeneration(
+        { ...OmpAdapterV2Driver.defaultConfig(), agentDir },
+        { HOME: agentDir },
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, ephemeral.spawner));
+      yield* ephemeral
+        .takeRequest("prompt")
+        .pipe(
+          Effect.andThen(ephemeral.emit({ type: "agent_end", yielded: true, messages: [] })),
+          Effect.forkScoped,
+        );
+      assert.deepEqual(
+        yield* generation.generateCommitMessage({
+          cwd: host.paths.cwd,
+          branch: "main",
+          stagedSummary: "M README.md",
+          stagedPatch: "+ New notes",
+          modelSelection: modelSelection(),
+        }),
+        reply,
+      );
+      assert.include(ephemeral.lastSpawnArgs(), "--no-session");
+      assert.isFalse(yield* fileSystem.exists(leaseDir));
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
@@ -722,7 +809,10 @@ describe("OmpAdapterV2", () => {
         const { runtime, providerThread: source } = yield* openRuntime(fake, "full-access", {
           forkFake,
           config: { profile: "team", agentDir: "~/ignored", launchArgs: "--add-dir /repo/docs" },
-          environment: [],
+          environment: [
+            { name: "HOME", value: dir, sensitive: false },
+            { name: "USERPROFILE", value: dir, sensitive: false },
+          ],
           extraRoots: ["/repo/shared", "", "/repo/shared", " ", "/repo/docs", "/repo/design"],
         });
         assert.isUndefined(fake.lastSpawnEnv()?.PI_CODING_AGENT_DIR);
@@ -762,6 +852,12 @@ describe("OmpAdapterV2", () => {
         assert.deepEqual(args.slice(0, 2), ["--mode", "rpc"]);
         assert.notInclude(args, "--no-session");
         assert.notInclude(args, "--add-dir");
+        const path = yield* Path.Path;
+        assert.isFalse(
+          yield* fileSystem.exists(
+            path.join(dir, ".omp", "profiles", "team", "agent", "t3-session-leases"),
+          ),
+        );
         // omp's own `fork` keeps the entry it is given and Pi's drops it; only `branch` cuts before it.
         const forks = (process: typeof fake) =>
           process
@@ -841,6 +937,7 @@ describe("OmpAdapterV2", () => {
       ] as const) {
         const coldFake = yield* makeFakeOmp();
         yield* openRuntime(coldFake, "full-access", {
+          config: { agentDir: dir },
           initialNativeThreadId: thread.nativeThreadRef?.nativeId,
         });
         const args = coldFake.lastSpawnArgs();

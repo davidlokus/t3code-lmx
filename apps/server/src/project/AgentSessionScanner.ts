@@ -30,6 +30,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
+import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { isBareGitConfig, parseOriginUrlFromGitConfig } from "@t3tools/shared/git";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
@@ -42,6 +43,12 @@ import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.t
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import {
+  isValidOmpProfileName,
+  resolveOmpInstancePaths,
+  type OmpInstancePaths,
+} from "@t3tools/provider-omp/server";
+import { OmpSettings } from "@t3tools/provider-omp/settings";
 import { piHome, resolvePiSessionsDir } from "@t3tools/provider-pi/server/usage";
 import * as ServerSettings from "../serverSettings.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
@@ -127,6 +134,10 @@ const TranscriptRecord = Schema.Struct({
   id: Schema.optional(Schema.String),
   parentId: Schema.optional(Schema.NullOr(Schema.String)),
   name: Schema.optional(Schema.String),
+  title: Schema.optional(Schema.String),
+  provider: Schema.optional(Schema.String),
+  modelId: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
   timestamp: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),
   sessionId: Schema.optional(Schema.String),
@@ -159,6 +170,7 @@ const CodexSessionIndexEntry = Schema.Struct({
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+const decodeOmpSettings = Schema.decodeUnknownOption(OmpSettings);
 const decodeTranscriptRecord = Schema.decodeUnknownOption(Schema.fromJsonString(TranscriptRecord));
 const decodeTranscriptValue = Schema.decodeUnknownOption(TranscriptRecord);
 const decodePiEntryLinks = Schema.decodeUnknownOption(
@@ -471,12 +483,16 @@ function deriveTitle(source: AgentSessionSource, text: string): string | undefin
   return line.slice(0, splitsSurrogatePair(line, 100) ? 99 : 100).trim() || undefined;
 }
 
-// Pi keeps abandoned branches in the file; its active branch runs from the last entry to the root.
+// Pi and omp keep abandoned branches in the file; the active branch runs from the leaf to the root.
 function activePiBranch(
   records: ReadonlyArray<DecodedTranscriptRecord>,
+  source: "pi" | "omp",
 ): ReadonlyArray<DecodedTranscriptRecord> {
   const entries = records.filter((record) => record.type !== "session");
-  const leaf = entries.at(-1);
+  const leaf =
+    source === "omp"
+      ? entries.findLast((entry) => entry.id !== undefined && entry.parentId !== undefined)
+      : entries.at(-1);
   // Version 1 sessions predate the tree and are linear.
   if (leaf?.id === undefined) return entries;
   const byId = new Map(
@@ -527,19 +543,24 @@ function parseAgentSessionRecords(
   droppedMessageCount: number,
 ): AgentSessionThread | "empty" | null {
   const fallbackTimestamp = DateTime.formatIso(DateTime.makeUnsafe(input.lastActiveAtMs));
+  const source = input.source;
+  const piTree = source === "pi" || source === "omp";
   // Claude filenames are session IDs. Codex rollout filenames include extra
   // timestamp text, so only transcript metadata can provide a resumable ID.
   let providerSessionId =
     input.source === "codex"
       ? ""
-      : input.source === "pi"
+      : piTree
         ? records.find((record) => record.type === "session")?.id?.trim() || input.fallbackSessionId
         : (claudeFields.sessionId ?? input.fallbackSessionId);
-  // Pi titles a session by its latest session_info on any branch; an empty name clears it.
-  const title =
-    input.source === "pi"
-      ? records.findLast((record) => record.type === "session_info")?.name?.trim() || null
-      : (claudeFields.title ?? null);
+  // The latest session_info names the session, even on a branch no longer active.
+  const title = piTree
+    ? records.findLast((record) => record.type === "session_info")?.name?.trim() ||
+      (source === "omp"
+        ? records.findLast((record) => record.type === "title")?.title?.trim()
+        : undefined) ||
+      null
+    : (claudeFields.title ?? null);
   let model = claudeFields.model ?? null;
   let derivedTitle: string | undefined;
   // Names a session whose only request was a bare command, such as `/review`.
@@ -640,9 +661,21 @@ function parseAgentSessionRecords(
   };
 
   let recordIndex = -1;
-  for (const record of input.source === "pi" ? activePiBranch(records) : records) {
+  for (const record of piTree ? activePiBranch(records, source) : records) {
     recordIndex += 1;
-    if (input.source === "pi") {
+    if (piTree) {
+      if (source === "omp" && record.type === "model_change") {
+        const modelId = record.modelId?.trim();
+        const provider = record.provider?.trim();
+        // Current omp also writes an already-qualified model slug.
+        const selected = modelId
+          ? provider
+            ? `${provider}/${modelId}`
+            : modelId
+          : record.model?.trim();
+        model = selected || model;
+        continue;
+      }
       if (!isPiConversationRecord(record)) continue;
       const text = extractText(record.message.content);
       if (text.length === 0) continue;
@@ -780,8 +813,8 @@ function shouldRetainDecodedRecord(
   source: AgentSessionSource,
   record: DecodedTranscriptRecord,
 ): boolean {
-  // Any Pi entry can be a link on the active branch.
-  if (source === "pi") return true;
+  // Any entry can be a link on the active Pi or omp branch.
+  if (source === "pi" || source === "omp") return true;
   if (source === "claudeAgent") {
     if (isHiddenClaudeRecord(record) || (record.type !== "user" && record.type !== "assistant")) {
       return false;
@@ -847,6 +880,11 @@ function extractCwd(parsed: unknown, source: AgentSessionSource): string | null 
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
+  if (source === "omp") {
+    return record.type === "session" && typeof record.cwd === "string"
+      ? record.cwd.trim() || null
+      : null;
+  }
   if (typeof record.cwd === "string" && record.cwd.trim().length > 0) {
     return record.cwd;
   }
@@ -919,6 +957,9 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const readSettings = serverSettings.getSettings.pipe(
+    Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
+  );
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
   const configuredT3Dirs = {
@@ -1252,7 +1293,9 @@ export const make = Effect.gen(function* () {
             const createReader = () =>
               createTranscriptJsonReader(reserveSelected, selectCwdPath, {
                 onTopLevelString: (key, value) => {
-                  if (key === "cwd" && value.trim().length > 0) topLevelCwd ??= value;
+                  if (source !== "omp" && key === "cwd" && value.trim().length > 0) {
+                    topLevelCwd ??= value;
+                  }
                 },
               });
             let reader = createReader();
@@ -1346,6 +1389,7 @@ export const make = Effect.gen(function* () {
     source: AgentSessionSource,
     prefix?: { readonly endByteOffset: number; readonly historyBytes: number },
   ) {
+    const piTree = source === "pi" || source === "omp";
     const compressed = isCompressedTranscript(filePath);
     const readBytes =
       prefix?.endByteOffset ?? (compressed ? MAX_IMPORTED_TRANSCRIPT_BYTES : expected.size);
@@ -1384,11 +1428,13 @@ export const make = Effect.gen(function* () {
               reader.write(decoder.decode());
               const value = reader.finish();
               const decoded = decodeTranscriptValue(value);
-              if (Option.isNone(decoded) && source === "pi") {
-                // Pi accepts messages this schema rejects, such as null content; keep their tree links.
+              if (Option.isNone(decoded) && piTree) {
+                // A malformed payload need not break its links to the rest of the tree.
                 records.push(...Option.toArray(decodePiEntryLinks(value)));
               } else if (Option.isSome(decoded)) {
-                if (Option.isNone(cwd)) cwd = Option.fromNullOr(extractDecodedCwd(decoded.value));
+                if (Option.isNone(cwd) && (source !== "omp" || decoded.value.type === "session")) {
+                  cwd = Option.fromNullOr(extractDecodedCwd(decoded.value));
+                }
                 if (source === "claudeAgent") {
                   claudeFields = foldClaudeFields(claudeFields, decoded.value);
                 }
@@ -1396,13 +1442,13 @@ export const make = Effect.gen(function* () {
                   if (source === "claudeAgent") {
                     historyBytes += recordBytes - claudeHistory.push(decoded.value, recordBytes);
                   } else if (
-                    source === "pi" &&
-                    decoded.value.type === "message" &&
-                    !isPiConversationRecord(decoded.value)
+                    piTree &&
+                    ((decoded.value.type === "message" && !isPiConversationRecord(decoded.value)) ||
+                      (source === "omp" && decoded.value.type === "model_usage"))
                   ) {
-                    // Tool output can dwarf the conversation; keep only the tree links.
-                    const { message: _message, ...links } = decoded.value;
-                    records.push(links);
+                    // Tool output and auxiliary model usage carry only links for import.
+                    const { type, id, parentId } = decoded.value;
+                    records.push({ type, id, parentId });
                   } else {
                     records.push(decoded.value);
                     historyBytes += recordBytes;
@@ -1832,10 +1878,35 @@ export const make = Effect.gen(function* () {
     }));
   });
 
+  // fork: OMP's home defaults and explicit environment must not inherit Pi's history roots.
+  const resolveOmpPaths = Effect.fn("AgentSessionScanner.resolveOmpPaths")(function* (
+    instance: ProviderInstanceConfig,
+  ): Effect.fn.Return<OmpInstancePaths | null, never, Path.Path> {
+    const config = decodeOmpSettings(instance.config ?? {});
+    if (Option.isNone(config)) return null;
+    const { flags } = parseCliArgs(config.value.launchArgs);
+    const profile = flags["profile"];
+    if (
+      profile !== undefined &&
+      (profile === null || config.value.profile !== "" || !isValidOmpProfileName(profile))
+    ) {
+      return null;
+    }
+    const sessionDir = flags["session-dir"];
+    if (sessionDir === null || sessionDir === "" || sessionDir?.startsWith("-")) return null;
+    const args = [
+      ...(profile === undefined ? [] : ["--profile", profile]),
+      ...(sessionDir === undefined ? [] : ["--session-dir", sessionDir]),
+    ];
+    const environment = yield* mergeProviderInstanceEnvironment(instance.environment, {
+      HOME: hostEnvironment.HOME,
+      USERPROFILE: hostEnvironment.USERPROFILE,
+    });
+    return yield* resolveOmpInstancePaths(config.value, args, environment);
+  });
+
   const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* () {
-    const settings = yield* serverSettings.getSettings.pipe(
-      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
-    );
+    const settings = yield* readSettings;
 
     const runtimeRows = yield* runtimes
       .list()
@@ -1857,7 +1928,7 @@ export const make = Effect.gen(function* () {
     let truncated = false;
     let metadataTruncated = false;
 
-    for (const source of ["claudeAgent", "codex", "pi"] as const) {
+    for (const source of ["claudeAgent", "codex", "pi", "omp"] as const) {
       const instances: Array<{
         readonly instanceId: ProviderInstanceId;
         readonly config: ProviderInstanceConfig;
@@ -1869,7 +1940,7 @@ export const make = Effect.gen(function* () {
           instanceId: ProviderInstanceId.make(instanceId),
           config,
         }));
-      if (!Object.hasOwn(settings.providerInstances, source)) {
+      if (source !== "omp" && !Object.hasOwn(settings.providerInstances, source)) {
         const defaultInstance = {
           instanceId: ProviderInstanceId.make(source),
           config: { driver: ProviderDriverKind.make(source) },
@@ -1878,6 +1949,7 @@ export const make = Effect.gen(function* () {
           instances.push(defaultInstance);
         }
       }
+      if (instances.length === 0) continue;
 
       instances.sort((left, right) => {
         const leftDefault = left.instanceId === source ? 0 : 1;
@@ -1886,7 +1958,26 @@ export const make = Effect.gen(function* () {
       });
       const homes: Array<{ homePath: string; providerInstanceId: ProviderInstanceId }> = [];
       const seenHomes = new Set<string>();
+      const addHome = Effect.fnUntraced(function* (
+        homePath: string,
+        providerInstanceId: ProviderInstanceId,
+      ) {
+        const homeKey = yield* directoryIdentity(homePath);
+        if (seenHomes.has(homeKey)) return;
+        seenHomes.add(homeKey);
+        homes.push({ homePath, providerInstanceId });
+      });
       for (const { instanceId, config: instance } of instances) {
+        if (source === "omp") {
+          const paths = yield* resolveOmpPaths(instance).pipe(
+            Effect.provideService(Path.Path, path),
+          );
+          if (paths !== null) {
+            yield* addHome(paths.sessionsDir, instanceId);
+            for (const directory of paths.extraSessionDirs) yield* addHome(directory, instanceId);
+          }
+          continue;
+        }
         const environmentHome = (name: "CLAUDE_CONFIG_DIR" | "CODEX_HOME") => {
           const configured = instance.environment?.findLast(
             (variable) => variable.name === name,
@@ -1928,10 +2019,7 @@ export const make = Effect.gen(function* () {
           homePath = layout.sharedHomePath;
         }
 
-        const homeKey = `${source}\0${yield* directoryIdentity(homePath)}`;
-        if (seenHomes.has(homeKey)) continue;
-        seenHomes.add(homeKey);
-        homes.push({ homePath, providerInstanceId: instanceId });
+        yield* addHome(homePath, instanceId);
       }
 
       const transcriptCandidates: Array<TranscriptCandidate> = [];
@@ -1974,9 +2062,21 @@ export const make = Effect.gen(function* () {
         }
         starved = starved.filter((index) => discovered[index]!.truncated);
       }
+      const seenOmpFiles = source === "omp" ? new Set<string>() : undefined;
       for (const result of discovered) {
         truncated ||= result.truncated;
-        transcriptCandidates.push(...result.transcripts);
+        if (seenOmpFiles === undefined) {
+          transcriptCandidates.push(...result.transcripts);
+          continue;
+        }
+        for (const transcript of result.transcripts) {
+          // An extra --session-dir may be nested under a profile's sessions directory.
+          const { device, inode } = transcript.identity;
+          const key = inode ? `${device}:${inode}` : transcript.filePath;
+          if (seenOmpFiles.has(key)) continue;
+          seenOmpFiles.add(key);
+          transcriptCandidates.push(transcript);
+        }
       }
 
       transcriptCandidates.sort(
@@ -2124,7 +2224,16 @@ export const make = Effect.gen(function* () {
     if (cachedCandidates === null || cachedCandidates.metadataTruncated) {
       cachedCandidates = yield* collectCandidates();
     }
-    const { candidates } = cachedCandidates;
+    let { candidates } = cachedCandidates;
+    if (candidates.some((candidate) => candidate.source === "omp")) {
+      const { providerInstances } = yield* readSettings;
+      // Onboarding may cache candidates before the user disables their provider.
+      candidates = candidates.filter((candidate) => {
+        if (candidate.source !== "omp") return true;
+        const instance = providerInstances[candidate.providerInstanceId];
+        return instance?.driver === "omp" && resolveProviderInstanceEnabled(instance);
+      });
+    }
 
     // The scan counts a linked worktree's sessions toward its main checkout, so import them with it.
     const candidateDirectories = candidates.flatMap((candidate) => {

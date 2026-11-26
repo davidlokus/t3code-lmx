@@ -102,9 +102,11 @@ function candidate(
 
 const PI_MODEL_SELECTION = { instanceId: ProviderInstanceId.make("pi"), model: "default" };
 
-// Pi threads are owned by their session file path, not the session UUID.
+// Pi and omp bind to the session file path, not the session UUID.
 const nativeId = ({ source }: ReturnType<typeof candidate>) =>
-  source.provider === "pi" ? source.filePath : source.providerSessionId;
+  source.provider === "pi" || source.provider === "omp"
+    ? source.filePath
+    : source.providerSessionId;
 
 function importId(source: ReturnType<typeof candidate>) {
   return ThreadId.make(
@@ -317,6 +319,11 @@ it.effect(
       unowned.thread.omittedMessageCount = 1;
       unowned.worktree = { path: "/workspace/project/.claude/worktrees/feat", branch: "feat" };
       const unownedPi = candidate(PI_MODEL_SELECTION, "unowned-pi", "pi");
+      const unownedOmp = candidate(
+        { instanceId: ProviderInstanceId.make("omp-work"), model: "provider/model" },
+        "unowned-omp",
+        "omp",
+      );
       const importer = yield* makeImporter([
         active,
         archived,
@@ -325,9 +332,10 @@ it.effect(
         otherInstance,
         unowned,
         unownedPi,
+        unownedOmp,
       ]);
 
-      expect(yield* importer.run).toEqual({ importedCount: 3, skippedCount: 0 });
+      expect(yield* importer.run).toEqual({ importedCount: 4, skippedCount: 0 });
       for (const source of [active, archived, deleted, ownedPi]) {
         const threadId = importId(source);
         expect(yield* Effect.option(projections.getThread(threadId))).toEqual(Option.none());
@@ -345,8 +353,15 @@ it.effect(
             "event" in stored ? [stored.event.threadId] : [],
           ),
         ),
-      ).toEqual(new Set([importId(otherInstance), importId(unowned), importId(unownedPi)]));
-      for (const source of [otherInstance, unowned, unownedPi]) {
+      ).toEqual(
+        new Set([
+          importId(otherInstance),
+          importId(unowned),
+          importId(unownedPi),
+          importId(unownedOmp),
+        ]),
+      );
+      for (const source of [otherInstance, unowned, unownedPi, unownedOmp]) {
         const threadId = importId(source);
         const records = yield* projections.getThreadRecords(threadId, [
           "messages",
