@@ -1,209 +1,33 @@
-import type { ServerProviderUsageBalance } from "@t3tools/contracts";
 import { paceRemainingPercent } from "@t3tools/shared/usageLimits";
-import { formatDuration, formatResetsIn } from "@t3tools/shared/usageLimitsCopy";
-import type {
-  NormalizedLimitAccount,
-  NormalizedLimitWindow,
-  WindowBurnPace,
-} from "@t3tools/shared/usageLimitsIntelligence";
+import { formatResetsIn } from "@t3tools/shared/usageLimitsCopy";
+import type { NormalizedLimitAccount } from "@t3tools/shared/usageLimitsIntelligence";
 import { T, useGT, useLocale, useMessages } from "gt-react";
-import {
-  AlertTriangleIcon,
-  CalendarCogIcon,
-  GlobeIcon,
-  TicketIcon,
-  WalletIcon,
-} from "lucide-react";
+import { AlertTriangleIcon, CalendarCogIcon, TicketIcon, WalletIcon } from "lucide-react";
 
-import { OllamaIcon, OpenAI, OpenRouterIcon } from "~/components/Icons";
-import { ProviderInstanceIcon } from "~/components/chat/ProviderInstanceIcon";
-import { providerClients } from "~/components/settings/providerDriverMeta";
 import { RedactedSensitiveText } from "~/components/settings/RedactedSensitiveText";
 import { Button } from "~/components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { formatUpcomingOrBareUtcDate } from "~/timestampFormat";
-import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
+import {
+  BurnPaceTag,
+  LimitSourceIcon,
+  RestrainedQuotaBar,
+  useSourceKindLabel,
+} from "./UsageLimitPrimitives";
+import {
+  accountRiskTier,
+  dedupeWindowScopeLabel,
+  effectiveWindowTone,
+  formatBalanceAmount,
+  formatWindowAmounts,
+  resolveAccountHeaderMeta,
+  restrainedCardSurfaceClass,
+  restrainedTextClass,
+  sortAccountsByRisk,
+} from "./usageLimitsPresentation";
 import type { UsageQuotaDisplayMode, UsageResetTimeMode } from "./usageOptionsStore";
-
-function CopilotMark({ className }: { readonly className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden
-    >
-      <path d="M5 10a7 7 0 0 1 14 0" />
-      <rect x="3" y="10" width="18" height="8" rx="4" />
-      <circle cx="9.25" cy="14" r="1.25" fill="currentColor" stroke="none" />
-      <circle cx="14.75" cy="14" r="1.25" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function riskToneTextClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "text-error-foreground";
-    case "warning":
-      return "text-warning-foreground";
-    case "normal":
-      return "text-success-foreground";
-  }
-}
-
-function riskToneBarClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "bg-error";
-    case "warning":
-      return "bg-warning";
-    case "normal":
-      return "bg-success";
-  }
-}
-
-function formatAmountWithUnit(amount: number, unit: string, locale: string): string {
-  if (/^[A-Z]{3}$/.test(unit)) {
-    try {
-      return new Intl.NumberFormat(locale, {
-        style: "currency",
-        currency: unit,
-        maximumFractionDigits: 2,
-      }).format(amount);
-    } catch {
-      return `${amount.toFixed(2)} ${unit}`;
-    }
-  }
-  const formatted = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(amount);
-  return `${formatted} ${unit}`;
-}
-
-function formatWindowAmounts(
-  window: NormalizedLimitWindow,
-  quotaDisplayMode: UsageQuotaDisplayMode,
-  locale: string,
-): string | null {
-  if (!window.unit) return null;
-  if (window.usedAmount !== undefined && window.limitAmount !== undefined) {
-    const shown =
-      quotaDisplayMode === "used"
-        ? window.usedAmount
-        : (window.remainingAmount ?? Math.max(0, window.limitAmount - window.usedAmount));
-    return `${formatAmountWithUnit(shown, window.unit, locale)} / ${formatAmountWithUnit(window.limitAmount, window.unit, locale)}`;
-  }
-  if (quotaDisplayMode === "remaining" && window.remainingAmount !== undefined) {
-    return formatAmountWithUnit(window.remainingAmount, window.unit, locale);
-  }
-  if (quotaDisplayMode === "used" && window.usedAmount !== undefined) {
-    return formatAmountWithUnit(window.usedAmount, window.unit, locale);
-  }
-  return null;
-}
-
-function formatBalanceAmount(balance: ServerProviderUsageBalance, locale: string): string {
-  const remaining = formatAmountWithUnit(balance.remaining, balance.unit, locale);
-  if (balance.limit !== undefined) {
-    return `${remaining} / ${formatAmountWithUnit(balance.limit, balance.unit, locale)}`;
-  }
-  return remaining;
-}
-
-function accountDisplayLabel(account: NormalizedLimitAccount): string {
-  if (account.displayName) return account.displayName;
-  if (account.driver) return providerClients.get(account.driver)?.label ?? String(account.driver);
-  return account.sourceLabel ?? account.key;
-}
-
-function BurnPaceBadge({
-  pace,
-  remainingPercent,
-  now,
-}: {
-  readonly pace: WindowBurnPace | null;
-  readonly remainingPercent: number;
-  readonly now: number;
-}) {
-  const gt = useGT();
-  const m = useMessages();
-  if (!pace || pace.status === "insufficient-data") return null;
-
-  if (pace.status === "exhausted") {
-    return (
-      <span
-        data-testid="usage-matrix-pace-badge"
-        data-pace="exhausted"
-        className="inline-flex items-center rounded-full bg-error/15 px-1.5 py-0.5 text-2xs font-medium text-error-foreground tabular-nums"
-      >
-        <T>Exhausted</T>
-      </span>
-    );
-  }
-
-  if (pace.status === "will-exhaust") {
-    const eta =
-      pace.projectedExhaustionMs !== null
-        ? formatDuration(Math.max(0, pace.projectedExhaustionMs - now), m)
-        : null;
-    const toneClass =
-      remainingPercent <= 15
-        ? "bg-error/15 text-error-foreground"
-        : "bg-warning/15 text-warning-foreground";
-    return (
-      <span
-        data-testid="usage-matrix-pace-badge"
-        data-pace="will-exhaust"
-        className={cn(
-          "inline-flex items-center rounded-full px-1.5 py-0.5 text-2xs font-medium tabular-nums",
-          toneClass,
-        )}
-      >
-        {eta
-          ? gt("{ratio}× · empty in {eta}", { ratio: pace.paceRatio ?? "-", eta })
-          : gt("{ratio}× pace", { ratio: pace.paceRatio ?? "-" })}
-      </span>
-    );
-  }
-
-  if (pace.status === "ahead") {
-    return (
-      <span
-        data-testid="usage-matrix-pace-badge"
-        data-pace="ahead"
-        className="inline-flex items-center rounded-full bg-warning/15 px-1.5 py-0.5 text-2xs font-medium text-warning-foreground tabular-nums"
-      >
-        {gt("{ratio}× pace", { ratio: pace.paceRatio ?? "-" })}
-      </span>
-    );
-  }
-
-  if (pace.status === "under-pace") {
-    return (
-      <span
-        data-testid="usage-matrix-pace-badge"
-        data-pace="under-pace"
-        className="inline-flex items-center rounded-full bg-success/12 px-1.5 py-0.5 text-2xs font-medium text-success-foreground tabular-nums"
-      >
-        <T>Under pace</T>
-      </span>
-    );
-  }
-
-  return (
-    <span
-      data-testid="usage-matrix-pace-badge"
-      data-pace="on-pace"
-      className="inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground tabular-nums"
-    >
-      <T>On pace</T>
-    </span>
-  );
-}
 
 export function UsageLimitsMatrixView({
   accounts,
@@ -221,161 +45,143 @@ export function UsageLimitsMatrixView({
   const gt = useGT();
   const locale = useLocale();
   const m = useMessages();
+  const sourceKindLabel = useSourceKindLabel();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
 
   if (accounts.length === 0) {
     return (
       <div
         data-testid="usage-limits-matrix-empty"
-        className="rounded-xl border border-border/70 bg-card/65 px-5 py-10 text-center text-sm text-muted-foreground"
+        className="rounded-xl border border-border/55 bg-card/45 px-5 py-10 text-center text-sm text-muted-foreground"
       >
         <T>No provider on the selected environments reports subscription limits.</T>
       </div>
     );
   }
 
+  const orderedAccounts = sortAccountsByRisk(accounts);
+
   return (
-    <div data-testid="usage-limits-matrix" className="flex flex-col gap-4">
-      {accounts.map((account) => {
-        const label = accountDisplayLabel(account);
-        const where =
-          account.environments.length > 0
-            ? account.environments.map((environment) => environment.label).join(", ")
-            : account.sourceLabel;
+    <div
+      data-testid="usage-limits-matrix"
+      className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:grid-cols-3"
+    >
+      {orderedAccounts.map((account) => {
+        const riskTier = accountRiskTier(account);
+        const rawSourceBadge = sourceKindLabel(account.sourceKind);
+        const meta = resolveAccountHeaderMeta(account, rawSourceBadge);
+        const resolvedSourceBadge =
+          meta.sourceBadgeKind !== null ? sourceKindLabel(meta.sourceBadgeKind) : null;
         const balances = account.limits.balances ?? [];
         const credits = account.limits.resetCredits?.availableCount ?? 0;
+        const renewalActionLabel = account.manualOverride
+          ? gt("Edit details")
+          : gt("Track renewal");
+        const hasSubtitle =
+          Boolean(account.email) ||
+          Boolean(meta.whereText) ||
+          Boolean(resolvedSourceBadge) ||
+          credits > 0;
 
         return (
           <section
             key={account.key}
             data-testid="usage-matrix-account-card"
-            className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card/65 p-4"
+            data-risk-tier={riskTier}
+            className={cn(
+              "flex min-w-0 flex-col overflow-hidden rounded-xl border transition-colors",
+              restrainedCardSurfaceClass(riskTier),
+            )}
           >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2.5">
-                {account.driver ? (
-                  <ProviderInstanceIcon
-                    driverKind={account.driver}
-                    displayName={label}
+            <div className="flex items-start justify-between gap-2 px-3.5 pt-3 pb-2.5">
+              <div className="flex min-w-0 items-start gap-2.5">
+                <div className="mt-0.5">
+                  <LimitSourceIcon
+                    driver={account.driver}
+                    sourceKind={account.sourceKind}
+                    label={meta.displayLabel}
                     accentColor={account.accentColor}
-                    indicatorBackground="var(--card)"
-                    className="size-6 shrink-0"
-                    iconClassName="size-4 text-foreground/85"
+                    size="sm"
                   />
-                ) : (
-                  <span
-                    data-testid={`usage-source-icon-${account.sourceKind}`}
-                    className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
-                  >
-                    {account.sourceKind === "openrouter" ? (
-                      <OpenRouterIcon className="size-3.5 text-foreground/85" aria-hidden />
-                    ) : account.sourceKind === "copilot" ? (
-                      <CopilotMark className="size-3.5 text-foreground/85" />
-                    ) : account.sourceKind === "ollama" ? (
-                      <OllamaIcon className="size-3.5 text-foreground/85" aria-hidden />
-                    ) : account.sourceKind === "openaiApi" ? (
-                      <OpenAI className="size-3.5 text-foreground/85" aria-hidden />
-                    ) : (
-                      <GlobeIcon className="size-3.5" aria-hidden />
-                    )}
-                  </span>
-                )}
+                </div>
                 <div className="flex min-w-0 flex-col gap-0.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-sm font-medium text-foreground">{label}</h3>
-                    {account.plan ? (
-                      <span className="rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground">
-                        {account.plan}
-                      </span>
-                    ) : null}
-                    {account.sourceKind === "http" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>HTTP source</T>
-                      </span>
-                    ) : account.sourceKind === "omp" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>OMP cache</T>
-                      </span>
-                    ) : account.sourceKind === "kimi" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>Kimi Code</T>
-                      </span>
-                    ) : account.sourceKind === "zai" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>Z.ai</T>
-                      </span>
-                    ) : account.sourceKind === "openrouter" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>OpenRouter</T>
-                      </span>
-                    ) : account.sourceKind === "copilot" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>GitHub Copilot</T>
-                      </span>
-                    ) : account.sourceKind === "ollama" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>Ollama Cloud</T>
-                      </span>
-                    ) : account.sourceKind === "openaiApi" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        <T>OpenAI API</T>
-                      </span>
-                    ) : account.sourceKind === "claudeSwap" ? (
-                      <span className="rounded-md bg-info/12 px-1.5 py-0.5 text-2xs font-medium text-info-foreground">
-                        claude-swap
-                      </span>
-                    ) : null}
-                    {credits > 0 ? (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-2xs font-medium text-foreground tabular-nums">
-                        <TicketIcon className="size-3 text-muted-foreground" aria-hidden />
-                        {gt("{count} reset credits", { count: credits })}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <h3 className="truncate text-sm font-medium text-foreground">
+                      {meta.displayLabel}
+                    </h3>
+                    {meta.planBadge ? (
+                      <span
+                        data-testid="usage-limit-plan-badge"
+                        className="rounded bg-muted/80 px-1.5 py-0.5 text-3xs font-medium text-muted-foreground"
+                      >
+                        {meta.planBadge}
                       </span>
                     ) : null}
                   </div>
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-                    {account.email ? (
-                      <RedactedSensitiveText
-                        value={account.email}
-                        ariaLabel={gt("Toggle account email visibility")}
-                        revealTooltip={gt("Click to reveal email")}
-                        hideTooltip={gt("Click to hide email")}
-                      />
-                    ) : null}
-                    {where ? <span className="truncate">{where}</span> : null}
-                  </div>
+                  {hasSubtitle ? (
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-muted-foreground/85">
+                      {account.email ? (
+                        <RedactedSensitiveText
+                          value={account.email}
+                          ariaLabel={gt("Toggle account email visibility")}
+                          revealTooltip={gt("Click to reveal email")}
+                          hideTooltip={gt("Click to hide email")}
+                        />
+                      ) : null}
+                      {meta.whereText ? <span className="truncate">{meta.whereText}</span> : null}
+                      {resolvedSourceBadge ? (
+                        <span className="truncate text-muted-foreground">
+                          {resolvedSourceBadge}
+                        </span>
+                      ) : null}
+                      {credits > 0 ? (
+                        <span className="inline-flex items-center gap-0.5 font-medium text-foreground/80 tabular-nums">
+                          <TicketIcon className="size-3 text-muted-foreground" aria-hidden />
+                          {gt("{count} reset credits", { count: credits })}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
-              <Button
-                variant="ghost"
-                size="xs"
-                data-testid="usage-matrix-edit-override"
-                onClick={() => onEditOverride(account)}
-              >
-                <CalendarCogIcon className="size-3.5" aria-hidden />
-                <span>{account.manualOverride ? <T>Edit details</T> : <T>Track renewal</T>}</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant={account.manualOverride ? "secondary" : "ghost-muted"}
+                      size="icon-xs"
+                      aria-label={renewalActionLabel}
+                      data-testid="usage-matrix-edit-override"
+                      onClick={() => onEditOverride(account)}
+                    />
+                  }
+                >
+                  <CalendarCogIcon className="size-3.5" aria-hidden />
+                </TooltipTrigger>
+                <TooltipPopup side="top">{renewalActionLabel}</TooltipPopup>
+              </Tooltip>
             </div>
 
             {account.limits.serviceNotice ? (
               <div
                 className={cn(
-                  "flex items-center gap-2 rounded-lg px-3 py-2 text-xs",
+                  "mx-3.5 mb-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-2xs",
                   account.limits.serviceNotice.severity === "critical"
-                    ? "bg-error/15 text-error-foreground"
+                    ? "bg-error/12 text-error-foreground"
                     : account.limits.serviceNotice.severity === "warning"
-                      ? "bg-warning/15 text-warning-foreground"
-                      : "bg-info/12 text-info-foreground",
+                      ? "bg-warning/12 text-warning-foreground"
+                      : "bg-info/10 text-info-foreground",
                 )}
               >
-                <AlertTriangleIcon className="size-3.5 shrink-0" aria-hidden />
+                <AlertTriangleIcon className="size-3 shrink-0" aria-hidden />
                 <span className="break-words">{account.limits.serviceNotice.message}</span>
               </div>
             ) : null}
 
             {account.limits.unavailable?.reason === "probeFailed" ? (
-              <div className="flex items-center gap-2 rounded-lg bg-warning/15 px-3 py-2 text-xs text-warning-foreground">
-                <AlertTriangleIcon className="size-3.5 shrink-0" aria-hidden />
+              <div className="mx-3.5 mb-2 flex items-center gap-1.5 rounded-md bg-warning/12 px-2.5 py-1.5 text-2xs text-warning-foreground">
+                <AlertTriangleIcon className="size-3 shrink-0" aria-hidden />
                 <span className="break-words">
                   {account.limits.unavailable.message ?? gt("Could not read limits.")}
                 </span>
@@ -383,7 +189,7 @@ export function UsageLimitsMatrixView({
             ) : null}
 
             {account.windows.length > 0 ? (
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="flex flex-col divide-y divide-border/40 border-t border-border/45 px-3.5">
                 {account.windows.map((window) => {
                   const remainingRounded = Math.round(
                     Math.max(0, Math.min(100, window.remainingPercent)),
@@ -391,7 +197,7 @@ export function UsageLimitsMatrixView({
                   const usedRounded = Math.round(Math.max(0, Math.min(100, window.usedPercent)));
                   const displayedPercent =
                     quotaDisplayMode === "used" ? usedRounded : remainingRounded;
-                  const tone = quotaRiskTone(remainingRounded);
+                  const tone = effectiveWindowTone(window);
                   const remainingPaceTick = paceRemainingPercent(window, now);
                   const tickPercent =
                     remainingPaceTick === null
@@ -418,30 +224,35 @@ export function UsageLimitsMatrixView({
                       : (countdown ??
                         (exactTime ? gt("Resets {time}", { time: exactTime }) : null));
                   const amountsLabel = formatWindowAmounts(window, quotaDisplayMode, locale);
+                  const scopeLabel = dedupeWindowScopeLabel(window.scopeLabel, {
+                    displayLabel: meta.displayLabel,
+                    plan: account.plan,
+                    windowLabel: window.label,
+                  });
 
                   return (
                     <div
                       key={window.id}
                       data-testid="usage-matrix-window-cell"
                       data-tone={tone}
-                      className="flex min-w-0 flex-col gap-2 rounded-lg border border-border/60 bg-background/60 p-3"
+                      className="flex min-w-0 flex-col gap-1.5 py-2.5"
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex min-w-0 flex-col gap-0.5">
-                          <span className="truncate text-xs font-medium text-foreground">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <div className="flex min-w-0 items-baseline gap-1.5">
+                          <span className="truncate text-xs font-medium text-foreground/90">
                             {window.label}
                           </span>
-                          {window.scopeLabel ? (
-                            <span className="truncate text-2xs text-muted-foreground">
-                              {window.scopeLabel}
+                          {scopeLabel ? (
+                            <span className="truncate text-3xs text-muted-foreground">
+                              {scopeLabel}
                             </span>
                           ) : null}
                         </div>
                         <span
                           data-testid="usage-matrix-window-percent"
                           className={cn(
-                            "shrink-0 text-sm font-semibold tabular-nums",
-                            riskToneTextClass(tone),
+                            "shrink-0 text-xs font-semibold tabular-nums",
+                            restrainedTextClass(tone),
                           )}
                         >
                           {quotaDisplayMode === "used"
@@ -450,41 +261,28 @@ export function UsageLimitsMatrixView({
                         </span>
                       </div>
 
-                      <div className="relative h-1.5 w-full rounded-full bg-muted">
-                        {displayedPercent > 0 ? (
-                          <div
-                            className={cn(
-                              "absolute inset-y-0 left-0 rounded-full",
-                              riskToneBarClass(tone),
-                            )}
-                            style={{ width: `max(${displayedPercent}%, 4px)` }}
-                          />
-                        ) : null}
-                        {tickPercent !== null ? (
-                          <span
-                            aria-hidden
-                            className="absolute -top-0.5 h-2.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground/80"
-                            style={{ left: `clamp(1px, ${tickPercent}%, calc(100% - 1px))` }}
-                          />
-                        ) : null}
-                      </div>
+                      <RestrainedQuotaBar
+                        percent={displayedPercent}
+                        tone={tone}
+                        tickPercent={tickPercent}
+                        height="xs"
+                      />
 
-                      <div className="flex flex-wrap items-center justify-between gap-1.5 text-2xs text-muted-foreground tabular-nums">
+                      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-2xs text-muted-foreground/85 tabular-nums">
                         <span data-testid="usage-matrix-window-reset" className="truncate">
                           {primaryReset ?? gt("No reset schedule")}
                         </span>
-                        <BurnPaceBadge
-                          pace={window.pace}
-                          remainingPercent={remainingRounded}
-                          now={now}
-                        />
+                        <div className="flex items-center gap-1.5">
+                          {amountsLabel ? (
+                            <span className="text-muted-foreground">{amountsLabel}</span>
+                          ) : null}
+                          <BurnPaceTag
+                            pace={window.pace}
+                            remainingPercent={remainingRounded}
+                            now={now}
+                          />
+                        </div>
                       </div>
-
-                      {amountsLabel ? (
-                        <span className="text-2xs text-muted-foreground tabular-nums">
-                          {amountsLabel}
-                        </span>
-                      ) : null}
                     </div>
                   );
                 })}
@@ -492,15 +290,15 @@ export function UsageLimitsMatrixView({
             ) : null}
 
             {balances.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-2.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border/45 bg-muted/20 px-3.5 py-2">
                 {balances.map((balance) => (
                   <span
                     key={balance.id}
                     data-testid="usage-matrix-balance-pill"
-                    className="inline-flex items-center gap-1.5 rounded-md bg-muted/70 px-2 py-1 text-2xs text-foreground tabular-nums"
+                    className="inline-flex items-center gap-1 text-2xs text-foreground tabular-nums"
                   >
                     <WalletIcon className="size-3 text-muted-foreground" aria-hidden />
-                    <span className="text-muted-foreground">{balance.label}:</span>
+                    <span className="text-muted-foreground">{balance.label}</span>
                     <span className="font-medium">{formatBalanceAmount(balance, locale)}</span>
                   </span>
                 ))}

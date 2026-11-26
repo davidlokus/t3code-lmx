@@ -74,7 +74,7 @@ const DEFAULT_OPTIONS: UsageUiOptions = {
   budgetScope: "all",
   hiddenProviders: [],
   limitsLens: "pools",
-  limitsLayout: "pool",
+  limitsLayout: "matrix",
   quotaDisplayMode: "remaining",
   resetTimeMode: "countdown",
   alertThresholdPercent: 80,
@@ -179,7 +179,7 @@ export function parseUsageUiOptions(raw: unknown): UsageUiOptions {
       raw.limitsLens === "resets" || raw.limitsLens === "alerts" || raw.limitsLens === "expiries"
         ? raw.limitsLens
         : DEFAULT_OPTIONS.limitsLens,
-    limitsLayout: raw.limitsLayout === "matrix" ? "matrix" : DEFAULT_OPTIONS.limitsLayout,
+    limitsLayout: raw.limitsLayout === "pool" ? "pool" : DEFAULT_OPTIONS.limitsLayout,
     quotaDisplayMode: raw.quotaDisplayMode === "used" ? "used" : DEFAULT_OPTIONS.quotaDisplayMode,
     resetTimeMode: raw.resetTimeMode === "exact" ? "exact" : DEFAULT_OPTIONS.resetTimeMode,
     alertThresholdPercent: alertThreshold(raw.alertThresholdPercent),

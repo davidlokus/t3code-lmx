@@ -865,8 +865,6 @@ export function UsageDashboard() {
               <UsageLimitsEnhanced
                 presentations={limitPresentations}
                 identityPresentations={presentationsWithProviders}
-                selectedEnvironmentIds={selectedEnvironmentIds}
-                hiddenProviders={effectiveHiddenProviders}
                 refreshTickNow={limitsNow}
               />
             ) : (

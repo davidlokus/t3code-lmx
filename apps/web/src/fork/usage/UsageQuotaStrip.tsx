@@ -24,34 +24,14 @@ import { useNowMinute } from "~/hooks/useNowMinute";
 import { usePrimarySettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "~/timestampFormat";
-import { quotaRiskTone, type UsageRiskTone } from "./usageDashboard.logic";
+import { quotaRiskTone } from "./usageDashboard.logic";
+import { RestrainedQuotaBar } from "./UsageLimitPrimitives";
+import { restrainedTextClass } from "./usageLimitsPresentation";
 import {
   type UsageQuotaDisplayMode,
   type UsageResetTimeMode,
   useUsageOptionsStore,
 } from "./usageOptionsStore";
-
-function toneTextClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "text-error-foreground";
-    case "warning":
-      return "text-warning-foreground";
-    case "normal":
-      return "text-success-foreground";
-  }
-}
-
-function toneBarClass(tone: UsageRiskTone): string {
-  switch (tone) {
-    case "error":
-      return "bg-error";
-    case "warning":
-      return "bg-warning";
-    case "normal":
-      return "bg-success";
-  }
-}
 
 function poolTickPercent(window: LimitPoolWindow, nowMs: number): number | null {
   let weighted = 0;
@@ -92,7 +72,6 @@ function QuotaStripChip({
   const tone = quotaRiskTone(window.remainingPercent);
   const displayedPercent =
     quotaDisplayMode === "used" ? window.usedPercent : window.remainingPercent;
-  const clamped = Math.max(0, Math.min(100, displayedPercent));
   const rawTick = poolTickPercent(window, nowMs);
   const tick = rawTick === null ? null : quotaDisplayMode === "used" ? 100 - rawTick : rawTick;
   const nextReset = window.resets[0];
@@ -114,6 +93,7 @@ function QuotaStripChip({
     soonestExhaustionMs !== null
       ? formatDuration(Math.max(0, soonestExhaustionMs - nowMs), m)
       : null;
+  const effectiveTone = tone === "normal" && exhaustEta !== null ? "warning" : tone;
 
   return (
     <Tooltip>
@@ -124,7 +104,14 @@ function QuotaStripChip({
             data-testid="usage-quota-strip-chip"
             data-tone={tone}
             onClick={onOpenLimits}
-            className="group flex min-w-44 max-w-64 shrink-0 cursor-pointer flex-col gap-1.5 rounded-lg border border-border/70 bg-card/70 px-3 py-2 text-left transition-colors outline-none hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className={cn(
+              "group flex min-w-44 max-w-60 shrink-0 cursor-pointer flex-col gap-1.5 rounded-lg border px-3 py-2 text-left transition-colors outline-none hover:bg-accent/45 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+              effectiveTone === "error"
+                ? "border-error/40 bg-card/75"
+                : effectiveTone === "warning"
+                  ? "border-warning/35 bg-card/70"
+                  : "border-border/55 bg-card/45",
+            )}
           />
         }
       >
@@ -151,27 +138,18 @@ function QuotaStripChip({
                 aria-hidden
               />
             ) : null}
-            <span className={cn("font-semibold tabular-nums", toneTextClass(tone))}>
+            <span className={cn("font-semibold tabular-nums", restrainedTextClass(effectiveTone))}>
               {displayedPercent}%
             </span>
           </span>
         </div>
-        <div className="relative h-1.5 w-full rounded-full bg-muted">
-          {clamped > 0 ? (
-            <div
-              className={cn("absolute inset-y-0 left-0 rounded-full", toneBarClass(tone))}
-              style={{ width: `max(${clamped}%, 4px)` }}
-            />
-          ) : null}
-          {tick !== null ? (
-            <span
-              aria-hidden
-              className="absolute -top-0.5 h-2.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground/80"
-              style={{ left: `clamp(1px, ${tick}%, calc(100% - 1px))` }}
-            />
-          ) : null}
-        </div>
-        <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground tabular-nums">
+        <RestrainedQuotaBar
+          percent={displayedPercent}
+          tone={effectiveTone}
+          tickPercent={tick}
+          height="xs"
+        />
+        <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground/85 tabular-nums">
           <span className="truncate">
             {primaryReset ?? gt("{count} accounts", { count: window.members.length })}
           </span>
@@ -185,7 +163,9 @@ function QuotaStripChip({
       <TooltipPopup side="bottom">
         <div className="flex flex-col gap-0.5 text-xs">
           <span className="font-medium text-foreground">
-            {providerLabel} · {windowLabel}:{" "}
+            {windowLabel !== providerLabel
+              ? `${providerLabel} (${windowLabel}): `
+              : `${providerLabel}: `}
             {quotaDisplayMode === "used"
               ? gt("{used}% used", { used: window.usedPercent })
               : gt("{left}% left", { left: window.remainingPercent })}
@@ -193,8 +173,8 @@ function QuotaStripChip({
           {exhaustEta ? (
             <span className="text-warning-foreground">
               {window.members.length > 1
-                ? gt("Fast burn · an account is projected to exhaust in {eta}", { eta: exhaustEta })
-                : gt("Fast burn · projected to exhaust in {eta}", { eta: exhaustEta })}
+                ? gt("Fast burn: an account is projected to exhaust in {eta}", { eta: exhaustEta })
+                : gt("Fast burn: projected to exhaust in {eta}", { eta: exhaustEta })}
             </span>
           ) : null}
           {resetTime || countdown ? (

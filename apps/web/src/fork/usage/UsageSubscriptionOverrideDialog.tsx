@@ -124,7 +124,7 @@ export function UsageSubscriptionOverrideDialog({
       <DialogPopup className="max-w-md" data-testid="usage-subscription-override-dialog">
         <DialogHeader>
           <DialogTitle>
-            {gt("Subscription details · {account}", { account: accountLabel })}
+            {gt("Subscription details: {account}", { account: accountLabel })}
           </DialogTitle>
           <DialogDescription>
             <T>

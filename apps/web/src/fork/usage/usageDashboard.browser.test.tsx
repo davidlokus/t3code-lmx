@@ -577,6 +577,10 @@ describe("UsageDashboard", () => {
 
     const planBadges = page.getByTestId("usage-limit-plan-badge").elements();
     expect(planBadges.map((el) => el.textContent)).toContain("Max");
+    await expect.element(page.getByTestId("usage-limits-matrix")).toBeVisible();
+
+    await userEvent.click(page.getByTestId("usage-limits-layout-pool"));
+    await expect.element(page.getByTestId("usage-limits-pool-table")).toBeVisible();
     const windowCards = page.getByTestId("usage-limit-window-card").elements();
     expect(windowCards.map((el) => el.getAttribute("data-tone"))).toEqual([
       "normal",
@@ -585,7 +589,10 @@ describe("UsageDashboard", () => {
     ]);
     await expect
       .element(
-        page.getByTestId("usage-limit-reset-info").first().getByText("Resets", { exact: false }),
+        page
+          .getByTestId("usage-limit-reset-info")
+          .first()
+          .getByText(/resets/i),
       )
       .toBeVisible();
 
