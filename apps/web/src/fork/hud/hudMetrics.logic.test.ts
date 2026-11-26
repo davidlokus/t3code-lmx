@@ -31,12 +31,14 @@ import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import {
+  deriveComposerContextBreakdown,
   deriveHudActivityMetrics,
   deriveHudContextMetrics,
   deriveHudHeaderSummary,
   deriveHudSessionMetrics,
   deriveHudSystemMetrics,
   derivePromptCacheCountdown,
+  deriveSessionTelemetryMetrics,
   formatHudCompactDuration,
   resolveOmpThreadHudLimits,
 } from "./hudMetrics.logic";
@@ -219,6 +221,7 @@ function run(ordinal: number, fields: Partial<OrchestrationV2Run>): Orchestratio
 }
 
 const DEFAULT_OPTIONS = {
+  showComposerRing: true,
   showContext: true,
   showSession: true,
   showQuota: true,
@@ -254,10 +257,17 @@ describe("HUD display preferences", () => {
     const state = oldStore.getState();
     expect(state).toMatchObject({ ...DEFAULT_OPTIONS, showContext: false });
     state.toggleCard("showContext");
+    state.setCardVisible("showComposerRing", false);
+    expect(isDefaultHudUiOptions(oldStore.getState())).toBe(false);
     state.setCardVisible("showActivity", false);
     state.setSystemExpanded(true);
     expect(isDefaultHudUiOptions(oldStore.getState())).toBe(false);
-    const expected = { ...DEFAULT_OPTIONS, showActivity: false, systemExpanded: true };
+    const expected = {
+      ...DEFAULT_OPTIONS,
+      showComposerRing: false,
+      showActivity: false,
+      systemExpanded: true,
+    };
     expect(JSON.parse(data.get(key)!)).toEqual(expected);
 
     vi.resetModules();
@@ -931,6 +941,300 @@ function subagent(id: string, fields: Partial<OrchestrationV2Subagent>): Orchest
     ...fields,
   };
 }
+
+describe("composer context breakdown", () => {
+  it("groups only visible current-context content and splits the latest measured input", () => {
+    const metrics = deriveComposerContextBreakdown({
+      projection: projection({
+        turnItems: [
+          userItem(1, "old".repeat(200)),
+          { ...itemBase(2), type: "compaction", summary: "Older messages", driver: null },
+          userItem(3, "a".repeat(40)),
+          { ...userItem(4, "ignored".repeat(100)), providerThreadId: RETIRED_THREAD },
+          { ...itemBase(5), type: "command_execution", input: "ls -la x" },
+          {
+            ...itemBase(6),
+            type: "dynamic_tool",
+            toolName: "read",
+            toolSource: { key: "mcp:files", name: "Files", kind: "integration" },
+            input: "ok",
+          },
+          {
+            ...itemBase(7),
+            type: "subagent",
+            subagentId: NodeId.make("agent"),
+            origin: "provider_native",
+            driver: ProviderDriverKind.make("omp"),
+            providerInstanceId: ProviderInstanceId.make("omp"),
+            childThreadId: null,
+            prompt: "abcdefgh",
+            result: "ijkl",
+          },
+        ],
+      }),
+      contextWindow: contextWindow({
+        usedTokens: 100,
+        maxTokens: 200,
+        autoCompactThreshold: 150,
+        lastInputTokens: 20,
+        lastCachedInputTokens: 15,
+      }),
+    });
+    expect(metrics).toMatchObject({
+      hasCompaction: true,
+      isApproximate: true,
+      autoCompactTickPercent: 75,
+      usedPercentage: 50,
+      cacheSplit: {
+        cacheReuseTokens: 15,
+        cacheReusePercent: 75,
+        newInputTokens: 5,
+        newInputPercent: 25,
+      },
+    });
+    expect(metrics?.buckets.map(({ key, tokens }) => [key, tokens])).toEqual([
+      ["messages", 10],
+      ["systemBase", 83],
+      ["tools", 2],
+      ["mcpTools", 2],
+      ["subagents", 3],
+      ["remaining", 100],
+    ]);
+  });
+
+  it("bounds estimated buckets and does not reuse pre-compaction cache counts", () => {
+    const metrics = deriveComposerContextBreakdown({
+      contextWindow: contextWindow({ usedTokens: 5, maxTokens: 4 }),
+      liveTokenUsage: {
+        usedTokens: 200,
+        inputTokens: 200,
+        cachedInputTokens: 150,
+        updatedAt: iso(-10_000),
+      },
+      projection: projection({
+        turnItems: [
+          { ...itemBase(1), type: "compaction", driver: null, summary: "Long summary" },
+          userItem(2, "a".repeat(400)),
+          { ...itemBase(3), type: "command_execution", input: "b".repeat(400) },
+        ],
+      }),
+    });
+    expect(metrics).toMatchObject({ usedPercentage: 100, usageTone: "error", cacheSplit: null });
+    expect(metrics?.buckets.reduce((sum, bucket) => sum + (bucket.tokens ?? 0), 0)).toBe(5);
+    expect(metrics?.buckets.every((bucket) => (bucket.tokens ?? 0) >= 0)).toBe(true);
+    expect(metrics?.buckets.at(-1)).toMatchObject({ key: "remaining", tokens: 0 });
+  });
+});
+
+describe("cumulative session telemetry", () => {
+  it("aggregates measured requests and tokens and clips parallel tool time to active work", () => {
+    const first = turn(1, {
+      model: "gpt-5",
+      startedAt: at(-10_000),
+      completedAt: at(-6_000),
+      turnTokenUsage: {
+        ...tokenUsage(100, 30, 60),
+        cacheCreationTokens: 20,
+        reasoningTokens: 10,
+        requestCount: 2,
+        costUsd: 0.125,
+      },
+    });
+    const second = turn(2, {
+      model: "gpt-5",
+      startedAt: at(-5_000),
+      completedAt: at(),
+      turnTokenUsage: {
+        ...tokenUsage(50, 10, 100),
+        reasoningTokens: 40,
+        requestCount: 3,
+        costUsd: 0.25,
+      },
+    });
+    const timedTool = (ordinal: number, start: number, end: number) => ({
+      ...itemBase(ordinal),
+      type: "command_execution" as const,
+      input: "run",
+      startedAt: at(start),
+      completedAt: at(end),
+    });
+    const actual = deriveSessionTelemetryMetrics({
+      nowMs: NOW,
+      projection: projection({
+        providerTurns: [first, second],
+        runs: [run(1, { startedAt: at(-10_000), completedAt: at() })],
+        turnItems: [
+          timedTool(1, -11_000, -8_000),
+          timedTool(2, -9_000, -5_000),
+          timedTool(3, -7_000, -2_000),
+          timedTool(4, 2_000, 4_000),
+          {
+            ...itemBase(5),
+            type: "reasoning",
+            streaming: false,
+            providerTurnId: second.id,
+            startedAt: at(-4_500),
+          },
+        ],
+      }),
+      contextWindow: contextWindow({ cost: { amount: 1, currency: "USD" } }),
+    });
+    expect(actual).toMatchObject({
+      turns: 2,
+      steps: 5,
+      cumulativeTokens: {
+        total: 310,
+        input: 150,
+        uncachedInput: 90,
+        cacheRead: 40,
+        cacheWrite: 20,
+        output: 160,
+        reasoning: 50,
+      },
+      speed: { peak: 20, latest: 20, liveTurnStartedAtMs: null },
+      cache: { lastTurnHitRate: 20, state: "warm", expiresAtMs: NOW + 300_000 },
+      counts: { requests: 5, errors: 0, toolCalls: 4 },
+      timing: {
+        modelDurationMs: 2_000,
+        toolDurationMs: 8_000,
+        ttftMs: 500,
+        activeDurationMs: 10_000,
+        completedDurationMs: 10_000,
+        activeRunStartedAtMs: null,
+        wallClockSpanMs: 10_000,
+      },
+      cost: { amount: 0.375, currency: "USD", source: "reported" },
+    });
+    expect(actual.speed.average).toBeCloseTo(160 / 9);
+    expect(actual.cache.hitRate).toBeCloseTo((40 / 150) * 100);
+  });
+
+  it("uses the latest session ledger once when per-turn coverage is missing", () => {
+    const actual = deriveSessionTelemetryMetrics({
+      nowMs: NOW,
+      projection: projection({
+        providerTurns: [
+          turn(1, {
+            tokenUsage: {
+              usedTokens: 5_000,
+              inputTokens: 80,
+              outputTokens: 12,
+              updatedAt: iso(-7_000),
+              cost: { amount: 0.25, currency: "USD" },
+            },
+          }),
+          turn(2, {
+            turnTokenUsage: { ...tokenUsage(40, 5, 8), costUsd: 0.25 },
+            tokenUsage: {
+              usedTokens: 6_000,
+              updatedAt: iso(-2_000),
+              cost: { amount: 0.75, currency: "USD" },
+            },
+          }),
+        ],
+      }),
+      contextWindow: contextWindow({ cost: { amount: 0.875, currency: "USD" } }),
+    });
+    expect(actual.cost).toEqual({ amount: 0.875, currency: "USD", source: "reported" });
+    expect(actual.counts.requests).toBeNull();
+    expect(actual.cumulativeTokens.total).toBe(140);
+  });
+
+  it("estimates from per-model overrides but leaves mixed-model turns with no rates unpriced", () => {
+    const providerTurns = [
+      turn(1, { model: "custom", turnTokenUsage: tokenUsage(100_000, 50_000, 10_000) }),
+    ];
+    const settings = {
+      usageModelAliases: { custom: "gpt-5" },
+      usagePriceOverrides: {
+        "gpt-5": {
+          inputCostPerMillionTokens: 2,
+          outputCostPerMillionTokens: 5,
+          cacheReadCostPerMillionTokens: 1,
+        },
+      },
+    };
+    expect(
+      deriveSessionTelemetryMetrics({
+        nowMs: NOW,
+        settings,
+        projection: projection({ providerTurns }),
+      }).cost,
+    ).toEqual({ amount: 0.2, currency: "USD", source: "override" });
+    expect(
+      deriveSessionTelemetryMetrics({
+        nowMs: NOW,
+        settings,
+        projection: projection({
+          providerTurns: [
+            ...providerTurns,
+            turn(2, {
+              model: "gpt-5",
+              turnTokenUsage: { ...tokenUsage(100, 0, 10), models: ["gpt-5", "unknown"] },
+            }),
+          ],
+        }),
+      }).cost,
+    ).toEqual({ amount: null, currency: null, source: null });
+  });
+
+  it("uses child projections once, without adding native or auxiliary tokens twice", () => {
+    const childThreadId = ThreadId.make("telemetry-child");
+    const child = projection({
+      providerTurns: [
+        turn(1, {
+          turnTokenUsage: { ...tokenUsage(250, 0, 50), costUsd: 0.25, requestCount: 3 },
+          tokenUsage: { usedTokens: 400, maxTokens: 10_000, updatedAt: iso() },
+        }),
+      ],
+    });
+    const native = subagent("native-a", {
+      childThreadId,
+      usage: { totalTokens: 900, toolUses: 2, costUsd: 0.125 },
+    });
+    const root = projection({
+      subagents: [
+        native,
+        subagent("delegated", { childThreadId, origin: "app_owned" }),
+        subagent("native-b", { status: "failed", usage: { totalTokens: 120, costUsd: 0.0625 } }),
+      ],
+      providerTurns: [
+        turn(1, {
+          turnTokenUsage: {
+            ...tokenUsage(20, 5, 10),
+            hasSubagents: true,
+            otherUsage: { inputTokens: 700, outputTokens: 400 },
+          },
+        }),
+      ],
+    });
+    const unopened = deriveSessionTelemetryMetrics({ nowMs: NOW, projection: root });
+    expect(unopened.subagentSummary).toMatchObject({ total: 2, totalTokens: 1020, failed: 1 });
+    const actual = deriveSessionTelemetryMetrics({
+      nowMs: NOW,
+      projection: root,
+      childThreadProjections: new Map([[childThreadId, child]]),
+    });
+    expect(actual.cumulativeTokens.total).toBe(30);
+    expect(
+      actual.subagents.find((agent) => agent.childThreadId === childThreadId)?.usage,
+    ).toMatchObject({
+      totalTokens: 300,
+      contextTokens: 400,
+      contextWindow: 10_000,
+      toolUses: 2,
+      costUsd: 0.25,
+    });
+    expect(actual.subagentSummary).toMatchObject({
+      total: 2,
+      totalTokens: 420,
+      requests: 3,
+      completed: 1,
+      failed: 1,
+      costUsd: 0.3125,
+    });
+  });
+});
 
 describe("HUD activity", () => {
   it("prioritizes active subagents, preserves remote and local navigation, and reports overflow", () => {

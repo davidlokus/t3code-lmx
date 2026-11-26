@@ -90,6 +90,12 @@ describe("omp subagents", () => {
         currentTool: "grep",
         recentOutput: ["old"],
         resolvedModel: "example/model",
+        tokens: 1200,
+        contextTokens: 800,
+        contextWindow: 128_000,
+        requests: 1,
+        toolCount: 2,
+        durationMs: 900,
       });
       expect(tracker.fromSubscription(update)).toMatchObject({
         ...identity,
@@ -102,7 +108,7 @@ describe("omp subagents", () => {
       });
       expect(
         tracker.fromSubscription(progress({ ...update.payload.progress, cost: 0.1 })),
-      ).toBeUndefined();
+      ).toMatchObject({ task: { usage: { costUsd: 0.1 } } });
       expect(tracker.fromSubscription(lifecycle(nativeStatus))).toEqual({
         ...identity,
         task: {
@@ -111,6 +117,15 @@ describe("omp subagents", () => {
           status,
           task: "Find the schema",
           model: "example/model",
+          usage: {
+            totalTokens: 1200,
+            contextTokens: 800,
+            contextWindow: 128_000,
+            requests: 1,
+            toolUses: 2,
+            durationMs: 900,
+            costUsd: 0.1,
+          },
           result: null,
         },
       });
@@ -128,6 +143,114 @@ describe("omp subagents", () => {
       expect(tracker.fromTaskResult(result)).toEqual([]);
     },
   );
+
+  it("enriches a task with nested final usage without dropping progress high-water fields", () => {
+    const tracker = new OmpSubagentTracker();
+    tracker.fromSubscription(
+      progress({ tokens: 100, toolCount: 2, resolvedModel: "vendor/model" }),
+    );
+    expect(
+      tracker.fromTaskResult(
+        taskResult({
+          id: "Scout",
+          agent: "explore",
+          model: "fallback-model",
+          resolvedModel: "  ",
+          tokens: 90,
+          requests: 2,
+          durationMs: 1200,
+          output: "Done",
+          usage: {
+            input: 30,
+            output: 15,
+            cacheRead: 40,
+            cacheWrite: 10,
+            totalTokens: 95,
+            reasoningTokens: 4,
+            cost: { total: 0.002 },
+          },
+        }),
+      ),
+    ).toMatchObject([
+      {
+        taskKey: "Scout",
+        task: {
+          status: "completed",
+          model: "vendor/model",
+          usage: {
+            totalTokens: 100,
+            inputTokens: 80,
+            outputTokens: 15,
+            cachedInputTokens: 40,
+            cacheCreationTokens: 10,
+            reasoningOutputTokens: 4,
+            requests: 2,
+            toolUses: 2,
+            durationMs: 1200,
+            costUsd: 0.002,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("accepts metrics from a running wait job and keeps them through sparse async completion", () => {
+    const tracker = new OmpSubagentTracker();
+    tracker.fromSubscription(progress({ tokens: 100, requests: 1 }));
+    expect(
+      tracker.fromWaitResult(
+        waitResult({
+          id: "job-1",
+          agentUrlId: "Scout",
+          type: "task",
+          status: "running",
+          requests: 3,
+          contextTokens: 1200,
+          contextWindow: 200_000,
+          resolvedModel: "vendor/served-model",
+          cost: 0.08,
+        }),
+      ),
+    ).toMatchObject([
+      {
+        taskKey: "Scout",
+        task: {
+          status: "running",
+          model: "vendor/served-model",
+          usage: { requests: 3, costUsd: 0.08 },
+        },
+      },
+    ]);
+    const job = { jobId: "job-1", agentId: "Scout", type: "task", status: "completed" };
+    const update = tracker.fromAsyncResultMessage(
+      asyncResult('<task-result id="job-1"><output>Complete report</output></task-result>', [
+        { ...job, tokens: 0, requests: 0, cost: 0, durationMs: 1600 },
+      ]),
+    );
+    expect(update).toMatchObject([
+      {
+        taskKey: "Scout",
+        task: {
+          status: "completed",
+          result: "Complete report",
+          model: "vendor/served-model",
+          usage: {
+            totalTokens: 100,
+            requests: 3,
+            contextTokens: 1200,
+            contextWindow: 200_000,
+            costUsd: 0.08,
+            durationMs: 1600,
+          },
+        },
+      },
+    ]);
+    expect(
+      tracker.fromAsyncResultMessage(asyncResult("", [{ ...job, durationMs: 1800 }])),
+    ).toMatchObject([
+      { task: { result: "Complete report", usage: { durationMs: 1800, totalTokens: 100 } } },
+    ]);
+  });
 
   it("uses tool args, then a clean output prefix, and retains long reports within the result cap", () => {
     const tracker = new OmpSubagentTracker();

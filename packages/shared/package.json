@@ -439,6 +439,10 @@
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
     },
+    "./modelReferencePricing": {
+      "types": "./src/modelReferencePricing.ts",
+      "import": "./src/modelReferencePricing.ts"
+    },
     "./usageMerge": {
       "types": "./src/usageMerge.ts",
       "import": "./src/usageMerge.ts"

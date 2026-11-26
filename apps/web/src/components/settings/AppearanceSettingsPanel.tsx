@@ -38,6 +38,8 @@ import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 import { TypographySection } from "./TypographySettings";
 import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
+// fork: expose toggle for T3 Lab composer telemetry ring
+import { useHudOptionsStore } from "~/fork/hud/hudOptionsStore";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: msg("Artwork"),
@@ -110,6 +112,9 @@ export function AppearanceSettingsPanel() {
   const [isImportThemeOpen, setIsImportThemeOpen] = useState(false);
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  // fork: composer telemetry ring visibility synced with HUD options store
+  const showComposerRing = useHudOptionsStore((state) => state.showComposerRing);
+  const setHudCardVisible = useHudOptionsStore((state) => state.setCardVisible);
   const environmentStageLabel = useEnvironmentStageLabel();
   const environmentStageVariant = resolveSidebarStageBackdropVariant(environmentStageLabel);
   const environmentIdentificationOptionList =
@@ -538,6 +543,30 @@ export function AppearanceSettingsPanel() {
                   updateSettings({ persistComposerContextStrip: Boolean(checked) })
                 }
                 aria-label={gt("Keep composer context visible in active threads")}
+              />
+            }
+          />
+          {/* fork: toggleable composer context window & session telemetry ring */}
+          <SettingsRow
+            {...searchableSetting("composer-telemetry-ring")}
+            description={gt(
+              "Show a compact context window ring next to the composer model picker with context breakdown and session stats.",
+            )}
+            resetAction={
+              !showComposerRing ? (
+                <SettingResetButton
+                  ariaLabel={gt("Reset composer telemetry ring to default")}
+                  onClick={() => setHudCardVisible("showComposerRing", true)}
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={showComposerRing}
+                onCheckedChange={(checked) =>
+                  setHudCardVisible("showComposerRing", Boolean(checked))
+                }
+                aria-label={gt("Show composer telemetry ring")}
               />
             }
           />

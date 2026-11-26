@@ -107,6 +107,7 @@ function HudOptionSwitchRow(props: {
 
 function HudOptionsMenu() {
   const gt = useGT();
+  const showComposerRing = useHudOptionsStore((state) => state.showComposerRing);
   const showContext = useHudOptionsStore((state) => state.showContext);
   const showSession = useHudOptionsStore((state) => state.showSession);
   const showQuota = useHudOptionsStore((state) => state.showQuota);
@@ -115,6 +116,7 @@ function HudOptionsMenu() {
   const systemExpanded = useHudOptionsStore((state) => state.systemExpanded);
   const resetHudOptions = useHudOptionsStore((state) => state.resetHudOptions);
   const isDefault = isDefaultHudUiOptions({
+    showComposerRing,
     showContext,
     showSession,
     showQuota,
@@ -152,6 +154,7 @@ function HudOptionsMenu() {
           <MenuGroupLabel>
             <T context="HUD options popover title">T3 Lab HUD</T>
           </MenuGroupLabel>
+          <HudOptionSwitchRow optionKey="showComposerRing" label={gt("Composer telemetry ring")} />
           <HudOptionSwitchRow optionKey="showContext" label={gt("Context lens")} />
           <HudOptionSwitchRow optionKey="showSession" label={gt("Session KPIs")} />
           <HudOptionSwitchRow optionKey="showQuota" label={gt("Quota limits")} />

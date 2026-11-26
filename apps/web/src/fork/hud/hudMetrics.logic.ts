@@ -15,6 +15,7 @@ import {
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2RunStatus,
   type OrchestrationV2Subagent,
+  type OrchestrationV2SubagentUsage,
   type ProviderThreadId,
   type ResourceTelemetryProcessCategory,
   type ResourceTelemetrySnapshot,
@@ -22,9 +23,16 @@ import {
   type ServerProvider,
   type ServerProviderUsageLimits,
   type ThreadId,
+  type ProviderTurnId,
+  type ServerSettings,
   type UsageLimitSourceSnapshot,
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
+import {
+  estimateModelReferenceCost,
+  type ReferenceCostEstimate,
+  type ReferenceCostTokenCounts,
+} from "@t3tools/shared/modelReferencePricing";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import {
   antigravityWindowLimitsModel,
@@ -348,10 +356,13 @@ function contextCharacterCounts(
   projection: ContextProjection | null | undefined,
   activeThreadId: ProviderThreadId | null,
   firstItemIndex: number,
+  splitTools = false,
 ) {
   let user = 0;
   let tools = 0;
   let assistant = 0;
+  let mcpTools = 0;
+  let subagents = 0;
   let plan = 0;
   // Index messages only when a structural item needs its separate text body.
   let messages:
@@ -362,7 +373,18 @@ function contextCharacterCounts(
     const item = items[index]!;
     if (!inActiveContext(item, activeThreadId)) continue;
     if (isToolItem(item)) {
-      tools += toolCharacterCount(item);
+      const length = toolCharacterCount(item);
+      if (
+        splitTools &&
+        (item.toolSource?.key.startsWith("mcp:") ||
+          (item.type === "dynamic_tool" && item.toolName?.startsWith("mcp__")))
+      ) {
+        mcpTools += length;
+      } else {
+        tools += length;
+      }
+    } else if (splitTools && item.type === "subagent") {
+      subagents += item.prompt.length + (item.result?.length ?? 0);
     } else if (item.type === "user_message" && (!item.textOmitted || item.text.length > 0)) {
       user += item.text.length;
     } else if (item.type === "assistant_message" || item.type === "user_message") {
@@ -378,7 +400,7 @@ function contextCharacterCounts(
       plan += item.markdown.length;
     }
   }
-  return { user, tools, assistant: assistant || plan };
+  return { user, tools, mcpTools, subagents, assistant: assistant || plan };
 }
 
 function resolveLastTurnBreakdown(
@@ -572,21 +594,19 @@ export function derivePromptCacheCountdown(
     : { state: "cold", remainingMs: 0 };
 }
 
-export function deriveHudContextMetrics(input: {
-  readonly contextWindow: ContextWindowSnapshot | null | undefined;
-  readonly liveTokenUsage: OrchestrationV2ProviderTurnTokenUsage | null | undefined;
-  readonly projection: ContextProjection | null | undefined;
-  readonly requestedModel: string | null | undefined;
-  readonly nowMs: number;
-}): HudContextMetrics | null {
-  const { contextWindow, liveTokenUsage, projection } = input;
+type ContextUsageInput = {
+  readonly contextWindow?: ContextWindowSnapshot | null | undefined;
+  readonly liveTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | null | undefined;
+};
+
+function measureContextUsage({ contextWindow, liveTokenUsage }: ContextUsageInput) {
   const usedTokens =
     nonNegativeCount(contextWindow?.usedTokens) ?? nonNegativeCount(liveTokenUsage?.usedTokens);
   if (usedTokens === null) return null;
   const maxTokens =
     positiveCount(contextWindow?.maxTokens) ?? positiveCount(liveTokenUsage?.maxTokens);
   const usedPercentage = maxTokens === null ? null : Math.min(100, (usedTokens / maxTokens) * 100);
-  const usageTone =
+  const usageTone: HudContextUsageTone =
     usedPercentage === null || usedPercentage < 65
       ? "normal"
       : usedPercentage < 85
@@ -599,33 +619,28 @@ export function deriveHudContextMetrics(input: {
     maxTokens !== null && autoCompactThreshold !== null && autoCompactThreshold < maxTokens
       ? (autoCompactThreshold / maxTokens) * 100
       : null;
+  return {
+    usedTokens,
+    maxTokens,
+    usedPercentage,
+    usageTone,
+    autoCompactThreshold,
+    autoCompactTickPercent,
+    over200k: usedTokens >= 200_000,
+  };
+}
 
-  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
-  const items = projection?.turnItems ?? [];
-  const compactionIndex = items.findLastIndex(
-    (item) =>
-      item.type === "compaction" &&
-      item.status === "completed" &&
-      inActiveContext(item, activeThreadId),
-  );
-  const compaction = items[compactionIndex];
-  const latestTurn = latestDeliveredTurn(projection);
-  let tools = 0;
-  let assistant = 0;
-  let user = 0;
-  if (usedTokens > 0) {
-    const chars = contextCharacterCounts(projection, activeThreadId, compactionIndex + 1);
-    tools = Math.round(chars.tools / 4);
-    user = Math.round(chars.user / 4);
-    const compactedAt =
-      compaction?.type === "compaction"
-        ? timestampMs(compaction.completedAt ?? compaction.updatedAt)
-        : null;
-    assistant =
-      chars.assistant > 0
-        ? Math.round(chars.assistant / 4)
-        : assistantOutputEstimate(contextWindow, liveTokenUsage, latestTurn, compactedAt);
-  }
+type PromptCacheInput = ContextUsageInput & {
+  readonly projection?: HeaderProjection | null | undefined;
+  readonly requestedModel?: string | null | undefined;
+  readonly nowMs: number;
+};
+
+function measurePromptCache(
+  input: PromptCacheInput,
+  latestTurn: OrchestrationV2ProviderTurn | undefined,
+) {
+  const { projection, contextWindow, liveTokenUsage } = input;
   const cache = summarizePromptCache(projection, latestTurn, input.requestedModel, contextWindow);
   const turnUsage = latestTurn?.tokenUsage;
   const liveOwnedByLatestTurn =
@@ -648,15 +663,57 @@ export function deriveHudContextMetrics(input: {
     contextWindow,
     !cache.hasOtherModel && !cache.latestIsMixed,
   );
-  const countdown = derivePromptCacheCountdown(expiresAt, input.nowMs);
+  return { cache, expiresAt, countdown: derivePromptCacheCountdown(expiresAt, input.nowMs) };
+}
+
+function latestContextCompactionIndex(
+  items: ThreadStructure["turnItems"],
+  providerThreadId: ProviderThreadId | null,
+) {
+  return items.findLastIndex(
+    (item) =>
+      item.type === "compaction" &&
+      item.status === "completed" &&
+      inActiveContext(item, providerThreadId),
+  );
+}
+
+export function deriveHudContextMetrics(input: {
+  readonly contextWindow: ContextWindowSnapshot | null | undefined;
+  readonly liveTokenUsage: OrchestrationV2ProviderTurnTokenUsage | null | undefined;
+  readonly projection: ContextProjection | null | undefined;
+  readonly requestedModel: string | null | undefined;
+  readonly nowMs: number;
+}): HudContextMetrics | null {
+  const { contextWindow, liveTokenUsage, projection } = input;
+  const measured = measureContextUsage(input);
+  if (measured === null) return null;
+  const { usedTokens, maxTokens } = measured;
+
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  const items = projection?.turnItems ?? [];
+  const compactionIndex = latestContextCompactionIndex(items, activeThreadId);
+  const compaction = items[compactionIndex];
+  const latestTurn = latestDeliveredTurn(projection);
+  let tools = 0;
+  let assistant = 0;
+  let user = 0;
+  if (usedTokens > 0) {
+    const chars = contextCharacterCounts(projection, activeThreadId, compactionIndex + 1);
+    tools = Math.round(chars.tools / 4);
+    user = Math.round(chars.user / 4);
+    const compactedAt =
+      compaction?.type === "compaction"
+        ? timestampMs(compaction.completedAt ?? compaction.updatedAt)
+        : null;
+    assistant =
+      chars.assistant > 0
+        ? Math.round(chars.assistant / 4)
+        : assistantOutputEstimate(contextWindow, liveTokenUsage, latestTurn, compactedAt);
+  }
+  const { cache, expiresAt, countdown } = measurePromptCache(input, latestTurn);
   return {
-    usedTokens,
-    maxTokens,
-    usedPercentage,
-    usageTone,
-    over200k: usedTokens >= 200_000,
-    autoCompactThreshold,
-    autoCompactTickPercent,
+    ...measured,
     hasCompaction: compactionIndex >= 0,
     isApproximate: true,
     buckets: estimateBuckets(
@@ -675,6 +732,117 @@ export function deriveHudContextMetrics(input: {
     promptCacheState: countdown.state,
     promptCacheRemainingMs: countdown.remainingMs,
     lastTurnBreakdown: resolveLastTurnBreakdown(contextWindow, liveTokenUsage, latestTurn),
+  };
+}
+
+function splitPromptInput(
+  inputTokens: number | null | undefined,
+  cachedInputTokens: number | null | undefined,
+) {
+  if (!isNonNegativeCount(inputTokens) || !isNonNegativeCount(cachedInputTokens)) return null;
+  if (inputTokens === 0) return null;
+  const cacheReuseTokens = Math.min(cachedInputTokens, inputTokens);
+  const cacheReusePercent = (cacheReuseTokens / inputTokens) * 100;
+  return {
+    cacheReuseTokens,
+    cacheReusePercent,
+    newInputTokens: inputTokens - cacheReuseTokens,
+    newInputPercent: 100 - cacheReusePercent,
+  };
+}
+
+export function deriveComposerContextBreakdown(
+  input: ContextUsageInput & { readonly projection?: ContextProjection | null | undefined },
+) {
+  const { projection, contextWindow } = input;
+  const latestTurn = latestDeliveredTurn(projection);
+  const liveTokenUsage = input.liveTokenUsage ?? latestTurn?.tokenUsage;
+  const measured = measureContextUsage({ contextWindow, liveTokenUsage });
+  if (measured === null) return null;
+  const { usedTokens, maxTokens } = measured;
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  const items = projection?.turnItems ?? [];
+  const compactionIndex = latestContextCompactionIndex(items, activeThreadId);
+  const compaction = items[compactionIndex];
+  const compactedAt =
+    compaction?.type === "compaction"
+      ? timestampMs(compaction.completedAt ?? compaction.updatedAt)
+      : null;
+
+  const chars =
+    usedTokens > 0
+      ? contextCharacterCounts(projection, activeThreadId, compactionIndex + 1, true)
+      : null;
+  const assistant =
+    chars === null
+      ? 0
+      : chars.assistant > 0
+        ? Math.round(chars.assistant / 4)
+        : assistantOutputEstimate(contextWindow, liveTokenUsage, latestTurn, compactedAt);
+  const observed = [
+    ["messages", assistant + Math.round((chars?.user ?? 0) / 4)],
+    ["tools", Math.round((chars?.tools ?? 0) / 4)],
+    ["mcpTools", Math.round((chars?.mcpTools ?? 0) / 4)],
+    ["subagents", Math.round((chars?.subagents ?? 0) / 4)],
+  ] as const;
+  const observedTotal = observed.reduce((total, [, tokens]) => total + tokens, 0);
+  const systemBase =
+    observedTotal <= usedTokens
+      ? usedTokens - observedTotal
+      : Math.min(
+          Math.round(usedTokens * 0.35),
+          compaction?.type === "compaction" && compaction.summary
+            ? Math.round(compaction.summary.length / 4)
+            : Math.round(usedTokens * 0.12),
+        );
+  const observedBudget = Math.min(observedTotal, usedTokens - systemBase);
+  const contextCapacity = Math.max(maxTokens ?? usedTokens, usedTokens);
+  const bucket = (
+    key: (typeof observed)[number][0] | "systemBase" | "remaining",
+    tokens: number | null,
+  ) => ({
+    key,
+    tokens,
+    percentOfContext: contextCapacity > 0 && tokens !== null ? (tokens / contextCapacity) * 100 : 0,
+    percentOfUsed:
+      key !== "remaining" && usedTokens > 0 && tokens !== null ? (tokens / usedTokens) * 100 : 0,
+  });
+  let raw = 0;
+  let scaled = 0;
+  const estimatedBuckets = observed.map(([key, tokens]) => {
+    raw += tokens;
+    const next = observedTotal > 0 ? Math.round((raw / observedTotal) * observedBudget) : 0;
+    const entry = bucket(key, next - scaled);
+    scaled = next;
+    return entry;
+  });
+
+  // Cache reuse is the latest step's input split, not a slice of the whole context window.
+  const contextIsFresh =
+    compactedAt === null ||
+    (parseTimestampMs(contextWindow?.updatedAt) ?? -Infinity) >= compactedAt;
+  const liveIsFresh =
+    compactedAt === null ||
+    (parseTimestampMs(liveTokenUsage?.updatedAt) ?? -Infinity) >= compactedAt;
+  const cacheSplit =
+    (contextIsFresh
+      ? (splitPromptInput(contextWindow?.lastInputTokens, contextWindow?.lastCachedInputTokens) ??
+        splitPromptInput(contextWindow?.inputTokens, contextWindow?.cachedInputTokens))
+      : null) ??
+    (liveIsFresh
+      ? splitPromptInput(liveTokenUsage?.inputTokens, liveTokenUsage?.cachedInputTokens)
+      : null);
+  return {
+    ...measured,
+    hasCompaction: compactionIndex >= 0,
+    isApproximate: true as const,
+    buckets: [
+      estimatedBuckets[0]!,
+      bucket("systemBase", systemBase),
+      ...estimatedBuckets.slice(1),
+      bucket("remaining", maxTokens === null ? null : Math.max(0, maxTokens - usedTokens)),
+    ],
+    cacheSplit,
   };
 }
 
@@ -812,7 +980,9 @@ function measureTurnTtft(
   return chosenTtftMs;
 }
 
-function measureRuns(runs: ThreadStructure["runs"], nowMs: number) {
+type TimeInterval = [startMs: number, endMs: number];
+
+function measureRuns(runs: ThreadStructure["runs"], nowMs: number, intervals?: TimeInterval[]) {
   let activeDurationMs: number | null = null;
   let completedDurationMs = 0;
   let activeRunStartedAtMs: number | null = null;
@@ -831,6 +1001,7 @@ function measureRuns(runs: ThreadStructure["runs"], nowMs: number) {
     const end = completed ?? (active && Number.isFinite(nowMs) ? nowMs : null);
     if (end === null) continue;
     const elapsed = Math.max(0, end - start);
+    if (elapsed > 0) intervals?.push([start, end]);
     if (completed !== null) completedDurationMs += elapsed;
     activeDurationMs = (activeDurationMs ?? 0) + elapsed;
     latestEnd = Math.max(latestEnd, end);
@@ -1055,6 +1226,453 @@ export function deriveHudActivityMetrics(input: {
     totalToolCalls,
     overflowToolCount: countsByName.size - tools.length,
     isEmpty: agents.length === 0 && totalToolCalls === 0,
+  };
+}
+
+type SessionProjection = HeaderProjection &
+  Partial<Pick<ThreadStructure, "runs" | "turnItems" | "subagents">>;
+
+type SessionTelemetryInput = Omit<PromptCacheInput, "projection"> & {
+  readonly projection?: SessionProjection | null | undefined;
+  readonly childThreadProjections?: ReadonlyMap<ThreadId, SessionProjection> | undefined;
+  readonly settings?:
+    | Partial<Pick<ServerSettings, "usageModelAliases" | "usagePriceOverrides">>
+    | undefined;
+};
+
+type TurnTotals = {
+  readonly input: number | null;
+  readonly output: number | null;
+  readonly cacheRead: number | null;
+  readonly cacheWrite: number | null;
+  readonly reasoning: number | null;
+};
+
+function readTurnTotals(turn: OrchestrationV2ProviderTurn): TurnTotals {
+  const usage = turn.turnTokenUsage;
+  const snapshot = turn.tokenUsage;
+  // Legacy snapshots are last-step observations, never the cumulative context watermark.
+  const input = nonNegativeCount(usage === undefined ? snapshot?.inputTokens : usage.inputTokens);
+  const output = nonNegativeCount(
+    usage === undefined ? snapshot?.outputTokens : usage.outputTokens,
+  );
+  const cacheRead = nonNegativeCount(
+    usage === undefined ? snapshot?.cachedInputTokens : usage.cachedInputTokens,
+  );
+  const cacheWrite = nonNegativeCount(usage?.cacheCreationTokens);
+  const reasoning = nonNegativeCount(
+    usage === undefined ? snapshot?.reasoningOutputTokens : usage.reasoningTokens,
+  );
+  return {
+    input,
+    output,
+    cacheRead: input === null || cacheRead === null ? cacheRead : Math.min(cacheRead, input),
+    cacheWrite,
+    reasoning: output === null || reasoning === null ? reasoning : Math.min(reasoning, output),
+  };
+}
+
+function isModelStep(turn: OrchestrationV2ProviderTurn, { input, output }: TurnTotals) {
+  return (
+    !turn.turnTokenUsage?.localCommand &&
+    ((input ?? 0) > 0 ||
+      (output ?? 0) > 0 ||
+      positiveCount(turn.turnTokenUsage?.requestCount) !== null ||
+      (turn.startedAt !== null && (turn.status === "completed" || turn.status === "failed")))
+  );
+}
+
+function validReportedAmount(value: number | undefined) {
+  return value !== undefined && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function summarizeSessionTurns(projection: SessionProjection | null | undefined) {
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  const tokens = {
+    input: 0,
+    output: 0,
+    uncachedInput: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+  };
+  let turns = 0;
+  let steps = 0;
+  let requests: number | null = null;
+  let measuredInput = false;
+  let measuredOutput = false;
+  let cacheSampleInput = 0;
+  let cacheSampleRead = 0;
+  let reportedCostUsd: number | null = null;
+  let missingCost = false;
+  let speedOutput = 0;
+  let speedDuration = 0;
+  let peak: number | null = null;
+  let latest: number | null = null;
+  let latestRateAt = -Infinity;
+  let liveTurn: OrchestrationV2ProviderTurn | undefined;
+  let liveTurnOutputTokens: number | null = null;
+  let liveTurnStartedAtMs: number | null = null;
+  for (const turn of projection?.providerTurns ?? []) {
+    if (turn.promptDropped) continue;
+    turns++;
+    const usage = turn.turnTokenUsage;
+    const cost = validReportedAmount(usage?.costUsd);
+    if (cost !== null) reportedCostUsd = (reportedCostUsd ?? 0) + cost;
+    if (usage?.localCommand) continue;
+
+    const counts = readTurnTotals(turn);
+    const modelStep = isModelStep(turn, counts);
+    const requestCount = positiveCount(usage?.requestCount);
+    if (requestCount !== null) requests = (requests ?? 0) + requestCount;
+    steps += requestCount ?? (modelStep ? 1 : 0);
+    if (modelStep && cost === null) missingCost = true;
+    if (counts.input !== null) {
+      measuredInput = true;
+      tokens.input += counts.input;
+      tokens.uncachedInput += Math.max(
+        0,
+        counts.input - (counts.cacheRead ?? 0) - (counts.cacheWrite ?? 0),
+      );
+      if (counts.input > 0 && counts.cacheRead !== null) {
+        cacheSampleInput += counts.input;
+        cacheSampleRead += counts.cacheRead;
+      }
+    }
+    if (counts.output !== null) measuredOutput = true;
+    tokens.output += counts.output ?? 0;
+    tokens.cacheRead += counts.cacheRead ?? 0;
+    tokens.cacheWrite += counts.cacheWrite ?? 0;
+    tokens.reasoning += counts.reasoning ?? 0;
+
+    const startedAt = timestampMs(turn.startedAt);
+    if (startedAt === null) continue;
+    if (turn.status === "running" && deliveredOnThread(turn, activeThreadId)) {
+      if (liveTurn === undefined || isLaterTurn(turn, liveTurn)) {
+        liveTurn = turn;
+        liveTurnStartedAtMs = startedAt;
+        liveTurnOutputTokens = positiveCount(
+          Math.max(counts.output ?? 0, positiveCount(turn.tokenUsage?.outputTokens) ?? 0),
+        );
+      }
+      continue;
+    }
+    const completedAt = timestampMs(turn.completedAt);
+    if (turn.status !== "completed" || completedAt === null) continue;
+    const duration = completedAt - startedAt;
+    const rate = outputRate(counts.output, duration);
+    if (rate === null || counts.output === null) continue;
+    speedOutput += counts.output;
+    speedDuration += duration;
+    peak = Math.max(peak ?? 0, rate);
+    if (completedAt >= latestRateAt) {
+      latest = rate;
+      latestRateAt = completedAt;
+    }
+  }
+  return {
+    turns,
+    steps,
+    requests,
+    tokens: { ...tokens, total: tokens.input + tokens.output },
+    measuredInput,
+    measuredOutput,
+    hitRate: cacheSampleInput === 0 ? null : (cacheSampleRead / cacheSampleInput) * 100,
+    reportedCostUsd: missingCost ? null : validReportedAmount(reportedCostUsd ?? undefined),
+    speed: {
+      average: outputRate(speedOutput, speedDuration),
+      peak,
+      latest,
+      liveTurnOutputTokens,
+      liveTurnStartedAtMs,
+    },
+  };
+}
+
+function latestSessionCost(
+  input: ContextUsageInput & { readonly projection?: SessionProjection | null | undefined },
+) {
+  const latest: { cost: ContextWindowSnapshot["cost"]; at: number } = { cost: null, at: -Infinity };
+  const consider = (
+    snapshot: ContextWindowSnapshot | OrchestrationV2ProviderTurnTokenUsage | null | undefined,
+  ) => {
+    if (snapshot?.cost == null || validReportedAmount(snapshot.cost.amount) === null) return;
+    if (!snapshot.cost.currency.trim()) return;
+    const at = parseTimestampMs(snapshot.updatedAt) ?? -Infinity;
+    if (at < latest.at) return;
+    latest.at = at;
+    latest.cost = snapshot.cost;
+  };
+  const { projection } = input;
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  for (const turn of projection?.providerTurns ?? []) {
+    if (deliveredOnThread(turn, activeThreadId)) consider(turn.tokenUsage);
+  }
+  consider(input.liveTokenUsage);
+  consider(input.contextWindow);
+  return latest.cost;
+}
+
+function estimateSessionCost(input: SessionTelemetryInput): ReferenceCostEstimate | null {
+  const { projection, settings } = input;
+  const turns = projection?.providerTurns ?? [];
+  const requested = nonEmptyText(input.requestedModel ?? projection?.thread.modelSelection.model);
+  const activeThreadId = projection?.thread.activeProviderThreadId ?? null;
+  const isSingleModel = turns.every((turn) => {
+    if (turn.promptDropped || turn.turnTokenUsage?.localCommand) return true;
+    const model = reportedModel(turn);
+    return (
+      deliveredOnThread(turn, activeThreadId) &&
+      !hasMultipleModels(turn) &&
+      (model === null || model === requested)
+    );
+  });
+  let amount = 0;
+  let source: ReferenceCostEstimate["source"] | null = null;
+  for (const turn of turns) {
+    if (turn.promptDropped || turn.turnTokenUsage?.localCommand) continue;
+    const counts = readTurnTotals(turn);
+    if (!isModelStep(turn, counts)) continue;
+    if (hasMultipleModels(turn) || counts.input === null || counts.output === null) return null;
+    if (counts.input === 0 && counts.output === 0) continue;
+    const tokens: ReferenceCostTokenCounts = {
+      inputTokens: counts.input,
+      outputTokens: counts.output,
+      cachedInputTokens: counts.cacheRead ?? undefined,
+      cacheCreationTokens: counts.cacheWrite ?? undefined,
+    };
+    const model = reportedModel(turn) ?? (isSingleModel ? requested : null);
+    const cost = estimateModelReferenceCost(model, tokens, settings);
+    if (cost === null) return null;
+    amount += cost.amount;
+    if (source !== "reference") source = cost.source;
+  }
+  return source !== null && Number.isFinite(amount) ? { amount, currency: "USD", source } : null;
+}
+
+function mergeIntervals(intervals: TimeInterval[]) {
+  intervals.sort(([left], [right]) => left - right);
+  let count = 0;
+  for (const interval of intervals) {
+    const previous = intervals[count - 1];
+    if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+    else intervals[count++] = interval;
+  }
+  intervals.length = count;
+}
+
+function measureSessionTools(
+  projection: SessionProjection | null | undefined,
+  activeIntervals: TimeInterval[],
+  nowMs: number,
+) {
+  let toolCalls = 0;
+  let errors = 0;
+  const errorTurns = new Set<ProviderTurnId>();
+  const toolIntervals: TimeInterval[] = [];
+  for (const item of projection?.turnItems ?? []) {
+    if (item.type === "error") {
+      errors++;
+      if (item.providerTurnId !== null) errorTurns.add(item.providerTurnId);
+    }
+    if (!isToolItem(item) || item.toolNonExecutionKind !== undefined) continue;
+    toolCalls++;
+    const start = timestampMs(item.startedAt);
+    const end =
+      timestampMs(item.completedAt) ??
+      (isOrchestrationV2WorkActive(item.status) && Number.isFinite(nowMs) ? nowMs : null);
+    if (start !== null && end !== null && end > start) toolIntervals.push([start, end]);
+  }
+  for (const turn of projection?.providerTurns ?? []) {
+    if (turn.status === "failed" && !turn.promptDropped && !errorTurns.has(turn.id)) errors++;
+  }
+  mergeIntervals(toolIntervals);
+  if (activeIntervals.length === 0) {
+    return {
+      toolCalls,
+      errors,
+      toolDurationMs: toolIntervals.reduce((total, [start, end]) => total + end - start, 0),
+    };
+  }
+
+  // The tools may run in parallel or outlive their launching run.
+  mergeIntervals(activeIntervals);
+  let toolDurationMs = 0;
+  let tool = 0;
+  let active = 0;
+  while (tool < toolIntervals.length && active < activeIntervals.length) {
+    const [toolStart, toolEnd] = toolIntervals[tool]!;
+    const [runStart, runEnd] = activeIntervals[active]!;
+    toolDurationMs += Math.max(0, Math.min(toolEnd, runEnd) - Math.max(toolStart, runStart));
+    if (toolEnd < runEnd) tool++;
+    else active++;
+  }
+  return { toolCalls, errors, toolDurationMs };
+}
+
+function childThreadUsage(
+  projection: SessionProjection,
+  nowMs: number,
+): OrchestrationV2SubagentUsage {
+  const usage = summarizeSessionTurns(projection);
+  const snapshot = latestDeliveredTurn(projection)?.tokenUsage;
+  const contextWindow = positiveCount(snapshot?.maxTokens);
+  const durationMs = measureRuns(projection.runs ?? [], nowMs).activeDurationMs;
+  let toolUses = 0;
+  for (const item of projection.turnItems ?? []) {
+    if (isToolItem(item) && item.toolNonExecutionKind === undefined) toolUses++;
+  }
+  const reported = usage.reportedCostUsd === null ? latestSessionCost({ projection }) : null;
+  const costUsd = usage.reportedCostUsd ?? (reported?.currency === "USD" ? reported.amount : null);
+  return {
+    ...(usage.measuredInput && usage.measuredOutput ? { totalTokens: usage.tokens.total } : {}),
+    ...(usage.measuredInput ? { inputTokens: usage.tokens.input } : {}),
+    ...(usage.measuredOutput ? { outputTokens: usage.tokens.output } : {}),
+    ...(usage.tokens.cacheRead > 0 ? { cachedInputTokens: usage.tokens.cacheRead } : {}),
+    ...(usage.tokens.cacheWrite > 0 ? { cacheCreationTokens: usage.tokens.cacheWrite } : {}),
+    ...(usage.tokens.reasoning > 0 ? { reasoningOutputTokens: usage.tokens.reasoning } : {}),
+    ...(snapshot === undefined ? {} : { contextTokens: snapshot.usedTokens }),
+    ...(contextWindow === null ? {} : { contextWindow }),
+    ...(usage.requests === null ? {} : { requests: usage.requests }),
+    ...(toolUses > 0 ? { toolUses } : {}),
+    ...(durationMs === null ? {} : { durationMs }),
+    ...(costUsd === null ? {} : { costUsd }),
+  };
+}
+
+function summarizeSubagents(input: SessionTelemetryInput) {
+  const byThreadOrId = new Map<string, OrchestrationV2Subagent>();
+  for (const agent of input.projection?.subagents ?? []) {
+    const key =
+      agent.remoteChild !== undefined
+        ? `remote:${JSON.stringify([agent.remoteChild.environmentId, agent.remoteChild.threadId])}`
+        : agent.childThreadId === null
+          ? `agent:${agent.id}`
+          : `child:${agent.childThreadId}`;
+    const duplicate = byThreadOrId.get(key);
+    if (duplicate === undefined) {
+      byThreadOrId.set(key, agent);
+    } else {
+      const [chosen, other] =
+        compareSubagents(agent, duplicate) < 0 ? [agent, duplicate] : [duplicate, agent];
+      byThreadOrId.set(
+        key,
+        chosen.usage === undefined ? { ...chosen, usage: other.usage } : chosen,
+      );
+    }
+  }
+  const subagents: Array<
+    HudSubagentEntry & { readonly usage: OrchestrationV2SubagentUsage | null }
+  > = [];
+  const subagentSummary = {
+    total: byThreadOrId.size,
+    active: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+    totalTokens: null as number | null,
+    requests: null as number | null,
+    toolUses: null as number | null,
+    durationMs: null as number | null,
+    costUsd: null as number | null,
+  };
+  for (const agent of [...byThreadOrId.values()].sort(compareSubagents)) {
+    const entry = presentSubagent(agent, input.nowMs);
+    const child =
+      agent.childThreadId === null || agent.remoteChild !== undefined
+        ? undefined
+        : input.childThreadProjections?.get(agent.childThreadId);
+    const loadedUsage = child === undefined ? undefined : childThreadUsage(child, input.nowMs);
+    const usage =
+      loadedUsage === undefined || Object.keys(loadedUsage).length === 0
+        ? (agent.usage ?? null)
+        : { ...agent.usage, ...loadedUsage };
+    subagents.push({ ...entry, usage, durationMs: usage?.durationMs ?? entry.durationMs });
+    if (entry.isActive) subagentSummary.active++;
+    else if (
+      entry.status === "completed" ||
+      entry.status === "failed" ||
+      entry.status === "cancelled"
+    ) {
+      subagentSummary[entry.status]++;
+    }
+    // Child and native counters describe the same work; the parent's otherUsage also covers
+    // compaction and cannot be attributed to these children.
+    if (usage !== null) {
+      const totalTokens =
+        usage.totalTokens ??
+        (usage.inputTokens !== undefined && usage.outputTokens !== undefined
+          ? usage.inputTokens + usage.outputTokens
+          : undefined);
+      if (totalTokens !== undefined)
+        subagentSummary.totalTokens = (subagentSummary.totalTokens ?? 0) + totalTokens;
+      for (const key of ["requests", "toolUses", "durationMs", "costUsd"] as const) {
+        const value = usage[key];
+        if (value !== undefined) subagentSummary[key] = (subagentSummary[key] ?? 0) + value;
+      }
+    }
+  }
+  return { subagents, subagentSummary };
+}
+
+export function deriveSessionTelemetryMetrics(input: SessionTelemetryInput) {
+  const { projection, contextWindow, nowMs } = input;
+  const turns = summarizeSessionTurns(projection);
+  const latestTurn = latestDeliveredTurn(projection);
+  const { cache, expiresAt, countdown } = measurePromptCache(
+    { ...input, liveTokenUsage: input.liveTokenUsage ?? latestTurn?.tokenUsage },
+    latestTurn,
+  );
+  const runIntervals: TimeInterval[] = [];
+  const runs = measureRuns(projection?.runs ?? [], nowMs, runIntervals);
+  const activeDurationMs = runs.activeDurationMs ?? positiveCount(contextWindow?.durationMs);
+  const {
+    toolCalls,
+    errors,
+    toolDurationMs: measuredToolMs,
+  } = measureSessionTools(projection, runIntervals, nowMs);
+  const toolDurationMs =
+    activeDurationMs === null ? measuredToolMs : Math.min(activeDurationMs, measuredToolMs);
+  const reported =
+    turns.reportedCostUsd === null
+      ? latestSessionCost(input)
+      : { amount: turns.reportedCostUsd, currency: "USD" };
+  const cost =
+    reported !== null
+      ? { ...reported, source: "reported" as const }
+      : (estimateSessionCost(input) ?? { amount: null, currency: null, source: null });
+  const liveElapsedMs =
+    turns.speed.liveTurnStartedAtMs === null ? null : nowMs - turns.speed.liveTurnStartedAtMs;
+  return {
+    turns: turns.turns,
+    steps: turns.steps,
+    cumulativeTokens: turns.tokens,
+    speed: {
+      ...turns.speed,
+      latest:
+        turns.speed.latest ??
+        outputRate(turns.speed.liveTurnOutputTokens, liveElapsedMs, 500) ??
+        outputRate(contextWindow?.lastOutputTokens, contextWindow?.durationMs),
+    },
+    cache: {
+      hitRate: turns.hitRate ?? cache.cumulativeRate,
+      lastTurnHitRate: cache.lastRate,
+      state: countdown.state,
+      remainingMs: countdown.remainingMs,
+      expiresAtMs: expiresAt,
+    },
+    counts: { requests: turns.requests, errors, toolCalls },
+    timing: {
+      modelDurationMs: activeDurationMs === null ? null : activeDurationMs - toolDurationMs,
+      toolDurationMs,
+      ttftMs: measureTurnTtft(projection),
+      activeDurationMs,
+      completedDurationMs: runs.completedDurationMs,
+      activeRunStartedAtMs: runs.activeRunStartedAtMs,
+      wallClockSpanMs: runs.wallClockSpanMs,
+    },
+    cost,
+    ...summarizeSubagents(input),
   };
 }
 

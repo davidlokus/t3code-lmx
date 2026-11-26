@@ -35,6 +35,7 @@ import {
   normalizeClaudeTurnTokenUsage,
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
+  type ClaudeSegmentUsage,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -119,6 +120,7 @@ import {
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2UserInputQuestion,
   type OrchestrationV2Subagent,
+  type OrchestrationV2SubagentUsage,
   type OrchestrationV2AppThread,
   type OrchestrationV2SubagentWorkflow,
   type OrchestrationV2WorkflowRunHandles,
@@ -137,6 +139,7 @@ import {
   type ThreadId,
   resolveIdleCompaction,
   isDelegatedAppThread,
+  preserveOrchestrationV2SubagentUsage,
 } from "@t3tools/contracts";
 
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
@@ -5379,6 +5382,29 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
+function claudeTaskUsage(message: unknown): OrchestrationV2SubagentUsage | undefined {
+  const subtype = field(message, "subtype");
+  if (subtype !== "task_progress" && subtype !== "task_notification") return undefined;
+  const raw = field(message, "usage");
+  const count = (key: string) => {
+    const value = field(raw, key);
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      ? value
+      : undefined;
+  };
+  const totalTokens = count("total_tokens");
+  const toolUses = count("tool_uses");
+  const durationMs = count("duration_ms");
+  if ((totalTokens ?? 0) === 0 && (toolUses ?? 0) === 0 && (durationMs ?? 0) === 0) {
+    return undefined;
+  }
+  return {
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(toolUses === undefined ? {} : { toolUses }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+  };
+}
+
 interface ActiveClaudeTurnContext {
   retryBudgetFailure?: OrchestrationV2ProviderFailure;
   // Set when the prompt starts or a request goes out; cleared by the turn's next frame.
@@ -5468,7 +5494,7 @@ interface ActiveClaudeTurnContext {
   // The title a `session_title_changed` frame reported; a `/rename` result applies it to the thread.
   nativeSessionTitle: string | null;
   // Steers end segments whose usage is excluded from the final result; bill them too, oldest first.
-  readonly steeredSegmentUsage: Array<SDKResultMessage["usage"]>;
+  readonly steeredSegmentUsage: Array<ClaudeSegmentUsage>;
   // Set as finalization starts: a steer admitted later would stay pending
   // forever, so it fails and the orchestrator follows up instead.
   steersClosed: boolean;
@@ -5518,6 +5544,7 @@ interface ActiveClaudeProviderRetry {
 interface ActiveClaudeSubagent {
   task: OrchestrationV2Subagent;
   readonly nativeTaskType: string | undefined;
+  readonly nativeRunId?: string | undefined;
   readonly confirmedOutcome: ProviderAdapter.ProviderAdapterV2SubagentOutcome | undefined;
   readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly childThreadId: ThreadId;
@@ -5568,6 +5595,8 @@ interface ClaudeLiveQueryContext {
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
   // The SDK's per-process model ledger at the last result; a new process starts at zero.
   modelLedger: ClaudeModelLedger | undefined;
+  costSessionId: string;
+  cumulativeCostUsd: number | undefined;
   // Per process, not per session: a relative temp dir follows the cwd this CLI
   // was launched in, and a later turn's cwd can differ.
   readonly taskOutputRoot: string | undefined;
@@ -6320,6 +6349,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
         // Wake buffers replay result frames, so ledger growth is measured once on arrival.
         const resultLedgerUsage = new WeakMap<SDKMessage, ClaudeLedgerUsage>();
+        const resultCostUsd = new WeakMap<SDKResultMessage, number>();
+        const measureResult = (result: SDKResultMessage): ClaudeSegmentUsage => ({
+          usage: result.usage,
+          num_turns: result.num_turns,
+          local_command: result.subtype === "success" ? result.local_command : undefined,
+          costUsd: resultCostUsd.get(result),
+        });
         const resultsReportingNewContextWindow = new WeakSet<SDKMessage>();
         // A worktree handoff changes the project settings even within one session.
         let bypassCache: { cwd: string | null; availability: ClaudeBypassAvailability } | null =
@@ -8510,6 +8546,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const model = input.model ?? priorTask?.model ?? null;
           const movesToCurrentRun =
             input.reopen === true && input.status === "running" && existingSubagent !== undefined;
+          const registeredRunId = registeredSubagent?.nativeRunId ?? existingSubagent?.nativeRunId;
+          const frameRunId = text(field(input.workflowFrame, "run_id"));
+          const usage = preserveOrchestrationV2SubagentUsage(
+            registeredSubagent?.task.usage ?? priorTask?.usage,
+            frameRunId !== undefined &&
+              registeredRunId !== undefined &&
+              frameRunId !== registeredRunId
+              ? undefined
+              : claudeTaskUsage(input.workflowFrame),
+          );
           const task = {
             ...(priorTask ?? {
               id: nodeId,
@@ -8549,6 +8595,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               : {}),
             ...(input.progress === undefined ? {} : { progress: input.progress }),
+            ...(usage === undefined ? {} : { usage }),
             ...(workflowWithThreads === undefined ? {} : { workflow: workflowWithThreads }),
             ...(input.result === undefined ? {} : { result: input.result }),
             ...(isReopen ? { startedAt: now } : {}),
@@ -8558,6 +8605,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const subagent = {
             task,
             nativeTaskType: input.nativeTaskType ?? existingSubagent?.nativeTaskType,
+            nativeRunId: input.nativeRunId ?? registeredRunId,
             confirmedOutcome:
               input.nativeOutcome !== undefined || input.processExited === true
                 ? confirmedSubagentOutcome(task)
@@ -9782,7 +9830,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
             assistant.fallbackText = "";
           }
-          context.steeredSegmentUsage.push(context.heldResult.usage);
+          context.steeredSegmentUsage.push(measureResult(context.heldResult));
           context.steeredLedgerUsage = addClaudeLedgerUsage(
             context.steeredLedgerUsage,
             resultLedgerUsage.get(context.heldResult),
@@ -10114,7 +10162,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     completedAt: input.completedAt,
                   }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
-                    input.result,
+                    input.result === undefined
+                      ? undefined
+                      : { subtype: input.result.subtype, ...measureResult(input.result) },
                     input.context.subagentsByTaskId.size > 0 ||
                       input.context.subagentsByToolUseId.size > 0,
                     input.status,
@@ -10390,32 +10440,38 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
         });
 
-        const applyWorkflowProgressWithoutTurn = Effect.fnUntraced(function* (message: SDKMessage) {
+        const applySubagentProgressWithoutTurn = Effect.fnUntraced(function* (message: SDKMessage) {
           if (message.type !== "system" || message.subtype !== "task_progress") return;
-          if (!hasClaudeWorkflowSnapshot(message)) return;
           const taskId = message.task_id;
           const registered = (yield* Ref.get(sessionSubagentsByTaskId)).get(taskId);
           if (
             registered === undefined ||
-            registered.task.workflow === undefined ||
-            registered.task.status !== "running"
+            registered.task.status !== "running" ||
+            (message.run_id !== undefined &&
+              registered.nativeRunId !== undefined &&
+              message.run_id !== registered.nativeRunId)
           )
             return;
-          const workflow = mergeClaudeWorkflowProgress({
-            previous: registered.task.workflow,
-            message,
-          });
-          if (workflow === undefined) return;
+          const workflow =
+            registered.task.workflow !== undefined && hasClaudeWorkflowSnapshot(message)
+              ? mergeClaudeWorkflowProgress({ previous: registered.task.workflow, message })
+              : undefined;
+          const usage = preserveOrchestrationV2SubagentUsage(
+            registered.task.usage,
+            claudeTaskUsage(message),
+          );
+          if (workflow === undefined && usage === registered.task.usage) return;
           const now = yield* DateTime.now;
           const progress = text(message.description);
-          const workflowWithThreads = withWorkflowMemberThreadIds(
-            workflow,
-            registered.childThreadId,
-          );
+          const workflowWithThreads =
+            workflow === undefined
+              ? undefined
+              : withWorkflowMemberThreadIds(workflow, registered.childThreadId);
           const task = {
             ...registered.task,
             ...(progress === undefined ? {} : { progress }),
-            workflow: workflowWithThreads,
+            ...(workflowWithThreads === undefined ? {} : { workflow: workflowWithThreads }),
+            ...(usage === undefined ? {} : { usage }),
             updatedAt: now,
           } satisfies OrchestrationV2Subagent;
           const coordinator = { ...registered, task };
@@ -10432,10 +10488,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             driver: CLAUDE_PROVIDER,
             subagent: task,
           });
-          yield* projectClaudeWorkflowMembers({
-            coordinator,
-            workflow: workflowWithThreads,
-          });
+          if (workflowWithThreads !== undefined) {
+            yield* projectClaudeWorkflowMembers({ coordinator, workflow: workflowWithThreads });
+          }
         });
 
         const bufferWakeMessage = Effect.fnUntraced(function* (wakeInput: {
@@ -11231,7 +11286,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (isClaudeLocalCommandEcho(message)) {
               return;
             }
-            yield* applyWorkflowProgressWithoutTurn(message);
+            yield* applySubagentProgressWithoutTurn(message);
             // Buffer wake evidence before clearing the task from the roster.
             if (message.type === "system" && message.subtype === "task_notification") {
               yield* bufferWakeMessage({ nativeThreadId: liveQuery.nativeThreadId, message });
@@ -12085,7 +12140,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id)?.task.workflow !==
               undefined;
             if (
-              (carriesWorkflowTelemetry || (progress.length > 0 && !isWorkflowCoordinator)) &&
+              (carriesWorkflowTelemetry ||
+                message.usage !== undefined ||
+                (progress.length > 0 && !isWorkflowCoordinator)) &&
               !context.ignoredTaskIds.has(message.task_id) &&
               !isBackgroundTask
             ) {
@@ -12524,7 +12581,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   completedAt,
                 });
               }
-              context.steeredSegmentUsage.push(message.usage);
+              context.steeredSegmentUsage.push(measureResult(message));
               context.steeredLedgerUsage = addClaudeLedgerUsage(
                 context.steeredLedgerUsage,
                 resultLedgerUsage.get(message),
@@ -13831,6 +13888,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
             ),
             modelLedger: new Map(),
+            costSessionId: nativeThreadId,
+            cumulativeCostUsd: shouldResume ? undefined : 0,
             taskOutputRoot: claudeTaskOutputRoot(
               adapterOptions.environment,
               path,
@@ -13898,6 +13957,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     message.session_id !== context.nativeThreadId
                   ) {
                     clearedNativeSessions.set(context.nativeThreadId, message.session_id);
+                    if (!firstInit && message.session_id !== context.costSessionId) {
+                      context.cumulativeCostUsd = 0;
+                    }
+                    context.costSessionId = message.session_id;
                   }
                   if (
                     message.type === "system" &&
@@ -13907,6 +13970,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     context.permissionMode = message.permissionMode;
                   }
                   if (message.type === "result") {
+                    // Resume can restore older spend; a crash can report a placeholder zero.
+                    const totalCost = message.total_cost_usd;
+                    const baseline = context.cumulativeCostUsd;
+                    if (
+                      Number.isFinite(totalCost) &&
+                      (totalCost > 0 ||
+                        (totalCost === 0 && message.subtype === "success" && !message.is_error)) &&
+                      (baseline === undefined || totalCost >= baseline)
+                    ) {
+                      if (baseline !== undefined) resultCostUsd.set(message, totalCost - baseline);
+                      context.cumulativeCostUsd = totalCost;
+                    }
                     const ledger = claudeModelLedger(message.modelUsage);
                     const growth = claudeLedgerDelta(context.modelLedger, ledger);
                     if (growth !== undefined) resultLedgerUsage.set(message, growth);

@@ -469,6 +469,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Composer context"),
     to: "/settings/appearance",
   },
+  // fork: searchable T3 Lab composer telemetry ring setting
+  {
+    id: "composer-telemetry-ring",
+    title: msg("Composer telemetry ring"),
+    to: "/settings/appearance",
+    searchTerms: [msg("context window ring session stats tokens cost speed cache composer hud")],
+  },
   {
     id: "project-grouping",
     title: msg("Project grouping"),

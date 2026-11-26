@@ -21,13 +21,23 @@ function addKnownCount(finalCount: unknown, earlierCounts: ReadonlyArray<unknown
   return counts.length === 0 ? finalCount : counts.reduce((sum, count) => sum + count, 0);
 }
 
-// Steering aborts the current segment; each SDK result reports only that segment's usage.
+export interface ClaudeSegmentUsage {
+  readonly usage?: unknown;
+  readonly num_turns?: unknown;
+  readonly local_command?: unknown;
+  /** Delta from the SDK's cumulative cost snapshot, not the raw total_cost_usd. */
+  readonly costUsd?: number | undefined;
+}
+
+// Each SDK result carries only its segment's root token usage.
 function withEarlierSegmentUsage(
   usage: Record<string, unknown>,
-  earlierSegmentUsage: ReadonlyArray<unknown>,
+  earlierSegmentUsage: ReadonlyArray<ClaudeSegmentUsage>,
 ): Record<string, unknown> {
   if (earlierSegmentUsage.length === 0) return usage;
-  const segments = earlierSegmentUsage.map((segment) => (segment ?? {}) as Record<string, unknown>);
+  const segments = earlierSegmentUsage.map(
+    (segment) => (segment.usage ?? {}) as Record<string, unknown>,
+  );
   const total = { ...usage };
   for (const field of BILLED_USAGE_FIELDS) {
     total[field] = addKnownCount(
@@ -132,19 +142,30 @@ export interface ClaudeTurnObservations {
 }
 
 export function normalizeClaudeTurnTokenUsage(
-  result:
-    | {
-        readonly subtype: SDKResultMessage["subtype"];
-        readonly usage?: unknown;
-        readonly local_command?: unknown;
-      }
-    | undefined,
+  result: (ClaudeSegmentUsage & { readonly subtype: SDKResultMessage["subtype"] }) | undefined,
   hasSubagents: boolean,
   terminalStatus: RuntimeTurnState,
-  earlierSegmentUsage: ReadonlyArray<unknown> = [],
+  earlierSegmentUsage: ReadonlyArray<ClaudeSegmentUsage> = [],
   observed: ClaudeTurnObservations = {},
 ): TurnTokenUsage {
+  let requestCount = 0;
+  let costUsd = 0;
+  let costKnown = result !== undefined;
+  for (const segment of result === undefined
+    ? earlierSegmentUsage
+    : [...earlierSegmentUsage, result]) {
+    const count = segment.num_turns;
+    const local = typeof segment.local_command === "string" && segment.local_command.length > 0;
+    if (!local && typeof count === "number" && Number.isSafeInteger(count) && count > 0) {
+      requestCount += count;
+    }
+    const cost = segment.costUsd;
+    if (cost === undefined || !Number.isFinite(cost) || cost < 0) costKnown = false;
+    else costUsd += cost;
+  }
   const observedFields = {
+    ...(requestCount > 0 ? { requestCount } : {}),
+    ...(costKnown && Number.isFinite(costUsd) && costUsd > 0 ? { costUsd } : {}),
     ...(observed.rootModels !== undefined && observed.rootModels.size > 0
       ? { models: [...observed.rootModels] }
       : {}),

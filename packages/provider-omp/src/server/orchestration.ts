@@ -1,6 +1,7 @@
 import type {
   OrchestrationV2PlanStep,
   OrchestrationV2Subagent,
+  OrchestrationV2SubagentUsage,
   OrchestrationV2UserInputQuestion,
 } from "@t3tools/contracts";
 import {
@@ -27,7 +28,60 @@ interface SubagentTask {
   readonly model: string | null;
   readonly status: SubagentStatus;
   readonly progress?: string;
+  readonly usage?: OrchestrationV2SubagentUsage;
   readonly result: string | null;
+}
+
+type TrackedSubagent = {
+  readonly task: SubagentTask;
+  readonly resolvedModel: string | undefined;
+};
+
+function positiveCount(source: unknown, key: string): number | undefined {
+  const value = recordNumber(source, key);
+  return value !== undefined && value > 0 && Number.isSafeInteger(value) ? value : undefined;
+}
+
+function mergeSubagentUsage(previous: OrchestrationV2SubagentUsage | undefined, snapshot: unknown) {
+  const usage = recordField(snapshot, "usage");
+  const input = recordNumber(usage, "input");
+  const cachedInputTokens = positiveCount(usage, "cacheRead");
+  const cacheCreationTokens = positiveCount(usage, "cacheWrite");
+  const observed = {
+    totalTokens:
+      Math.max(positiveCount(snapshot, "tokens") ?? 0, positiveCount(usage, "totalTokens") ?? 0) ||
+      undefined,
+    inputTokens:
+      input !== undefined && input >= 0 && Number.isSafeInteger(input)
+        ? input + (cachedInputTokens ?? 0) + (cacheCreationTokens ?? 0)
+        : undefined,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens: positiveCount(usage, "output"),
+    reasoningOutputTokens: positiveCount(usage, "reasoningTokens"),
+    contextTokens: positiveCount(snapshot, "contextTokens"),
+    contextWindow: positiveCount(snapshot, "contextWindow"),
+    requests: positiveCount(snapshot, "requests"),
+    toolUses: positiveCount(snapshot, "toolCount"),
+    durationMs: positiveCount(snapshot, "durationMs"),
+    costUsd: Math.max(
+      recordNumber(snapshot, "cost") ?? 0,
+      recordNumber(recordField(usage, "cost"), "total") ?? 0,
+      0,
+    ),
+  } satisfies OrchestrationV2SubagentUsage;
+  let merged: Partial<Record<keyof typeof observed, number | undefined>> | undefined;
+  for (const key of Object.keys(observed) as Array<keyof typeof observed>) {
+    const value = observed[key];
+    if (value !== undefined && value > (previous?.[key] ?? 0)) {
+      (merged ??= { ...previous })[key] = value;
+    }
+  }
+  return merged ?? previous;
+}
+
+function reportedModel(source: unknown, key: string): string | undefined {
+  return recordString(source, key)?.trim() || undefined;
 }
 
 function subagentStatus(status: unknown): SubagentStatus | undefined {
@@ -125,7 +179,7 @@ function backgroundResultStatus(job: unknown, envelopeStatus: string | undefined
 }
 
 export class OmpSubagentTracker {
-  readonly #tasks = new Map<string, Map<string, SubagentTask>>();
+  readonly #tasks = new Map<string, Map<string, TrackedSubagent>>();
 
   fromSubscription(frame: PiRpcRecord): PiRpcRecord | undefined {
     const payload = frame["payload"];
@@ -169,26 +223,30 @@ export class OmpSubagentTracker {
     for (const job of jobs) {
       const error = recordString(job, "errorText")?.trim() || recordString(job, "error")?.trim();
       const text = recordString(job, "resultText")?.trim() || error;
-      if (!text) continue;
       const jobId = recordString(job, "id") ?? recordString(job, "jobId");
       const agentId = recordString(job, "agentUrlId") ?? recordString(job, "agentId");
       const knownKey = this.#trackedKey(agentId, jobId);
-      if (knownKey === undefined && recordString(job, "type") !== "task") continue;
-      const wrapped = /^<task-result[\s>]/.test(text);
+      const type = recordString(job, "type");
+      if (type === undefined ? knownKey === undefined : type !== "task") continue;
+      const wrapped = text !== undefined && /^<task-result[\s>]/.test(text);
       const block = wrapped ? taskResultBlocks(text).next().value : undefined;
       const taskKey = this.#trackedKey(agentId, block?.id, jobId);
       const body =
-        !wrapped && /^<(?:output|preview|error)(?:[\s>])/.test(text)
+        !wrapped && text !== undefined && /^<(?:output|preview|error)(?:[\s>])/.test(text)
           ? taskResultBody(text)
           : undefined;
       const result = wrapped ? block?.result || error : body?.result || text;
-      if (taskKey === undefined || !result) continue;
-      const status = backgroundResultStatus(
-        job,
-        block?.status,
-        Boolean(error || block?.error || body?.error),
-      );
-      const update = this.#enrich(taskKey, status, result);
+      if (taskKey === undefined) continue;
+      const status =
+        subagentStatus(recordString(job, "status")) ??
+        (result
+          ? backgroundResultStatus(
+              job,
+              block?.status,
+              Boolean(error || block?.error || body?.error),
+            )
+          : undefined);
+      const update = this.#enrich(taskKey, job, status, result);
       if (update !== undefined) updates.push(update);
     }
     return updates;
@@ -211,13 +269,16 @@ export class OmpSubagentTracker {
           : "";
     const jobsById = new Map<string, unknown>();
     for (const job of jobs) {
+      const type = recordString(job, "type");
+      if (type !== undefined && type !== "task") continue;
       const jobId = recordString(job, "jobId");
       const agentId = recordString(job, "agentId");
       if (jobId) jobsById.set(jobId, job);
       if (agentId) jobsById.set(agentId, job);
     }
+    const matched = new Set<unknown>();
     for (const block of taskResultBlocks(text)) {
-      if (!block.id || !block.result) continue;
+      if (!block.id) continue;
       const job = jobsById.get(block.id);
       if (job === undefined) continue;
       const taskKey = this.#trackedKey(
@@ -226,8 +287,19 @@ export class OmpSubagentTracker {
         recordString(job, "jobId"),
       );
       if (taskKey === undefined) continue;
-      const status = backgroundResultStatus(job, block.status, Boolean(block.error));
-      const update = this.#enrich(taskKey, status, block.result);
+      matched.add(job);
+      const status = block.result
+        ? backgroundResultStatus(job, block.status, Boolean(block.error))
+        : subagentStatus(recordString(job, "status") ?? block.status);
+      const update = this.#enrich(taskKey, job, status, block.result);
+      if (update !== undefined) updates.push(update);
+    }
+    for (const job of jobs) {
+      const type = recordString(job, "type");
+      if (matched.has(job) || (type !== undefined && type !== "task")) continue;
+      const taskKey = this.#trackedKey(recordString(job, "agentId"), recordString(job, "jobId"));
+      if (taskKey === undefined) continue;
+      const update = this.#enrich(taskKey, job, subagentStatus(recordString(job, "status")));
       if (update !== undefined) updates.push(update);
     }
     return updates;
@@ -237,12 +309,26 @@ export class OmpSubagentTracker {
     return ids.find((id) => id !== undefined && this.#tasks.get(id)?.size === 1);
   }
 
-  #enrich(taskKey: string, status: SubagentStatus, text: string): PiRpcRecord | undefined {
-    const result = text.trim().slice(0, MAX_SUBAGENT_RESULT_CHARS);
-    const previous = this.#tasks.get(taskKey)?.values().next().value;
+  #enrich(
+    taskKey: string,
+    snapshot: unknown,
+    status: SubagentStatus | undefined,
+    text?: string,
+  ): PiRpcRecord | undefined {
+    const previous = this.#tasks.get(taskKey)?.values().next().value?.task;
+    if (previous === undefined) return undefined;
+    const result = text?.trim().slice(0, MAX_SUBAGENT_RESULT_CHARS);
     // Async notifications can repeat a shortened preview after wait provided the full report.
-    if (!result || (previous?.result && previous.result.length >= result.length)) return undefined;
-    return this.#update(undefined, { id: taskKey }, undefined, status, { result });
+    const fullerResult =
+      result && result.length > (previous.result?.length ?? 0) ? result : undefined;
+    return this.#update(
+      undefined,
+      snapshot,
+      undefined,
+      status ?? previous.status,
+      { result: fullerResult },
+      taskKey,
+    );
   }
 
   #update(
@@ -251,14 +337,15 @@ export class OmpSubagentTracker {
     parentToolCallId: string | undefined,
     nextStatus: SubagentStatus,
     update: { readonly progress?: string | undefined; readonly result?: string | undefined },
+    taskKey = recordString(snapshot, "id"),
   ): PiRpcRecord | undefined {
-    const taskKey = recordString(snapshot, "id");
     if (!taskKey) return undefined;
     const owners = this.#tasks.get(taskKey);
     const toolCallId =
       parentToolCallId ?? (owners?.size === 1 ? owners.keys().next().value : undefined);
     if (!toolCallId) return undefined;
-    const previous = owners?.get(toolCallId);
+    const tracked = owners?.get(toolCallId);
+    const previous = tracked?.task;
     if (previous !== undefined && isTerminal(previous.status) && !isTerminal(nextStatus))
       return undefined;
     const status =
@@ -281,14 +368,16 @@ export class OmpSubagentTracker {
       previous?.task ??
       recordString(snapshot, "description") ??
       taskKey;
+    const resolvedModel = reportedModel(snapshot, "resolvedModel") ?? tracked?.resolvedModel;
     const model =
-      recordString(snapshot, "resolvedModel") ??
-      recordString(snapshot, "model") ??
+      resolvedModel ??
+      reportedModel(snapshot, "model") ??
       previous?.model ??
-      recordString(snapshot, "modelOverride") ??
+      reportedModel(snapshot, "modelOverride") ??
       null;
     const progress = isTerminal(status) ? undefined : (update.progress ?? previous?.progress);
     const result = update.result?.slice(0, MAX_SUBAGENT_RESULT_CHARS) || previous?.result || null;
+    const usage = mergeSubagentUsage(previous?.usage, snapshot);
     if (
       previous?.agent === agent &&
       previous.title === title &&
@@ -296,7 +385,9 @@ export class OmpSubagentTracker {
       previous.model === model &&
       previous.status === status &&
       previous.progress === progress &&
-      previous.result === result
+      previous.result === result &&
+      previous.usage === usage &&
+      tracked?.resolvedModel === resolvedModel
     )
       return undefined;
     const next = {
@@ -306,10 +397,12 @@ export class OmpSubagentTracker {
       model,
       status,
       ...(progress === undefined ? {} : { progress }),
+      ...(usage === undefined ? {} : { usage }),
       result,
     };
-    if (owners === undefined) this.#tasks.set(taskKey, new Map([[toolCallId, next]]));
-    else owners.set(toolCallId, next);
+    const trackedNext = { task: next, resolvedModel };
+    if (owners === undefined) this.#tasks.set(taskKey, new Map([[toolCallId, trackedNext]]));
+    else owners.set(toolCallId, trackedNext);
     return { type: "t3.subagent_update", toolCallId, taskKey, task: next };
   }
 }

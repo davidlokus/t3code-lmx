@@ -13,6 +13,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadShellSnapshot,
@@ -8064,7 +8065,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("preserves delegated completion ownership across stale run and task updates", () =>
+  it.effect("preserves completion ownership and subagent usage across stale updates", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -8143,6 +8144,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           state: "disposed" as const,
           observedByRunId: null,
         },
+        usage: { totalTokens: 900, requests: 2, costUsd: 0.01 },
         status: "running" as const,
         result: null,
         startedAt: now,
@@ -8193,7 +8195,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
 
       // Lifecycle writers hold the run as it was when the turn started.
       const { delegatedCompletion: _delegatedCompletion, ...staleRun } = run;
-      const { completionDelivery: _completionDelivery, ...staleTask } = task;
+      const { completionDelivery: _completionDelivery, usage: _usage, ...staleTask } = task;
       yield* projectionStore.apply({
         id: EventId.make("event:projection-delegated-completion:stale-run"),
         type: "run.updated",
@@ -8210,7 +8212,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: later,
         },
       });
-      yield* projectionStore.apply({
+      const staleUpdate = {
         id: EventId.make("event:projection-delegated-completion:stale-task"),
         type: "subagent.updated",
         threadId,
@@ -8225,12 +8227,31 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: later,
           updatedAt: later,
         },
+      } satisfies OrchestrationV2DomainEvent;
+      const beforeStale = yield* projectionStore.getThreadProjection(threadId);
+      assert.deepEqual(
+        ProjectionStore.applyToProjection(beforeStale, staleUpdate)?.subagents[0]?.usage,
+        task.usage,
+      );
+      yield* projectionStore.apply(staleUpdate);
+      assert.deepEqual(
+        (yield* projectionStore.getThreadProjection(threadId)).subagents[0]?.usage,
+        task.usage,
+      );
+      yield* projectionStore.apply({
+        ...staleUpdate,
+        id: EventId.make("event:projection-delegated-completion:partial-task-usage"),
+        payload: {
+          ...staleUpdate.payload,
+          usage: { totalTokens: 0, requests: 3, toolUses: 0 },
+        },
       });
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(projection.runs[0]?.delegatedCompletion, run.delegatedCompletion);
       assert.deepEqual(projection.runs[0]?.output, output);
       assert.deepEqual(projection.subagents[0]?.completionDelivery, task.completionDelivery);
+      assert.deepEqual(projection.subagents[0]?.usage, { ...task.usage, requests: 3, toolUses: 0 });
       assert.deepEqual(
         (yield* projectionStore.getThreadRecords(threadId, ["subagents"], {
           omitSettledSubagents: true,

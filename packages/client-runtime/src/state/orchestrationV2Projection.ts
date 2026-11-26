@@ -2,6 +2,7 @@ import { applyThreadPullRequestLinkUpdate } from "../threadPullRequests.ts";
 import {
   applyOrchestrationV2ThreadVisit,
   isQueuedProviderThreadPlaceholder,
+  preserveOrchestrationV2SubagentUsage,
 } from "@t3tools/contracts";
 import type {
   OrchestrationV2DomainEvent,
@@ -373,17 +374,18 @@ export function applyOrchestrationV2ProjectionEvent(
     }
     case "node.updated":
       return { ...base, nodes: upsertEntity(base.nodes, event.payload) };
-    case "subagent.updated":
+    case "subagent.updated": {
+      const previous = base.subagents.find((subagent) => subagent.id === event.payload.id);
+      const subagent = restoreSubagentBodies(event.payload, previous);
+      const usage = preserveOrchestrationV2SubagentUsage(previous?.usage, subagent.usage);
       return {
         ...base,
         subagents: upsertEntity(
           base.subagents,
-          restoreSubagentBodies(
-            event.payload,
-            base.subagents.find((subagent) => subagent.id === event.payload.id),
-          ),
+          usage === subagent.usage ? subagent : { ...subagent, usage },
         ),
       };
+    }
     case "provider-session.attached":
     case "provider-session.updated":
       return {
