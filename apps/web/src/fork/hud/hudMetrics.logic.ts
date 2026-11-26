@@ -9,6 +9,7 @@ import {
   isOrchestrationV2WorkActive,
   isProviderAvailable,
   ProviderDriverKind,
+  type NodeId,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2ProviderTurnTokenUsage,
   type OrchestrationV2RemoteTaskChild,
@@ -920,7 +921,8 @@ export function deriveHudSessionMetrics(input: {
 export type HudSubagentStatus = "running" | "waiting" | "completed" | "failed" | "cancelled";
 
 export interface HudSubagentEntry {
-  readonly id: string;
+  readonly id: NodeId;
+  readonly origin?: OrchestrationV2Subagent["origin"];
   readonly title: string;
   readonly status: HudSubagentStatus;
   readonly isActive: boolean;
@@ -974,7 +976,8 @@ function presentSubagent(agent: OrchestrationV2Subagent, nowMs: number): HudSuba
   const end = completed ?? (isActive && Number.isFinite(nowMs) ? nowMs : null);
   return {
     id: agent.id,
-    title: formatSubagentDisplayTitle(agent.title ?? agent.id),
+    origin: agent.origin,
+    title: formatSubagentDisplayTitle(agent.title ?? agent.id).trim() || agent.id,
     status: subagentStatus(agent.status),
     isActive,
     model: agent.executedModel ?? agent.model ?? agent.modelSelection?.model ?? null,

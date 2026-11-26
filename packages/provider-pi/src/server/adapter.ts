@@ -114,6 +114,7 @@ const isDialectTodoSteps = Schema.is(Schema.Array(OrchestrationV2PlanStep));
 const isDialectSubagentTask = Schema.is(
   Schema.Struct({
     agent: Schema.String,
+    title: Schema.optional(Schema.String),
     task: Schema.String,
     model: Schema.NullOr(Schema.String),
     status: OrchestrationV2Subagent.fields.status,
@@ -399,6 +400,7 @@ interface ActivePiTurn {
   readonly streamItems: Map<string, PiStreamItemState>;
   readonly toolArgs: Map<string, unknown>;
   readonly toolStartedAt: Map<string, DateTime.Utc>;
+  readonly subagentCompletedAt: Map<string, DateTime.Utc>; // fork:
   readonly commandOutputBytes: Map<string, number>;
   todoPlanId?: PlanId; // fork:
   interrupted: boolean;
@@ -477,9 +479,30 @@ interface PiPromptSend {
   readonly messageId?: MessageId;
 }
 
+// fork: minimal subagent projection context so cross-turn enrichment never pins ActivePiTurn.
+interface PiDialectSubagentOwner {
+  readonly turnInput: {
+    readonly threadId: ProviderAdapter.ProviderAdapterV2TurnInput["threadId"];
+    readonly runId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"];
+    readonly providerThread: {
+      readonly id: ProviderAdapter.ProviderAdapterV2TurnInput["providerThread"]["id"];
+    };
+  };
+  readonly providerTurn: { readonly id: OrchestrationV2ProviderTurn["id"] };
+  readonly itemOrdinals: Map<string, number>;
+  nextItemOrdinal: number;
+  readonly toolStartedAt: Map<string, DateTime.Utc>;
+  readonly subagentCompletedAt: Map<string, DateTime.Utc>;
+}
+
+const MAX_ENDED_TOOL_CALL_IDS = 4_096; // fork:
+const MAX_DIALECT_SUBAGENT_OWNERS = 128; // fork:
+
 interface PiThreadState {
   providerThread: OrchestrationV2ProviderThread;
   activeTurn: ActivePiTurn | null;
+  readonly endedToolCallIds: Set<string>; // fork:
+  readonly dialectSubagentOwners: Map<string, PiDialectSubagentOwner>; // fork:
   /** Files an extension moved this thread off (ctx.newSession); queued turns may still name them. */
   readonly supersededSessionFiles: Set<string>;
 }
@@ -956,7 +979,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           });
         });
 
-      const itemOrdinal = (turn: ActivePiTurn, nativeItemId: string): number => {
+      const itemOrdinal = (turn: PiDialectSubagentOwner, nativeItemId: string): number => {
         const existing = turn.itemOrdinals.get(nativeItemId);
         if (existing !== undefined) return existing;
         const ordinal = turn.nextItemOrdinal++;
@@ -1222,7 +1245,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         });
 
       const baseItemFields = (
-        turn: ActivePiTurn,
+        turn: PiDialectSubagentOwner,
         nativeItemId: string,
         startedAt: DateTime.Utc,
         updatedAt: DateTime.Utc,
@@ -1526,10 +1549,23 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         phase: "start" | "update" | "end",
       ) {
         const toolCallId = recordString(event, "toolCallId");
+        if (toolCallId === undefined) return;
+        // fork: async tools can still publish progress across turns after their parent call has ended.
+        const endedToolCallIds = threadState?.endedToolCallIds;
+        if (phase === "end") {
+          if (endedToolCallIds !== undefined && !endedToolCallIds.has(toolCallId)) {
+            if (endedToolCallIds.size >= MAX_ENDED_TOOL_CALL_IDS) {
+              const oldest = endedToolCallIds.values().next().value;
+              if (oldest !== undefined) endedToolCallIds.delete(oldest);
+            }
+            endedToolCallIds.add(toolCallId);
+          }
+        } else if (endedToolCallIds?.has(toolCallId)) {
+          return;
+        }
         const toolName = recordString(event, "toolName") ?? "tool";
         // Pi tags every phase of a call made through ctx.executeTool, such as from a codemode script.
         const parentToolCallId = recordString(event, "parentToolCallId");
-        if (toolCallId === undefined) return;
         if (phase === "update" && (toolName === "bash" || toolName === "powershell")) {
           yield* emitCommandOutputDelta(turn, toolCallId, event["partialResult"]);
           return;
@@ -1694,11 +1730,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       });
 
       const emitSubagent = Effect.fnUntraced(function* (
-        turn: ActivePiTurn,
+        turn: PiDialectSubagentOwner,
         toolCallId: string,
         taskKey: string,
         task: {
           readonly agent: string;
+          readonly title?: string | undefined;
           readonly task: string;
           readonly model: string | null;
           readonly status: OrchestrationV2Subagent["status"];
@@ -1720,6 +1757,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         turn.toolStartedAt.set(nativeTaskId, startedAt);
         const finished =
           task.status !== "running" && task.status !== "pending" && task.status !== "waiting";
+        const completedAt = finished
+          ? (turn.subagentCompletedAt.get(nativeTaskId) ?? emittedAt)
+          : null;
+        if (completedAt !== null) turn.subagentCompletedAt.set(nativeTaskId, completedAt);
+        const title = task.title ?? task.agent;
         const progress = task.progress === undefined ? {} : { progress: task.progress };
         yield* emit({
           type: "subagent.updated",
@@ -1737,13 +1779,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             childThreadId: null,
             nativeTaskRef: providerRef(nativeTaskId),
             prompt: task.task,
-            title: task.agent,
+            title,
             model: task.model,
             status: task.status,
             ...progress,
             result: task.result,
             startedAt,
-            completedAt: finished ? emittedAt : null,
+            completedAt,
             updatedAt: emittedAt,
           },
         });
@@ -1753,8 +1795,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           turnItem: {
             ...baseItemFields(turn, nativeTaskId, startedAt, emittedAt),
             status: task.status,
-            title: task.agent,
-            completedAt: finished ? emittedAt : null,
+            title,
+            completedAt,
             type: "subagent",
             subagentId,
             origin: "provider_native",
@@ -2602,8 +2644,37 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const toolCallId = recordString(event, "toolCallId");
             const taskKey = recordString(event, "taskKey");
             const task = event["task"];
-            if (turn !== null && toolCallId && taskKey && isDialectSubagentTask(task)) {
-              yield* emitSubagent(turn, toolCallId, taskKey, task);
+            if (state === null || !toolCallId || !taskKey || !isDialectSubagentTask(task)) return;
+            // A wait or an asynchronous notification can deliver this report on a later turn.
+            let owner = state.dialectSubagentOwners.get(toolCallId);
+            if (owner === undefined && turn !== null) {
+              owner = {
+                turnInput: {
+                  threadId: turn.turnInput.threadId,
+                  runId: turn.turnInput.runId,
+                  providerThread: { id: turn.turnInput.providerThread.id },
+                },
+                providerTurn: { id: turn.providerTurn.id },
+                itemOrdinals: new Map(),
+                nextItemOrdinal: turn.nextItemOrdinal,
+                toolStartedAt: new Map(),
+                subagentCompletedAt: new Map(),
+              };
+              if (state.dialectSubagentOwners.size >= MAX_DIALECT_SUBAGENT_OWNERS) {
+                const oldest = state.dialectSubagentOwners.keys().next().value;
+                if (oldest !== undefined) state.dialectSubagentOwners.delete(oldest);
+              }
+              state.dialectSubagentOwners.set(toolCallId, owner);
+            }
+            if (owner !== null && owner !== undefined) {
+              if (turn !== null && turn.providerTurn.id === owner.providerTurn.id) {
+                const nativeTaskId = `${toolCallId}:subagent:${taskKey}`;
+                if (!owner.itemOrdinals.has(nativeTaskId)) {
+                  owner.itemOrdinals.set(nativeTaskId, itemOrdinal(turn, nativeTaskId));
+                  owner.nextItemOrdinal = Math.max(owner.nextItemOrdinal, turn.nextItemOrdinal);
+                }
+              }
+              yield* emitSubagent(owner, toolCallId, taskKey, task);
             }
             return;
           }
@@ -3460,7 +3531,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 "Cannot switch Pi threads while native work is awaiting a turn",
               );
             }
-            threadState = { providerThread, activeTurn: null, supersededSessionFiles: new Set() };
+            threadState = {
+              providerThread,
+              activeTurn: null,
+              supersededSessionFiles: new Set(),
+              endedToolCallIds: new Set(), // fork:
+              dialectSubagentOwners: new Map(), // fork:
+            };
           }
           const baselineEntries = yield* request({ type: "get_entries" }).pipe(
             Effect.orElseSucceed(() => undefined),
@@ -3753,6 +3830,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               streamItems: new Map(),
               toolArgs: new Map(),
               toolStartedAt: new Map(),
+              subagentCompletedAt: new Map(), // fork:
               commandOutputBytes: new Map(),
               interrupted: false,
               nativeAborted: false,
@@ -4278,6 +4356,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       appliedThinking = null;
                       appliedSessionName = null;
                       lastKnownLeaf = leafId;
+                      state.endedToolCallIds.clear(); // fork:
+                      state.dialectSubagentOwners.clear(); // fork:
                       leafCursorStale = entriesData === undefined;
                       yield* updateProviderThread(state, {
                         nativeThreadRef: providerRef(forkSessionFile),

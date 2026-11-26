@@ -1,4 +1,5 @@
 import { msg, T, useGT, useMessages } from "gt-react";
+import { useAtomValue } from "@effect/atom-react";
 import { contextMenuSourceOf } from "../contextMenuSource";
 import { m, type MessageResolver } from "../i18n/messages";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -21,10 +22,12 @@ import type {
   ContextMenuItem,
   EnvironmentId,
   IssueTrackerKind,
+  OrchestrationV2Subagent,
   PreviewSessionSnapshot,
   ProjectId,
   PullRequestState,
   ResolvedKeybindingsConfig,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabelsCopy";
@@ -70,7 +73,7 @@ import {
 import { isElectron } from "~/env";
 import type { DesktopPreviewOverlay } from "~/previewStateStore";
 import { linkedThreadTitle } from "~/linkedThreadSurface";
-import type { RightPanelSurface } from "~/rightPanelStore";
+import { subagentOwnerRef, type RightPanelSurface, type SubagentSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { issueStatePresentation } from "~/components/issue/issuePresentation";
 import { issueEnvironment } from "~/state/issues";
@@ -104,6 +107,7 @@ import {
   useSharedPullRequestSummary,
 } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
+import { environmentThreadDetails } from "~/state/threads";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
@@ -129,6 +133,8 @@ export interface RightPanelTabsProps {
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   environmentId: EnvironmentId | null;
+  /** The thread owning this chat panel; list panels have no native subagent detail. */
+  threadRef?: ScopedThreadRef;
   activeSurfaceId: string | null;
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
@@ -626,6 +632,8 @@ function surfaceTitle(
     case "thread":
       // Until the thread's own title loads.
       return resolve(msg("Thread"));
+    case "subagent":
+      return surface.title;
     case "linked-thread":
       return linkedThreadTitle(
         surface,
@@ -683,6 +691,7 @@ function SurfaceIcon({
   theme,
   environmentId,
   pullRequestStatusSeed,
+  subagentStatus,
 }: {
   surface: RightPanelSurface;
   previewUrl: string | null;
@@ -690,6 +699,7 @@ function SurfaceIcon({
   theme: "light" | "dark";
   environmentId: EnvironmentId | null;
   pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
+  subagentStatus: OrchestrationV2Subagent["status"] | undefined;
 }) {
   switch (surface.kind) {
     case "preview":
@@ -723,6 +733,21 @@ function SurfaceIcon({
       return <IssueSurfaceIcon surface={surface} environmentId={environmentId} />;
     case "thread":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
+    case "subagent":
+      return (
+        <>
+          <Bot className="size-3 shrink-0" />
+          {subagentStatus === undefined ? null : (
+            <span
+              className={cn(
+                "absolute -top-0.5 -right-0.5 size-1.5 rounded-full",
+                SUBAGENT_TAB_STATES[subagentStatus].dotClass,
+              )}
+              aria-hidden
+            />
+          )}
+        </>
+      );
     case "linked-thread":
       return <MessagesSquare className="size-3 shrink-0" />;
     case "device":
@@ -740,6 +765,26 @@ const SIDE_CHAT_STATE_LABELS = {
   "needs approval": msg("needs approval"),
   "needs input": msg("needs input"),
   running: msg("running", { $context: "side chat status" }),
+} as const;
+
+const SUBAGENT_TAB_STATES = {
+  idle: {
+    dotClass: "bg-muted-foreground/50",
+    label: msg("Idle · resumable", { $context: "subagent status" }),
+  },
+  pending: { dotClass: "bg-info", label: msg("Queued", { $context: "subagent status" }) },
+  running: { dotClass: "bg-info", label: msg("Running", { $context: "subagent status" }) },
+  waiting: { dotClass: "bg-info", label: msg("Waiting", { $context: "subagent status" }) },
+  completed: { dotClass: "bg-success", label: msg("Completed", { $context: "subagent status" }) },
+  failed: { dotClass: "bg-destructive", label: msg("Failed", { $context: "subagent status" }) },
+  cancelled: {
+    dotClass: "bg-muted-foreground/60",
+    label: msg("Stopped", { $context: "subagent status" }),
+  },
+  interrupted: {
+    dotClass: "bg-muted-foreground/60",
+    label: msg("Stopped", { $context: "subagent status" }),
+  },
 } as const;
 
 /** What a side chat tab's dot shows and its title's accessible name says. */
@@ -942,26 +987,48 @@ function preventTabMiddleButtonDefault(event: ReactMouseEvent) {
   event.preventDefault();
 }
 
+type RightPanelTabProps = RightPanelTabHandlers & {
+  surface: RightPanelSurface;
+  dragDisabled: boolean;
+  active: boolean;
+  pending: boolean;
+  title: string;
+  audio: TabAudioState;
+  audioRuntimeTabId: string | null;
+  previewUrl: string | null;
+  previewCapturedUrl: string | null;
+  theme: "light" | "dark";
+  environmentId: EnvironmentId | null;
+  pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
+  subagentStatus?: OrchestrationV2Subagent["status"] | undefined;
+  renaming: boolean;
+  canRename: boolean;
+  ownsDesktopTitleBar: boolean;
+};
+
+// Only native subagent tabs subscribe to the owning thread's detail stream.
+function NativeSubagentTab({
+  panelRef,
+  ...props
+}: RightPanelTabProps & { panelRef: ScopedThreadRef; surface: SubagentSurface }) {
+  const { surface } = props;
+  const agent = useAtomValue(
+    environmentThreadDetails.threadAtom(subagentOwnerRef(panelRef, surface)),
+    (thread) =>
+      thread?.projection.subagents.find(
+        (agent) =>
+          agent.id === surface.subagentId &&
+          agent.origin === "provider_native" &&
+          agent.childThreadId === null &&
+          agent.remoteChild === undefined,
+      ) ?? null,
+  );
+  const title = agent?.title ? formatSubagentDisplayTitle(agent.title).trim() : "";
+  return <RightPanelTab {...props} title={title || props.title} subagentStatus={agent?.status} />;
+}
+
 // Stable handlers and per-tab values let the compiler reuse tabs across parent renders.
-function RightPanelTab(
-  props: RightPanelTabHandlers & {
-    surface: RightPanelSurface;
-    dragDisabled: boolean;
-    active: boolean;
-    pending: boolean;
-    title: string;
-    audio: TabAudioState;
-    audioRuntimeTabId: string | null;
-    previewUrl: string | null;
-    previewCapturedUrl: string | null;
-    theme: "light" | "dark";
-    environmentId: EnvironmentId | null;
-    pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
-    renaming: boolean;
-    canRename: boolean;
-    ownsDesktopTitleBar: boolean;
-  },
-) {
+function RightPanelTab(props: RightPanelTabProps) {
   const gt = useGT();
   const messages = useMessages();
   const {
@@ -991,6 +1058,12 @@ function RightPanelTab(
         ? sideChatShell.title
         : formatSubagentDisplayTitle(sideChatShell.title);
   const sideChatState = sideChatTabState(sideChatShell);
+  const stateLabel =
+    props.subagentStatus !== undefined
+      ? SUBAGENT_TAB_STATES[props.subagentStatus].label
+      : sideChatState === null
+        ? null
+        : SIDE_CHAT_STATE_LABELS[sideChatState];
   const content = (
     <>
       <PanelTabCloseButton label={gt("Close {title}", { title })} onClick={() => onClose(surface)}>
@@ -1001,6 +1074,7 @@ function RightPanelTab(
           theme={props.theme}
           environmentId={props.environmentId}
           pullRequestStatusSeed={props.pullRequestStatusSeed}
+          subagentStatus={props.subagentStatus}
         />
         {props.pending ? (
           <span
@@ -1070,11 +1144,11 @@ function RightPanelTab(
                 }}
                 className="cursor-pointer flex min-w-0 items-center"
                 aria-label={
-                  sideChatState === null
+                  stateLabel === null
                     ? undefined
                     : gt("{title}, {state}", {
                         title,
-                        state: messages(SIDE_CHAT_STATE_LABELS[sideChatState]),
+                        state: messages(stateLabel),
                       })
                 }
                 onClick={() => onActivate(surface)}
@@ -1513,40 +1587,47 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   props.previewSessions,
                   props.desktopByTabId,
                 );
-                return (
-                  <RightPanelTab
+                const tabProps = {
+                  surface,
+                  dragDisabled: !props.onMoveSurface || renamingDevice === surface.id,
+                  active: surface.id === props.activeSurfaceId,
+                  pending: props.pendingSurfaceIds.has(surface.id),
+                  title: surfaceTitle(
+                    surface,
+                    props.previewSessions,
+                    props.terminalLabelsById,
+                    messages,
+                  ),
+                  audio: tabAudioState(
+                    previewTabId ? (props.desktopByTabId[previewTabId] ?? null) : null,
+                  ),
+                  audioRuntimeTabId: previewTabId
+                    ? (props.previewRuntimeTabId?.(previewTabId) ?? null)
+                    : null,
+                  previewUrl: favicon.url,
+                  previewCapturedUrl: favicon.capturedUrl,
+                  theme: resolvedTheme,
+                  environmentId: props.environmentId,
+                  pullRequestStatusSeed: props.pullRequestStatusSeeds?.[surface.id],
+                  renaming: renamingDevice === surface.id,
+                  canRename: props.onRenameDevice !== undefined,
+                  ownsDesktopTitleBar,
+                  onActivate: onActivateTab,
+                  onClose: onCloseTab,
+                  onAuxClick: onTabAuxClick,
+                  onContextMenu: onTabContextMenu,
+                  onStartRename: onStartRenameTab,
+                  onFinishRename: onFinishRenameTab,
+                } satisfies RightPanelTabProps;
+                return surface.kind === "subagent" && props.threadRef !== undefined ? (
+                  <NativeSubagentTab
                     key={surface.id}
+                    {...tabProps}
                     surface={surface}
-                    dragDisabled={!props.onMoveSurface || renamingDevice === surface.id}
-                    active={surface.id === props.activeSurfaceId}
-                    pending={props.pendingSurfaceIds.has(surface.id)}
-                    title={surfaceTitle(
-                      surface,
-                      props.previewSessions,
-                      props.terminalLabelsById,
-                      messages,
-                    )}
-                    audio={tabAudioState(
-                      previewTabId ? (props.desktopByTabId[previewTabId] ?? null) : null,
-                    )}
-                    audioRuntimeTabId={
-                      previewTabId ? (props.previewRuntimeTabId?.(previewTabId) ?? null) : null
-                    }
-                    previewUrl={favicon.url}
-                    previewCapturedUrl={favicon.capturedUrl}
-                    theme={resolvedTheme}
-                    environmentId={props.environmentId}
-                    pullRequestStatusSeed={props.pullRequestStatusSeeds?.[surface.id]}
-                    renaming={renamingDevice === surface.id}
-                    canRename={props.onRenameDevice !== undefined}
-                    ownsDesktopTitleBar={ownsDesktopTitleBar}
-                    onActivate={onActivateTab}
-                    onClose={onCloseTab}
-                    onAuxClick={onTabAuxClick}
-                    onContextMenu={onTabContextMenu}
-                    onStartRename={onStartRenameTab}
-                    onFinishRename={onFinishRenameTab}
+                    panelRef={props.threadRef}
                   />
+                ) : (
+                  <RightPanelTab key={surface.id} {...tabProps} />
                 );
               })}
             </SortableTabList>

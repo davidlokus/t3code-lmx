@@ -9,6 +9,7 @@ import { T, useGT, useMessages } from "gt-react";
 import { useSideThreadTrigger } from "~/hooks/useSideThreadTrigger";
 import { openSideThread } from "~/lib/sideChatPane";
 import { cn } from "~/lib/utils";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { useLinkedThreadOpener } from "~/state/linkedThreadView";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import {
@@ -136,6 +137,9 @@ function SubagentRowContent(props: {
   );
 }
 
+const HUD_SUBAGENT_BUTTON_CLASS =
+  "flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-2xs outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+
 function HudRemoteSubagentRow(props: {
   readonly agent: HudSubagentEntry;
   readonly remoteChild: OrchestrationV2RemoteTaskChild;
@@ -160,7 +164,7 @@ function HudRemoteSubagentRow(props: {
       type="button"
       data-testid="hud-subagent-row"
       {...trigger((intent) => opener.open(intent))}
-      className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-2xs outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      className={HUD_SUBAGENT_BUTTON_CLASS}
     >
       <SubagentRowContent agent={props.agent} interactive />
     </button>
@@ -193,7 +197,7 @@ function HudLocalSubagentRow(props: {
             }),
         });
       })}
-      className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-2xs outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      className={HUD_SUBAGENT_BUTTON_CLASS}
     >
       <SubagentRowContent agent={props.agent} interactive />
     </button>
@@ -267,6 +271,24 @@ export function HudActivityCard(props: {
                 environmentId={props.environmentId}
                 threadId={props.threadId}
               />
+            ) : agent.origin !== "app_owned" ? (
+              <button
+                key={agent.id}
+                type="button"
+                data-testid="hud-subagent-row"
+                className={HUD_SUBAGENT_BUTTON_CLASS}
+                onClick={() =>
+                  useRightPanelStore
+                    .getState()
+                    .openSubagent(
+                      scopeThreadRef(props.environmentId, props.threadId),
+                      agent.id,
+                      agent.title,
+                    )
+                }
+              >
+                <SubagentRowContent agent={agent} interactive />
+              </button>
             ) : (
               <div
                 key={agent.id}

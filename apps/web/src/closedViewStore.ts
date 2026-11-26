@@ -12,7 +12,11 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { decodeLinkedThreadSurface } from "./linkedThreadSurface";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
-import { decodeThreadSurface, type RightPanelSurface } from "./rightPanelStore";
+import {
+  decodeSubagentSurface,
+  decodeThreadSurface,
+  type RightPanelSurface,
+} from "./rightPanelStore";
 
 export type ClosedView =
   | {
@@ -26,7 +30,7 @@ export type ClosedViewEntry = ClosedView & { id: string };
 
 interface ClosedViewStoreState {
   entries: ClosedViewEntry[];
-  remember: (view: ClosedView) => string;
+  remember: (view: ClosedView) => string | null;
   defer: (id: string) => void;
   remove: (id: string) => void;
 }
@@ -53,13 +57,9 @@ const isThreadRef = Schema.is(ScopedThreadRef);
 const isSnapshot = Schema.is(PreviewSessionSnapshot);
 const isAttachment = Schema.is(ChatFileAttachment);
 
-const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
-  const view = entry as ClosedViewEntry | null;
-  if (!view || typeof view.id !== "string" || !isThreadRef(view.threadRef)) return false;
-  if (view.kind === "browser") return isSnapshot(view.snapshot);
-  if (view.kind !== "panel-tab") return false;
-  const surface = view.surface;
-  if (!surface || typeof surface.id !== "string") return false;
+function isValidPanelSurface(
+  surface: Exclude<Extract<ClosedView, { kind: "panel-tab" }>["surface"], { kind: "subagent" }>,
+) {
   switch (surface.kind) {
     case "diff":
     case "files":
@@ -114,20 +114,58 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
     default:
       return false;
   }
-};
+}
 
-/** A closed side chat tab saved before its surface became `thread`. */
-const renamedSideChatTab = (entry: unknown): unknown => {
-  const view = entry as { kind?: unknown; surface?: { kind?: unknown } | null } | null;
-  if (view?.kind !== "panel-tab" || view.surface?.kind !== "side-chat") return entry;
-  return { ...view, surface: decodeThreadSurface(view.surface) };
-};
+function decodeSavedView(entry: unknown): ClosedViewEntry | null {
+  const view = entry as ClosedViewEntry | null;
+  if (!view || typeof view.id !== "string" || !isThreadRef(view.threadRef)) return null;
+  if (view.kind === "browser") {
+    return isSnapshot(view.snapshot) && isPersistentView(view) ? view : null;
+  }
+  if (view.kind !== "panel-tab" || !view.surface || typeof view.surface !== "object") return null;
+  const { surface } = view;
+  if (
+    surface.kind === "subagent" ||
+    (typeof surface.id === "string" && surface.id.startsWith("subagent:"))
+  ) {
+    const decoded = decodeSubagentSurface(surface);
+    return decoded === null ? null : { ...view, surface: decoded };
+  }
+  const savedSurface: { kind?: unknown } = surface;
+  // A closed side chat tab saved before its surface became `thread`.
+  if (savedSurface.kind === "side-chat") {
+    const decoded = decodeThreadSurface(surface);
+    return decoded === null ? null : { ...view, surface: decoded };
+  }
+  if (typeof surface.id !== "string") return null;
+  return isValidPanelSurface(surface) ? view : null;
+}
+
+function decodeSavedViews(persisted: unknown): Pick<ClosedViewStoreState, "entries"> {
+  const entries =
+    persisted && typeof persisted === "object" && "entries" in persisted
+      ? persisted.entries
+      : undefined;
+  return {
+    entries: Array.isArray(entries)
+      ? entries.flatMap((entry) => {
+          const decoded = decodeSavedView(entry);
+          return decoded === null ? [] : [decoded];
+        })
+      : [],
+  };
+}
 
 export const useClosedViewStore = create<ClosedViewStoreState>()(
   persist(
     (set) => ({
       entries: [],
       remember: (view) => {
+        if (view.kind === "panel-tab" && view.surface.kind === "subagent") {
+          const surface = decodeSubagentSurface(view.surface);
+          if (surface === null) return null;
+          view = { ...view, surface };
+        }
         const id = randomUUID();
         set((state) => ({
           entries: [
@@ -153,15 +191,9 @@ export const useClosedViewStore = create<ClosedViewStoreState>()(
         resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
       ),
       version: 3,
-      migrate: (persisted) => {
-        const entries = (persisted as Partial<Pick<ClosedViewStoreState, "entries">> | null)
-          ?.entries;
-        return {
-          entries: Array.isArray(entries)
-            ? entries.map(renamedSideChatTab).filter(isClosedViewEntry).filter(isPersistentView)
-            : [],
-        };
-      },
+      migrate: decodeSavedViews,
+      merge: (persisted, current) =>
+        persisted === undefined ? current : { ...current, ...decodeSavedViews(persisted) },
       partialize: ({ entries }) => ({ entries: entries.filter(isPersistentView) }),
     },
   ),

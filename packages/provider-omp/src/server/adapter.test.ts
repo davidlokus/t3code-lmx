@@ -11,6 +11,7 @@ import {
   ThreadId,
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type ResolvedProviderInstanceEnvironment,
@@ -849,6 +850,139 @@ describe("OmpAdapterV2", () => {
         return assert.fail("expected the completed subagent item");
       assert.equal(finished.turnItem.id, streamed.turnItem.id);
       assert.equal(finished.turnItem.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps an async task completed and backfills both reports under the original run", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp();
+      const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+      yield* startTurn(runtime, providerThread, "full-access");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      const call = { toolName: "task", toolCallId: "call-background" };
+      yield* fake.emit({ ...call, type: "tool_execution_start" });
+
+      const lifecycle = (id: string, status: string) =>
+        fake.emit({
+          type: "subagent_lifecycle",
+          payload: {
+            id,
+            agent: "scout",
+            description: id,
+            parentToolCallId: call.toolCallId,
+            status,
+          },
+        });
+      for (const id of ["ProviderView", "ClientView"]) yield* lifecycle(id, "started");
+      yield* fake.emit({
+        ...call,
+        type: "tool_execution_end",
+        result: {
+          content: [{ type: "text", text: "Spawned 2 background agents" }],
+          details: {
+            results: [],
+            async: { jobId: "ProviderView", type: "task", state: "running" },
+          },
+        },
+      });
+      yield* fake.emit({
+        ...call,
+        type: "tool_execution_update",
+        partialResult: {
+          content: [{ type: "text", text: "Running 2 agents..." }],
+          details: {
+            results: [],
+            async: { jobId: "ProviderView", type: "task", state: "running" },
+          },
+        },
+      });
+      for (const id of ["ProviderView", "ClientView"]) yield* lifecycle(id, "completed");
+      const launched: OrchestrationV2Subagent[] = [];
+      const taskStatuses: string[] = [];
+      yield* takeEvent((event) => {
+        if (
+          event.type === "turn_item.updated" &&
+          event.turnItem.nativeItemRef?.nativeId === call.toolCallId
+        ) {
+          taskStatuses.push(event.turnItem.status);
+        }
+        if (event.type === "subagent.updated" && event.subagent.status === "completed") {
+          launched.push(event.subagent);
+        }
+        return launched.length === 2;
+      });
+      assert.deepEqual(taskStatuses, ["running", "completed"]);
+      const [provider, client] = launched;
+      if (provider === undefined || client === undefined)
+        return assert.fail("expected both agents");
+      assert.equal(provider.title, "ProviderView (scout)");
+      assert.equal(client.title, "ClientView (scout)");
+
+      const waitReport = "# Provider architecture\n\nSee [adapter](./server/adapter.ts).";
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "call-wait",
+        toolName: "wait",
+        result: {
+          details: {
+            op: "wait",
+            jobs: [
+              {
+                id: "ProviderView",
+                type: "task",
+                status: "completed",
+                resultText: `<task-result id="ProviderView" status="completed"><output>\n${waitReport}\n</output></task-result>`,
+              },
+            ],
+          },
+        },
+      });
+      const waited = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.result === waitReport,
+      );
+      if (waited.type !== "subagent.updated")
+        return assert.fail("expected wait to backfill a report");
+      assert.equal(waited.subagent.id, provider.id);
+
+      for (const frame of agentEnd()) yield* fake.emit(frame);
+      yield* takeEvent((event) => event.type === "turn.terminal");
+      yield* TestClock.adjust("5 seconds");
+      const asyncReport = "# Client architecture";
+      yield* fake.emit({
+        type: "message_end",
+        message: {
+          role: "custom",
+          customType: "async-result",
+          content: `<system-notice>\n<task-result id="ClientView" status="completed"><output>\n${asyncReport}\n</output></task-result>\n</system-notice>`,
+          details: {
+            jobs: [
+              { jobId: "ClientView-2", agentId: "ClientView", type: "task", status: "completed" },
+            ],
+          },
+        },
+      });
+      const delivered = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.result === asyncReport,
+      );
+      if (delivered.type !== "subagent.updated") return assert.fail("expected async delivery");
+      assert.equal(delivered.subagent.id, client.id);
+      assert.equal(delivered.subagent.runId, client.runId);
+      assert.equal(delivered.subagent.status, "completed");
+      assert.deepEqual(delivered.subagent.completedAt, client.completedAt);
+      const item = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "subagent" &&
+          event.turnItem.subagentId === client.id,
+      );
+      if (item.type !== "turn_item.updated" || item.turnItem.type !== "subagent") {
+        return assert.fail("expected a timeline report");
+      }
+      assert.equal(item.turnItem.title, client.title);
+      assert.equal(item.turnItem.result, asyncReport);
+      assert.equal(item.turnItem.status, "completed");
+      assert.equal(item.turnItem.runId, client.runId);
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

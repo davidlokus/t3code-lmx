@@ -1,5 +1,5 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, NodeId, RunId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { useClosedViewStore } from "./closedViewStore";
@@ -56,6 +56,125 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refB)?.id).toBe(
       "file:src/app.ts",
     );
+  });
+
+  it("keeps hosted and local native subagent peers through reload and undo-close", async () => {
+    const store = useRightPanelStore.getState();
+    const local = {
+      id: "subagent:local",
+      kind: "subagent",
+      subagentId: NodeId.make("local"),
+      title: "Local task",
+    } as const;
+    const hosted = {
+      id: "subagent:guest",
+      kind: "subagent",
+      subagentId: NodeId.make("guest"),
+      title: "Guest task",
+      ownerThreadId: refB.threadId,
+    } as const;
+    const hostPanel = () =>
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    store.openSubagent(refA, local.subagentId, ` ${local.title} `);
+    store.open(refA, "diff");
+    const unhost = hostRightPanel(refB, refA);
+    try {
+      expect(store.openSubagent(refB, hosted.subagentId, "Old guest title")).toBe(true);
+      // A new click refreshes the stored title without duplicating or moving the tab.
+      store.openSubagent(refB, hosted.subagentId, hosted.title);
+    } finally {
+      unhost();
+    }
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+    expect(hostPanel().surfaces).toEqual([local, { id: "diff", kind: "diff" }, hosted]);
+
+    store.activateSurface(refA, local.id);
+    expect(hostPanel().activeSurfaceId).toBe(local.id);
+    store.close(refA);
+    store.revealSurface(refA, hosted.id);
+    await reloadRightPanelStore();
+    expect(hostPanel()).toEqual({
+      isOpen: true,
+      activeSurfaceId: hosted.id,
+      surfaces: [local, { id: "diff", kind: "diff" }, hosted],
+    });
+
+    store.closeSurface(refA, hosted.id);
+    const history = useClosedViewStore.persist;
+    const { storage, name } = history.getOptions();
+    const saved = await storage!.getItem(name!);
+    useClosedViewStore.setState({ entries: [] });
+    await storage!.setItem(name!, saved!);
+    await history.rehydrate();
+    const entry = useClosedViewStore.getState().entries[0]!;
+    expect(entry).toMatchObject({ kind: "panel-tab", threadRef: refA, surface: hosted });
+    expect(
+      await reopenClosedView(entry, {
+        workspaceAvailable: false,
+        openPreview: () => {
+          throw new Error("A native subagent tab must not open a browser session");
+        },
+      }),
+    ).toBe(true);
+    expect(hostPanel().surfaces).toEqual([local, { id: "diff", kind: "diff" }, hosted]);
+    expect(hostPanel().activeSurfaceId).toBe(hosted.id);
+  });
+
+  it("admits only valid native subagents, including during same-version rehydration", async () => {
+    const store = useRightPanelStore.getState();
+    const agent = {
+      id: "subagent:good",
+      kind: "subagent",
+      subagentId: NodeId.make("good"),
+      title: "Good task",
+    } as const;
+    expect(store.openSubagent(refA, agent.subagentId, " ")).toBe(false);
+    expect(store.openSubagent(refA, " " as NodeId, agent.title)).toBe(false);
+    expect(store.openSubagent(refA, null as never, agent.title)).toBe(false);
+    expect(store.getUserActionRevision(refA)).toBe(0);
+
+    const { storage, name, version } = useRightPanelStore.persist.getOptions();
+    await storage!.setItem(name!, {
+      version: version!,
+      state: {
+        byThreadKey: {
+          [scopedThreadKey(refA)]: {
+            isOpen: true,
+            activeSurfaceId: "subagent:mismatch",
+            surfaces: [
+              { ...agent, id: "subagent:mismatch" },
+              { ...agent, id: "subagent:wrong-kind", kind: "files" },
+              { ...agent, id: "subagent:", subagentId: "" },
+              { ...agent, id: "subagent: ", subagentId: " " },
+              { ...agent, id: "subagent:4", subagentId: 4 },
+              { ...agent, title: " " },
+              { ...agent, title: null },
+              { ...agent, title: undefined },
+              { ...agent, ownerThreadId: "" },
+              { ...agent, ownerThreadId: null },
+              { ...agent, title: " Good task " },
+              { id: "diff", kind: "diff" },
+            ] as never,
+          },
+          [scopedThreadKey(refB)]: { isOpen: true, activeSurfaceId: null, surfaces: [] },
+        },
+        threadPanelVisibilityByThreadKey: {},
+      },
+    });
+    await useRightPanelStore.persist.rehydrate();
+    const { byThreadKey } = useRightPanelStore.getState();
+    expect(selectThreadRightPanelState(byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: agent.id,
+      surfaces: [agent, { id: "diff", kind: "diff" }],
+    });
+    expect(selectThreadRightPanelState(byThreadKey, refB)).toEqual({
+      isOpen: true,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
   });
 
   it("records single and bulk tab closes, newest first", () => {

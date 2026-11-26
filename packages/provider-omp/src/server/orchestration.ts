@@ -17,8 +17,12 @@ type SubagentStatus = Extract<
   "pending" | "running" | "completed" | "failed" | "interrupted"
 >;
 
+const MAX_SUBAGENT_RESULT_CHARS = 50_000;
+const MAX_SUBAGENT_PROGRESS_CHARS = 200;
+
 interface SubagentTask {
   readonly agent: string;
+  readonly title: string;
   readonly task: string;
   readonly model: string | null;
   readonly status: SubagentStatus;
@@ -31,6 +35,7 @@ function subagentStatus(status: unknown): SubagentStatus | undefined {
     case "started":
       return "running";
     case "aborted":
+    case "cancelled":
       return "interrupted";
     case "pending":
     case "running":
@@ -57,10 +62,66 @@ function subagentProgress(progress: unknown): string | undefined {
     for (let i = output.length - 1; i >= 0; i--) {
       const line: unknown = output[i];
       if (typeof line !== "string") continue;
-      const text = line.trim();
-      if (text) return text.slice(-200);
+      const text = line
+        .trim()
+        .replace(/^(?:#{1,6}|[-*>])\s+/, "")
+        .replace(/\[([^[\]\r\n]+)\]\([^()\r\n]*\)/g, "$1");
+      if (!text || text.startsWith("```") || text.startsWith("~~~")) continue;
+      if (text.length <= MAX_SUBAGENT_PROGRESS_CHARS) return text;
+      const prefix = text.slice(0, MAX_SUBAGENT_PROGRESS_CHARS - 1);
+      const boundary = prefix.lastIndexOf(" ");
+      return `${(boundary > 0 ? prefix.slice(0, boundary) : prefix).trimEnd()}…`;
     }
   }
+}
+
+function shortSubagentLabel(value: string | undefined): string | undefined {
+  const label = value?.trim();
+  return label && label.length <= 60 && !/[\r\n\u2028\u2029]/.test(label) ? label : undefined;
+}
+
+function taskResultBody(text: string) {
+  const read = (tag: "output" | "preview" | "error") => {
+    const match = new RegExp(`<${tag}(?:\\s[^<>]*)?>`).exec(text);
+    if (match === null) return undefined;
+    const contentStart = match.index + match[0].length;
+    const end = text.lastIndexOf(`</${tag}>`);
+    return end >= contentStart ? text.slice(contentStart, end).trim() : undefined;
+  };
+  const error = read("error");
+  const result = read("output") || read("preview") || error;
+  return { result, error };
+}
+
+function* taskResultBlocks(text: string) {
+  // An invalid opener cannot scan across the next tag, so recovery is linear even on malformed input.
+  const tags = /<task-result(?=[\s>])([^<>]*)>|<\/task-result>/g;
+  let open: { start: number; attributes: string } | undefined;
+  for (const match of text.matchAll(tags)) {
+    const [tag, attributes] = match;
+    if (attributes !== undefined) {
+      open = { start: match.index + tag.length, attributes };
+    } else if (open !== undefined) {
+      let id: string | undefined;
+      let status: string | undefined;
+      for (const [, name, doubleQuoted, singleQuoted] of open.attributes.matchAll(
+        /\s([a-zA-Z][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g,
+      )) {
+        if (name === "id") id = doubleQuoted ?? singleQuoted;
+        if (name === "status") status = doubleQuoted ?? singleQuoted;
+      }
+      yield { id, status, ...taskResultBody(text.slice(open.start, match.index)) };
+      open = undefined;
+    }
+  }
+}
+
+function backgroundResultStatus(job: unknown, envelopeStatus: string | undefined, failed: boolean) {
+  const jobStatus = subagentStatus(recordString(job, "status"));
+  if (jobStatus !== undefined && isTerminal(jobStatus)) return jobStatus;
+  const status = subagentStatus(envelopeStatus);
+  if (status !== undefined && isTerminal(status)) return status;
+  return failed ? "failed" : "completed";
 }
 
 export class OmpSubagentTracker {
@@ -95,12 +156,93 @@ export class OmpSubagentTracker {
         recordString(entry, "output")?.trim() ||
         error?.trim() ||
         recordString(entry, "stderr")?.trim();
-      const update = this.#update(entry, entry, toolCallId, status, {
-        result: result?.slice(0, 10_000),
-      });
+      const update = this.#update(entry, entry, toolCallId, status, { result });
       if (update !== undefined) updates.push(update);
     }
     return updates;
+  }
+
+  fromWaitResult(frame: PiRpcRecord): PiRpcRecord[] {
+    const jobs = recordField(recordField(frame["result"], "details"), "jobs");
+    const updates: PiRpcRecord[] = [];
+    if (!Array.isArray(jobs)) return updates;
+    for (const job of jobs) {
+      const error = recordString(job, "errorText")?.trim() || recordString(job, "error")?.trim();
+      const text = recordString(job, "resultText")?.trim() || error;
+      if (!text) continue;
+      const jobId = recordString(job, "id") ?? recordString(job, "jobId");
+      const agentId = recordString(job, "agentUrlId") ?? recordString(job, "agentId");
+      const knownKey = this.#trackedKey(agentId, jobId);
+      if (knownKey === undefined && recordString(job, "type") !== "task") continue;
+      const wrapped = /^<task-result[\s>]/.test(text);
+      const block = wrapped ? taskResultBlocks(text).next().value : undefined;
+      const taskKey = this.#trackedKey(agentId, block?.id, jobId);
+      const body =
+        !wrapped && /^<(?:output|preview|error)(?:[\s>])/.test(text)
+          ? taskResultBody(text)
+          : undefined;
+      const result = wrapped ? block?.result || error : body?.result || text;
+      if (taskKey === undefined || !result) continue;
+      const status = backgroundResultStatus(
+        job,
+        block?.status,
+        Boolean(error || block?.error || body?.error),
+      );
+      const update = this.#enrich(taskKey, status, result);
+      if (update !== undefined) updates.push(update);
+    }
+    return updates;
+  }
+
+  fromAsyncResultMessage(frame: PiRpcRecord): PiRpcRecord[] {
+    const message = frame["message"];
+    const jobs = recordField(recordField(message, "details"), "jobs");
+    const updates: PiRpcRecord[] = [];
+    if (!Array.isArray(jobs)) return updates;
+    const content = recordField(message, "content");
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .filter((block) => recordString(block, "type") === "text")
+              .map((block) => recordString(block, "text") ?? "")
+              .join("")
+          : "";
+    const jobsById = new Map<string, unknown>();
+    for (const job of jobs) {
+      const jobId = recordString(job, "jobId");
+      const agentId = recordString(job, "agentId");
+      if (jobId) jobsById.set(jobId, job);
+      if (agentId) jobsById.set(agentId, job);
+    }
+    for (const block of taskResultBlocks(text)) {
+      if (!block.id || !block.result) continue;
+      const job = jobsById.get(block.id);
+      if (job === undefined) continue;
+      const taskKey = this.#trackedKey(
+        recordString(job, "agentId"),
+        block.id,
+        recordString(job, "jobId"),
+      );
+      if (taskKey === undefined) continue;
+      const status = backgroundResultStatus(job, block.status, Boolean(block.error));
+      const update = this.#enrich(taskKey, status, block.result);
+      if (update !== undefined) updates.push(update);
+    }
+    return updates;
+  }
+
+  #trackedKey(...ids: ReadonlyArray<string | undefined>): string | undefined {
+    return ids.find((id) => id !== undefined && this.#tasks.get(id)?.size === 1);
+  }
+
+  #enrich(taskKey: string, status: SubagentStatus, text: string): PiRpcRecord | undefined {
+    const result = text.trim().slice(0, MAX_SUBAGENT_RESULT_CHARS);
+    const previous = this.#tasks.get(taskKey)?.values().next().value;
+    // Async notifications can repeat a shortened preview after wait provided the full report.
+    if (!result || (previous?.result && previous.result.length >= result.length)) return undefined;
+    return this.#update(undefined, { id: taskKey }, undefined, status, { result });
   }
 
   #update(
@@ -126,6 +268,13 @@ export class OmpSubagentTracker {
         : nextStatus;
     const agent = recordString(payload, "agent") ?? previous?.agent;
     if (!agent) return undefined;
+    const description =
+      shortSubagentLabel(recordString(snapshot, "description")) ??
+      shortSubagentLabel(recordString(payload, "description"));
+    const label = description ?? shortSubagentLabel(recordString(snapshot, "taskKey") ?? taskKey);
+    const title =
+      (description === undefined ? previous?.title : undefined) ??
+      (label && label !== agent ? `${label} (${agent})` : agent);
     const task =
       recordString(payload, "task") ??
       recordString(payload, "assignment") ??
@@ -139,9 +288,10 @@ export class OmpSubagentTracker {
       recordString(snapshot, "modelOverride") ??
       null;
     const progress = isTerminal(status) ? undefined : (update.progress ?? previous?.progress);
-    const result = update.result || previous?.result || null;
+    const result = update.result?.slice(0, MAX_SUBAGENT_RESULT_CHARS) || previous?.result || null;
     if (
       previous?.agent === agent &&
+      previous.title === title &&
       previous.task === task &&
       previous.model === model &&
       previous.status === status &&
@@ -151,6 +301,7 @@ export class OmpSubagentTracker {
       return undefined;
     const next = {
       agent,
+      title,
       task,
       model,
       status,

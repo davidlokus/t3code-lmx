@@ -1,12 +1,25 @@
 import "~/index.css";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
+import {
+  EnvironmentId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationV2Subagent,
+} from "@t3tools/contracts";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/input-group";
-import type { RightPanelSurface } from "~/rightPanelStore";
-import { render, stubGlobal } from "../../test/render";
+import type { RightPanelSurface, SubagentSurface } from "~/rightPanelStore";
+import { environmentThreadDetails } from "~/state/threads";
+import { makeThreadProjectionFixture } from "~/test-fixtures";
+import { act, render, stubGlobal } from "../../test/render";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import { RightPanelTabs, type RightPanelTabsProps } from "./RightPanelTabs";
 import { subscribePreviewAction } from "./preview/previewActionBus";
@@ -150,7 +163,7 @@ const BROWSER_SURFACE: RightPanelSurface = {
 };
 const DIFF_SURFACE: RightPanelSurface = { id: "diff", kind: "diff" };
 
-function panel(activeSurface: RightPanelSurface) {
+function panel(activeSurface: RightPanelSurface, overrides?: Partial<RightPanelTabsProps>) {
   const noop = () => {};
   const props: RightPanelTabsProps = {
     mode: "inline",
@@ -202,8 +215,79 @@ function panel(activeSurface: RightPanelSurface) {
       </div>
     ),
   };
-  return <RightPanelTabs {...props} />;
+  return <RightPanelTabs {...props} {...overrides} />;
 }
+
+it("shows a hosted native subagent's live title and status on its own tab", async () => {
+  const projection = makeThreadProjectionFixture();
+  const environmentId = EnvironmentId.make("subagent-panel");
+  const hostRef = scopeThreadRef(environmentId, ThreadId.make("host"));
+  const ownerRef = scopeThreadRef(environmentId, projection.thread.id);
+  const surface: SubagentSurface = {
+    id: "subagent:guest-task",
+    kind: "subagent",
+    subagentId: NodeId.make("guest-task"),
+    title: "Stored guest task",
+    ownerThreadId: ownerRef.threadId,
+  };
+  const agent: OrchestrationV2Subagent = {
+    id: surface.subagentId,
+    threadId: ownerRef.threadId,
+    runId: null,
+    parentNodeId: NodeId.make("parent"),
+    origin: "provider_native",
+    createdBy: "agent",
+    driver: ProviderDriverKind.make("omp"),
+    providerInstanceId: ProviderInstanceId.make("omp"),
+    providerThreadId: null,
+    childThreadId: null,
+    nativeTaskRef: null,
+    prompt: "Build the layout",
+    title: "Subagent: Guest Layout (scout)",
+    model: null,
+    status: "running",
+    result: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: projection.thread.updatedAt,
+  };
+  const ownerDetail = Atom.make<EnvironmentThread | null>(null);
+  const emptyDetail = Atom.make<EnvironmentThread | null>(null);
+  using detailOf = vi
+    .spyOn(environmentThreadDetails, "threadAtom")
+    .mockImplementation((ref) => (ref.threadId === ownerRef.threadId ? ownerDetail : emptyDetail));
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  await using screen = await render(
+    <RegistryContext value={registry}>
+      {panel(surface, { surfaces: [surface, DIFF_SURFACE], environmentId, threadRef: hostRef })}
+    </RegistryContext>,
+  );
+  await expect.element(screen.getByRole("button", { name: surface.title })).toBeVisible();
+  expect(detailOf.mock.calls.map(([ref]) => ref)).not.toContainEqual(hostRef);
+
+  await act(() => {
+    registry.set(ownerDetail, { environmentId, projection: { ...projection, subagents: [agent] } });
+  });
+  await expect
+    .element(screen.getByRole("button", { name: "Guest Layout (scout), Running" }))
+    .toBeVisible();
+  await act(() => {
+    registry.set(ownerDetail, {
+      environmentId,
+      projection: {
+        ...projection,
+        subagents: [{ ...agent, status: "completed", result: "Layout report" }],
+      },
+    });
+  });
+  await expect
+    .element(screen.getByRole("button", { name: "Guest Layout (scout), Completed" }))
+    .toBeVisible();
+  const close = screen.getByRole("button", { name: "Close Guest Layout (scout)" });
+  expect(close.element().querySelector("svg.lucide-bot")).not.toBeNull();
+  expect(close.element().querySelector(".bg-success")).not.toBeNull();
+});
 
 // Chromium focuses on an uncancelled mousedown and runs history back/forward on an
 // uncancelled button 3/4 mouseup.
