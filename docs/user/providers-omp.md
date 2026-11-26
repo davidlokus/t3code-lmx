@@ -8,9 +8,10 @@ It is a separate provider from [Pi](./providers-pi.md).
 
 1. Install [omp 18.20.0 or newer](https://github.com/can1357/oh-my-pi#install) on the machine running
    the server.
-2. Run `omp` there and use `/login`, or add your model provider's API key to omp's **Environment
-   variables** in T3 Lab.
-3. In **Settings → Providers**, choose that environment, enable **omp**, and refresh it.
+2. In **Settings → Providers**, choose that environment, enable **omp**, and sign in directly from
+   the provider settings terminal (`omp [--profile <name>] login`), run `omp` and use `/login`, or
+   add your model provider's API key to omp's **Environment variables** in T3 Lab.
+3. Refresh **omp** to load its available models (signing in through T3 Lab refreshes automatically).
 
 If the server cannot find `omp` on its `PATH`, set **Binary path** to the executable. For a separate
 account or configuration, add another omp instance and set **Profile** (which maps to
@@ -37,8 +38,20 @@ start a thread, the composer offers omp's skills and slash commands for that wor
 threads forward external workspace directories to omp via repeatable `--add-dir` flags. Use
 `/compact` to summarize a long conversation without starting a new thread.
 
-Threads resume with omp's native session files. Where T3 tools are available, omp can use them to
-create durable child threads. omp's own `task` tool appears as a regular tool call instead.
+Threads resume with omp's native session files.
+
+## Subagents, checklists, and questions
+
+omp's `task` subagents show live progress and results in the thread when the installed runtime
+supports progress streaming. These are separate from the durable child threads created by T3
+tools, which remain available to omp.
+
+When omp updates its native todo list (`todo` or `todo_write`), the thread shows a checklist.
+Native `ask` dialogs and supported forms appear as questions you can answer or dismiss in the
+composer. Unsupported forms, such as file uploads, are cancelled with a notice.
+
+omp has no Plan Mode switch in T3 Lab. To choose which model omp uses for planning, configure
+**Plan model** in the provider settings.
 
 ## Text generation, usage history, and quota limits
 

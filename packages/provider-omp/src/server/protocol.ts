@@ -9,6 +9,16 @@ import {
   type PiRpcRecord,
 } from "@t3tools/provider-pi/server/rpc";
 import { SESSION_UNAVAILABLE_NOTICE } from "@t3tools/shared/forkNotices";
+import {
+  encodeOmpAskResponse,
+  encodeOmpFormResponse,
+  OmpSubagentTracker,
+  parseOmpAskRequest,
+  parseOmpFormRequest,
+  projectOmpTodoWrite,
+  type OmpAskRequest,
+  type OmpFormRequest,
+} from "./orchestration.ts";
 
 /** omp's approval prompt title: `Allow tool: <name>`, then one detail line per input. */
 const APPROVAL_TITLE = /^Allow tool: ([^\n]+)(?:\n([\s\S]*))?$/;
@@ -102,10 +112,37 @@ export function makeOmpTranslator(): OmpTranslator {
   // Prompts sent while the agent ran are queued behind it; omp's acknowledgement does not say so.
   const sentWhileRunning = new Map<string, boolean>();
   const approvals = new Map<string, ApprovalChoices>();
+  const askRequests = new Map<string, OmpAskRequest>();
+  const formRequests = new Map<string, OmpFormRequest>();
+  const subagents = new OmpSubagentTracker();
   let notices: Array<PiRpcRecord> = [];
   const frames = (...translated: ReadonlyArray<PiRpcRecord>): OmpTranslation => ({
     frames: translated,
     replies: [],
+  });
+
+  const clearPendingUiRequest = (id: string): boolean => {
+    const approval = approvals.delete(id);
+    const ask = askRequests.delete(id);
+    const form = formRequests.delete(id);
+    return approval || ask || form;
+  };
+  const refuseDialog = (
+    method: string,
+    id: string | undefined,
+    duplicate: boolean,
+  ): OmpTranslation => ({
+    frames: [
+      ...(duplicate ? [{ type: "extension_ui_request", method: "cancel", targetId: id }] : []),
+      {
+        type: "extension_ui_request",
+        id: `omp:dialog-error:${++noticeSeq}`,
+        method: "notify",
+        notifyType: "error",
+        message: `omp sent an invalid or unsupported ${method} dialog. The request was cancelled.`,
+      },
+    ],
+    replies: id ? [{ type: "extension_ui_response", id, cancelled: true }] : [],
   });
 
   const settled = (frame: PiRpcRecord): boolean => {
@@ -206,8 +243,45 @@ export function makeOmpTranslator(): OmpTranslator {
       case "manual_compaction_end":
       case "auto_compaction_end":
         return frames(compactionEnd(frame));
-      case "extension_ui_request":
-        return approvalAsConfirm(frame);
+      case "subagent_lifecycle":
+      case "subagent_progress": {
+        const update = subagents.fromSubscription(frame);
+        return update === undefined ? frames() : frames(update);
+      }
+      case "tool_execution_end": {
+        if (frame["toolName"] === "task") return frames(frame, ...subagents.fromTaskResult(frame));
+        const todo = projectOmpTodoWrite(frame);
+        return todo === undefined ? frames(frame) : frames(frame, todo);
+      }
+      case "extension_ui_request": {
+        const method = frame["method"];
+        if (method === "cancel") {
+          const targetId = recordString(frame, "targetId");
+          if (targetId !== undefined) clearPendingUiRequest(targetId);
+          return frames(frame);
+        }
+        if (method !== "ask" && method !== "form") return approvalAsConfirm(frame);
+        const id = recordString(frame, "id");
+        if (!id?.trim()) return refuseDialog(method, id, false);
+        if (clearPendingUiRequest(id)) return refuseDialog(method, id, true);
+        const timeout = recordNumber(frame, "timeout");
+        const prompt = {
+          type: "extension_ui_request",
+          id,
+          method: "ask",
+          ...(timeout === undefined ? {} : { timeout }),
+        };
+        if (method === "ask") {
+          const request = parseOmpAskRequest(frame);
+          if (request === undefined) return refuseDialog(method, id, false);
+          askRequests.set(id, request);
+          return frames({ ...prompt, questions: request.questions });
+        }
+        const request = parseOmpFormRequest(frame);
+        if (request === undefined) return refuseDialog(method, id, false);
+        formRequests.set(id, request);
+        return frames({ ...prompt, questions: request.questions });
+      }
       case "response":
         return frames(promptAcknowledgement(frame));
       default:
@@ -274,6 +348,10 @@ export function makeOmpTranslator(): OmpTranslator {
       (Array.isArray(options) &&
         options.some((option) => typeof option === "string" && looksLikeApprovalChoice(option)));
     if (!approvalShaped) return frames(frame);
+    if (id !== undefined && (askRequests.has(id) || formRequests.has(id))) {
+      clearPendingUiRequest(id);
+      return refuseDialog("approval", id, true);
+    }
     const match = APPROVAL_TITLE.exec(title);
     const tool = match?.[1]?.trim();
     if (
@@ -338,8 +416,28 @@ export function makeOmpTranslator(): OmpTranslator {
         return { ...record, type: "abort_and_restore_queue" };
       case "extension_ui_response": {
         const id = recordString(record, "id");
-        const approval = id === undefined ? undefined : approvals.get(id);
-        if (id === undefined || approval === undefined) return record;
+        if (id === undefined) return record;
+        const dialog = askRequests.get(id) ?? formRequests.get(id);
+        if (dialog !== undefined) {
+          clearPendingUiRequest(id);
+          const response = { type: "extension_ui_response", id };
+          if (record["cancelled"] === true) return { ...response, cancelled: true };
+          const encoded =
+            "hidden" in dialog
+              ? encodeOmpFormResponse(dialog, record["answers"])
+              : encodeOmpAskResponse(dialog, record["answers"]);
+          if (encoded !== undefined) return { ...response, ...encoded };
+          notices.push({
+            type: "extension_ui_request",
+            id: `omp:dialog-error:${++noticeSeq}`,
+            method: "notify",
+            notifyType: "warning",
+            message: "The answer did not match the omp dialog. The request was cancelled.",
+          });
+          return { ...response, cancelled: true };
+        }
+        const approval = approvals.get(id);
+        if (approval === undefined) return record;
         approvals.delete(id);
         if (record["cancelled"] === true)
           return { type: "extension_ui_response", id, cancelled: true };
