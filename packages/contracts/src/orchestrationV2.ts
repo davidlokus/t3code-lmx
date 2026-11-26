@@ -1037,6 +1037,37 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
+export const OrchestrationV2SubagentUsage = Schema.Struct({
+  totalTokens: Schema.optional(NonNegativeInt),
+  inputTokens: Schema.optional(NonNegativeInt),
+  cachedInputTokens: Schema.optional(NonNegativeInt),
+  cacheCreationTokens: Schema.optional(NonNegativeInt),
+  outputTokens: Schema.optional(NonNegativeInt),
+  reasoningOutputTokens: Schema.optional(NonNegativeInt),
+  contextTokens: Schema.optional(NonNegativeInt),
+  contextWindow: Schema.optional(NonNegativeInt),
+  requests: Schema.optional(NonNegativeInt),
+  toolUses: Schema.optional(NonNegativeInt),
+  durationMs: Schema.optional(NonNegativeInt),
+  costUsd: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+export type OrchestrationV2SubagentUsage = typeof OrchestrationV2SubagentUsage.Type;
+
+export function preserveOrchestrationV2SubagentUsage(
+  previous: OrchestrationV2SubagentUsage | undefined,
+  next: OrchestrationV2SubagentUsage | undefined,
+): OrchestrationV2SubagentUsage | undefined {
+  if (previous === undefined || next === undefined) return next ?? previous;
+  let merged: Partial<Record<keyof OrchestrationV2SubagentUsage, number | undefined>> | undefined;
+  for (const key of Object.keys(previous) as Array<keyof OrchestrationV2SubagentUsage>) {
+    const value = previous[key];
+    if (value !== undefined && (next[key] === undefined || (next[key] === 0 && value > 0))) {
+      (merged ??= { ...next })[key] = value;
+    }
+  }
+  return merged ?? next;
+}
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -1070,6 +1101,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
     "interrupted",
   ]),
   progress: Schema.optional(Schema.String),
+  usage: Schema.optional(OrchestrationV2SubagentUsage),
   workflow: Schema.optional(OrchestrationV2SubagentWorkflow),
   result: Schema.NullOr(Schema.String),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),

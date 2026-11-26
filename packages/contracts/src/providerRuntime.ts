@@ -59,6 +59,8 @@ const TurnTokenUsageCommonFields = {
   cachedInputTokens: Schema.optional(NonNegativeInt),
   cacheCreationTokens: Schema.optional(NonNegativeInt),
   reasoningTokens: Schema.optional(NonNegativeInt),
+  requestCount: Schema.optional(PositiveInt),
+  costUsd: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   hasSubagents: Schema.Boolean,
   // Native model ids the provider reported for the main agent's work. Absent means unknown.
   models: Schema.optional(Schema.Array(TrimmedNonEmptyStringSchema)),

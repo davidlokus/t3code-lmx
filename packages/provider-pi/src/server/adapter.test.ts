@@ -4375,6 +4375,123 @@ describe("PiAdapterV2", () => {
         completed.type === "provider_turn.updated" ? completed.providerTurn.tokenUsage : undefined,
         { inputTokens: 50_668, cachedInputTokens: 40_101 },
       );
+      assert.isUndefined(
+        completed.type === "provider_turn.updated" ? completed.providerTurn.turnTokenUsage : null,
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps assistant step totals separate from the monotonic session cost ledger", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      fake.queueState({
+        sessionFile: FAKE_SESSION_FILE,
+        model: { provider: "openai", id: "gpt-5", contextWindow: 128_000 },
+      });
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const start = Effect.fnUntraced(function* (ordinal: number) {
+        yield* startTurn(
+          runtime,
+          providerThread,
+          "default",
+          [],
+          `Turn ${ordinal}`,
+          undefined,
+          ordinal,
+        );
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "response", command: "prompt", success: true });
+        yield* fake.emit({ type: "agent_start" });
+      });
+      const first = {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5",
+        usage: {
+          input: 10,
+          cacheRead: 30,
+          cacheWrite: 5,
+          output: 8,
+          reasoningTokens: 3,
+          totalTokens: 53,
+          cost: { total: 0.125 },
+        },
+      };
+      const second = {
+        ...first,
+        model: "gpt-5-mini",
+        usage: {
+          input: 9,
+          cacheRead: 50,
+          cacheWrite: 4,
+          output: 5,
+          reasoningTokens: 1,
+          totalTokens: 68,
+          cost: { total: 0.0625 },
+        },
+      };
+      yield* start(1);
+      yield* fake.emit({ type: "message_start", message: first });
+      const stream = {
+        type: "message_update",
+        usage: first.usage,
+        assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+      };
+      yield* fake.emit(stream);
+      yield* fake.emit(stream);
+      yield* fake.emit({ type: "message_end", message: first });
+      const live = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" &&
+          event.providerTurn.turnTokenUsage?.requestCount === 1,
+      );
+      assert.equal(
+        live.type === "provider_turn.updated" && live.providerTurn.turnTokenUsage?.costUsd,
+        0.125,
+      );
+      yield* fake.emit({ type: "message_end", message: { ...first, role: "toolResult" } });
+      yield* fake.emit({ type: "message_start", message: second });
+      yield* fake.emit({ type: "message_end", message: second });
+      fake.queueStats({ cost: 0.5, contextUsage: { tokens: 68, contextWindow: 128_000 } });
+      yield* fake.emit({ type: "agent_settled" });
+      const completed = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      if (completed.type !== "provider_turn.updated") return assert.fail("expected measured turn");
+      assert.deepEqual(completed.providerTurn.turnTokenUsage, {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 108,
+        cachedInputTokens: 80,
+        cacheCreationTokens: 9,
+        outputTokens: 13,
+        reasoningTokens: 4,
+        models: ["openai/gpt-5", "openai/gpt-5-mini"],
+        costUsd: 0.1875,
+        requestCount: 2,
+      });
+      assert.deepEqual(completed.providerTurn.tokenUsage?.cost, { amount: 0.5, currency: "USD" });
+      yield* takeEvent((event) => event.type === "turn.terminal");
+
+      yield* start(2);
+      yield* fake.emit({ type: "message_end", message: first });
+      fake.queueStats({ cost: 0.5, contextUsage: { tokens: 53, contextWindow: 128_000 } });
+      yield* fake.emit({ type: "agent_settled" });
+      const next = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      if (next.type !== "provider_turn.updated") return assert.fail("expected next measured turn");
+      assert.equal(next.providerTurn.turnTokenUsage?.requestCount, 1);
+      assert.equal(next.providerTurn.turnTokenUsage?.costUsd, 0.125);
+      assert.deepEqual(next.providerTurn.tokenUsage?.cost, { amount: 0.625, currency: "USD" });
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

@@ -3738,6 +3738,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly uuid: string;
     readonly result: string;
     readonly numTurns?: number;
+    readonly cumulativeCostUsd?: number;
     readonly origin?: { readonly kind: "task-notification" };
     readonly subtype?: string;
     readonly isError?: boolean;
@@ -3762,7 +3763,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       num_turns: input.numTurns ?? 1,
       result: input.result,
       stop_reason: "end_turn",
-      total_cost_usd: 0,
+      total_cost_usd: input.cumulativeCostUsd ?? 0,
       usage: input.usage ?? {
         input_tokens: 1,
         output_tokens: 1,
@@ -9225,6 +9226,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           uuid: "00000000-0000-4000-8000-000000000901",
           result: "",
           terminalReason,
+          cumulativeCostUsd: 0.125,
           usage: {
             input_tokens: 600,
             output_tokens: 40,
@@ -9242,6 +9244,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           makeResultFrame({
             uuid: "00000000-0000-4000-8000-000000000902",
             result: "Audit finished after the steer.",
+            cumulativeCostUsd: 0.375,
             usage: {
               input_tokens: 3,
               output_tokens: 6,
@@ -9287,6 +9290,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             usageScope: "main_agent",
             usageStatus: queryExits ? "partial" : "complete",
             hasSubagents: false,
+            requestCount: queryExits ? 1 : 2,
+            ...(queryExits ? {} : { costUsd: 0.375 }),
             inputTokens: queryExits ? 3100 : 603 + 2847 + 11455,
             outputTokens: queryExits ? 40 : 46,
             cachedInputTokens: queryExits ? 2000 : 11455,
@@ -9296,6 +9301,53 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }
       assert.lengthOf(harness.terminalEvents(), 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("does not attribute restored Claude cost to the first resumed turn", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      const now = yield* DateTime.now;
+      const start = Effect.fnUntraced(function* (ordinal: number, cumulativeCostUsd: number) {
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(`resumed-cost-${ordinal}`),
+            text: `Inspect item ${ordinal}.`,
+            attachments: [],
+            providerTurnOrdinal: ordinal,
+            nativeThreadHasTurns: true,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: `00000000-0000-4000-8000-00000000096${ordinal}`,
+            result: "Inspected.",
+            cumulativeCostUsd,
+          }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+        const update = harness.events.findLast((event) => event.type === "provider_turn.updated");
+        return update?.providerTurn.turnTokenUsage;
+      });
+      const first = yield* start(2, 10.25);
+      assert.equal(first?.requestCount, 1);
+      assert.isUndefined(first?.costUsd);
+      const second = yield* start(3, 10.75);
+      assert.equal(second?.requestCount, 1);
+      assert.equal(second?.costUsd, 0.5);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -12083,6 +12135,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             usageScope: "main_agent",
             usageStatus: "complete",
             hasSubagents: false,
+            requestCount: 1,
             inputTokens: 1,
             outputTokens: 1,
             cachedInputTokens: 0,
@@ -20011,6 +20064,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           subtype: "task_progress",
           task_id: TASK_ID,
           description: "Reading the last commits",
+          usage: { total_tokens: 800, tool_uses: 2, duration_ms: 1700 },
           uuid: "00000000-0000-4000-8000-000000000956",
           session_id: WAKE_NATIVE_SESSION,
         }),
@@ -20134,6 +20188,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         finalSubagent?.type === "subagent.updated" && finalSubagent.subagent.status,
         "completed",
       );
+      assert.deepEqual(finalSubagent?.subagent.usage, {
+        totalTokens: 800,
+        toolUses: 2,
+        durationMs: 1700,
+      });
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

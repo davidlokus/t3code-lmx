@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   OrchestrationV2AppThread,
   OrchestrationV2Subagent,
+  OrchestrationV2SubagentUsage,
   OrchestrationV2SubagentWorkflow,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
@@ -21,15 +22,7 @@ export type RuntimeSubagentStatus =
   | "cancelled"
   | "interrupted";
 
-export interface SubagentUsage {
-  readonly totalTokens: number;
-  readonly inputTokens?: number;
-  readonly cachedInputTokens?: number;
-  readonly outputTokens?: number;
-  readonly reasoningOutputTokens?: number;
-  readonly toolUses?: number;
-  readonly durationMs?: number;
-}
+export type SubagentUsage = OrchestrationV2SubagentUsage;
 
 export interface SubagentActivityEntry {
   readonly at: string;
@@ -220,6 +213,7 @@ export function projectedSubagentsToRuntime(
     readonly model: string | null;
     readonly status: OrchestrationV2Subagent["status"];
     readonly progress?: string | undefined;
+    readonly usage?: OrchestrationV2SubagentUsage | undefined;
     readonly childThreadId?: string | null | undefined;
     readonly workflow?: OrchestrationV2SubagentWorkflow | undefined;
     readonly result: string | null;
@@ -243,7 +237,7 @@ export function projectedSubagentsToRuntime(
       effort: null,
       status: subagent.status,
       activationCount: 1,
-      usage: workflow === undefined ? null : workflowUsage(workflow),
+      usage: subagent.usage ?? (workflow === undefined ? null : workflowUsage(workflow)),
       progress: subagent.progress ?? null,
       lastToolName: null,
       result: subagent.result,

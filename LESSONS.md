@@ -1,4 +1,4 @@
-<!-- reviewed-through: 3f26ab16ad (2026-11-25) -->
+<!-- reviewed-through: 5b29b2d651 (2026-11-26) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -132,3 +132,11 @@
 - **铁证**：Wave 3b `feat/usage-local-history-sources` Round 1 独立只读审查（`devin/swe-2-1`）对照 Magpie Go 源码（`internal/gateway/gateway.go` / `trace.go`）与软链复现探针揪出 2 CRITICAL + 2 WARNING，修复并补齐多尝试计费、跨重启碰撞、软链/断链与共享组织回归用例后通过 Round 2 `VERDICT: PASS`。
 - **代码守卫**：`apps/server/src/usage/localSources/{magpie,claudeSwap}.test.ts`。
 - **Seen**：1（2026-11-25，Wave 3b `feat/usage-local-history-sources`）
+
+## 16. 异步工具终态锁须跨回合保持，且消费 SDK 费用字段须核实累计还是单轮语义
+
+- **规则**：① 针对 Provider 异步工具的迟到进度丢弃守卫（如 `omp`/`pi` 的 `endedToolCalls` / `endedToolCallIds`），墓碑集合必须是连接或线程级且带有限容量 FIFO 淘汰，严禁在 `agent_start` / `agent_end` / `session_settled` 回合边界清空；跨回合子代理归属表仅保存轻量 ID/序号元数据，不得钉扎完整 `ActivePiTurn`。② 将 Provider SDK 的费用字段映射到每轮 `TurnTokenUsage.costUsd` 前，必须查阅真实 SDK 类型声明与运行时行为（例如 Claude Agent SDK `0.3.321` 的 `SDKResultMessage.total_cost_usd` 是跨会话/恢复的**累计估算账本**而非单轮费用），仅在具备可信基线时按单调差值归属单轮费用，缺少基线的恢复首轮必须留空而非误把历史总额算进本轮。
+- **原因**：① `omp v19.2.1` 的 `onDetachedToolUpdate` 独立于原回合发送外部事件，回合边界清空墓碑会让上一轮已结束 `task` 的迟到更新在下一轮重建永不结束的 `running` 项；② 直接把累计 `total_cost_usd` 累加到每轮 `TurnTokenUsage.costUsd` 会在多轮会话与恢复会话中二次放大总费用。
+- **铁证**：① PR #31（`feat/omp-subagent-inspector-polish`）Round 1 独立只读审查（`devin/swe-2-1`）揪出跨回合清空 `endedToolCalls` 的回归漏洞与 `ActivePiTurn` 无限钉扎，改为线程/连接级 4096 上限墓碑与 128 上限 `PiDialectSubagentOwner` 后通过 Round 2 `VERDICT: PASS`；② PR #32（`feat/composer-telemetry-popover`）核查 Claude SDK `0.3.321` 声明发现 `total_cost_usd` 为累计账本，改为可信差值计算并忽略无基线恢复首轮，经 `devin/swe-2-1` 独立审查通过。
+- **代码守卫**：`packages/provider-omp/src/server/protocol.test.ts`、`packages/provider-pi/src/server/adapter.test.ts`、`apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts`、`apps/server/src/provider/TurnTokenUsage.test.ts`。
+- **Seen**：2（2026-11-26，PR #31 与 PR #32）

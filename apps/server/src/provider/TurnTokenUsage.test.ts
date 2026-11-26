@@ -144,8 +144,8 @@ describe("billable native turn usage", () => {
           true,
           status,
           [
-            { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 },
-            { input_tokens: 5, cache_read_input_tokens: 2, output_tokens: 3 },
+            { usage: { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 } },
+            { usage: { input_tokens: 5, cache_read_input_tokens: 2, output_tokens: 3 } },
           ],
         ),
       ).toEqual({
@@ -172,7 +172,13 @@ describe("billable native turn usage", () => {
   it("retains measured thinking tokens without a final result", () => {
     expect(
       normalizeClaudeTurnTokenUsage(undefined, false, "failed", [
-        { input_tokens: 4, output_tokens: 3, output_tokens_details: { thinking_tokens: 2 } },
+        {
+          usage: {
+            input_tokens: 4,
+            output_tokens: 3,
+            output_tokens_details: { thinking_tokens: 2 },
+          },
+        },
       ]),
     ).toMatchObject({
       usageStatus: "partial",
@@ -187,8 +193,8 @@ describe("billable native turn usage", () => {
     (cache) => {
       expect(
         normalizeClaudeTurnTokenUsage(undefined, false, "failed", [
-          { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 },
-          { input_tokens: 5, cache_read_input_tokens: cache, output_tokens: 3 },
+          { usage: { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 } },
+          { usage: { input_tokens: 5, cache_read_input_tokens: cache, output_tokens: 3 } },
         ]),
       ).toMatchObject({
         usageStatus: "partial",
@@ -207,7 +213,7 @@ describe("billable native turn usage", () => {
           { subtype: "success", usage: { input_tokens: 5, output_tokens: 3, [field]: -1 } },
           false,
           "completed",
-          [{ input_tokens: 100, output_tokens: 20, [field]: 40 }],
+          [{ usage: { input_tokens: 100, output_tokens: 20, [field]: 40 } }],
         ),
       ).toMatchObject({ usageStatus: "partial", inputTokens: 145, outputTokens: 23 });
     },
@@ -222,14 +228,45 @@ describe("billable native turn usage", () => {
     expect(claudeModelLedger({})).toBeUndefined();
   });
 
-  it("adds Claude steering segments to the final measured result once", () => {
+  it("adds Claude steering usage and measured costs once", () => {
     expect(
       normalizeClaudeTurnTokenUsage(
-        { subtype: "success", usage: { input_tokens: 5, output_tokens: 3 } },
+        {
+          subtype: "success",
+          num_turns: 2,
+          costUsd: 0.25,
+          usage: { input_tokens: 5, output_tokens: 3 },
+        },
         false,
         "completed",
-        [{ input_tokens: 4, output_tokens: 2 }],
+        [{ num_turns: 1, costUsd: 0.125, usage: { input_tokens: 4, output_tokens: 2 } }],
       ),
-    ).toMatchObject({ usageStatus: "complete", inputTokens: 9, outputTokens: 5 });
+    ).toMatchObject({
+      usageStatus: "complete",
+      inputTokens: 9,
+      outputTokens: 5,
+      requestCount: 3,
+      costUsd: 0.375,
+    });
+  });
+
+  it("does not price a turn from an unknown cost segment or count local commands as requests", () => {
+    const local = normalizeClaudeTurnTokenUsage(
+      { subtype: "success", num_turns: 1, local_command: "rename", costUsd: 0 },
+      false,
+      "completed",
+    );
+    expect(local.localCommand).toBe(true);
+    expect(local.requestCount).toBeUndefined();
+    expect(local.costUsd).toBeUndefined();
+
+    const steered = normalizeClaudeTurnTokenUsage(
+      { subtype: "success", num_turns: 2, costUsd: 0.25 },
+      true,
+      "completed",
+      [{ num_turns: 1 }, { num_turns: 0, costUsd: 0 }],
+    );
+    expect(steered.requestCount).toBe(3);
+    expect(steered.costUsd).toBeUndefined();
   });
 });

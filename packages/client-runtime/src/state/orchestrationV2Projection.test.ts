@@ -4,10 +4,12 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   NodeId,
   ProviderThreadId,
@@ -172,6 +174,56 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
 
     expect(next?.providerTurns[0]?.status).toBe("completed");
     expect(next?.providerTurns[0]?.tokenUsage).toEqual(running.tokenUsage);
+  });
+
+  it("restores subagent bodies without erasing usage on sparse lifecycle updates", () => {
+    const current = {
+      id: NodeId.make("subagent"),
+      threadId,
+      runId,
+      parentNodeId: NodeId.make("root"),
+      origin: "provider_native",
+      createdBy: "agent",
+      driver: ProviderDriverKind.make("omp"),
+      providerInstanceId: ProviderInstanceId.make("omp"),
+      providerThreadId: null,
+      childThreadId: null,
+      nativeTaskRef: null,
+      prompt: "Investigate",
+      title: null,
+      model: null,
+      status: "running",
+      usage: { totalTokens: 190, requests: 2 },
+      result: null,
+      startedAt: now,
+      completedAt: null,
+      updatedAt: now,
+    } satisfies OrchestrationV2Subagent;
+    const projection = { ...emptyProjection, subagents: [current] };
+    const { usage, ...withoutUsage } = current;
+    const completed = {
+      ...withoutUsage,
+      status: "completed",
+      result: "Done",
+      prompt: "",
+      promptOmitted: true,
+      completedAt: now,
+    } satisfies OrchestrationV2Subagent;
+    const event = {
+      id: "subagent-completed" as OrchestrationV2DomainEvent["id"],
+      type: "subagent.updated",
+      threadId,
+      occurredAt: now,
+      payload: completed,
+    } satisfies OrchestrationV2DomainEvent;
+
+    const next = applyOrchestrationV2ProjectionEvent(projection, event);
+    expect(next?.subagents[0]).toMatchObject({ prompt: current.prompt, result: "Done", usage });
+    const enriched = applyOrchestrationV2ProjectionEvent(next, {
+      ...event,
+      payload: { ...completed, usage: { totalTokens: 0, requests: 3, toolUses: 0 } },
+    });
+    expect(enriched?.subagents[0]?.usage).toEqual({ totalTokens: 190, requests: 3, toolUses: 0 });
   });
 
   it("applies thread lifecycle payloads instead of leaving stale metadata", () => {

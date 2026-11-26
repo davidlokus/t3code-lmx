@@ -792,13 +792,24 @@ describe("OmpAdapterV2", () => {
         payload: {
           ...payload,
           task: "Find schema",
-          progress: { id: "Scout", status: "running", lastIntent: "Inspecting schema" },
+          progress: {
+            id: "Scout",
+            status: "running",
+            lastIntent: "Inspecting schema",
+            tokens: 2400,
+            requests: 2,
+            cost: 0.015,
+            resolvedModel: "vendor/served-model",
+          },
         },
       });
       const running = yield* takeEvent((event) => event.type === "subagent.updated");
       if (running.type !== "subagent.updated") return assert.fail("expected subagent progress");
       assert.equal(running.subagent.id, started.subagent.id);
       assert.equal(running.subagent.progress, "Inspecting schema");
+      const usage = { totalTokens: 2400, requests: 2, costUsd: 0.015 };
+      assert.deepEqual(running.subagent.usage, usage);
+      assert.equal(running.subagent.model, "vendor/served-model");
       const streamed = yield* takeEvent(
         (event) =>
           event.type === "turn_item.updated" &&
@@ -840,6 +851,8 @@ describe("OmpAdapterV2", () => {
         return assert.fail("expected final subagent state");
       assert.equal(completed.subagent.id, started.subagent.id);
       assert.equal(completed.subagent.status, "completed");
+      assert.deepEqual(completed.subagent.usage, usage);
+      assert.equal(completed.subagent.model, "vendor/served-model");
       const finished = yield* takeEvent(
         (event) =>
           event.type === "turn_item.updated" &&
@@ -1468,6 +1481,15 @@ describe("OmpAdapterV2", () => {
           currency: "USD",
         });
         assert.equal(completed.providerTurn.tokenUsage?.reasoningOutputTokens, 9);
+        assert.deepInclude(completed.providerTurn.turnTokenUsage, {
+          inputTokens: 29728,
+          cachedInputTokens: 1200,
+          cacheCreationTokens: 0,
+          outputTokens: 210,
+          reasoningTokens: 9,
+          requestCount: 1,
+          costUsd: 0.073945,
+        });
 
         // Unpriced zero-cost sessions omit `cost` so clients do not render misleading $0.00.
         const zeroFake = yield* makeFakeOmp({
@@ -1507,6 +1529,7 @@ describe("OmpAdapterV2", () => {
         if (zeroCompleted.type !== "provider_turn.updated")
           return assert.fail("expected zero-cost completed turn");
         assert.isUndefined(zeroCompleted.providerTurn.tokenUsage?.cost);
+        assert.isUndefined(zeroCompleted.providerTurn.turnTokenUsage?.costUsd);
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 });

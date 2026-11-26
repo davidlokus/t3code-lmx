@@ -75,6 +75,7 @@ import {
   OrchestrationV2SubagentJson as OrchestrationV2SubagentJsonSchema,
   OrchestrationV2TurnItemJson as OrchestrationV2TurnItemJsonSchema,
   orchestrationV2RunWorkStartedAt,
+  preserveOrchestrationV2SubagentUsage,
   RunId,
   MessageId,
   RuntimeRequestId,
@@ -1002,14 +1003,15 @@ function preserveRunRecordedFields(
   };
 }
 
-function preserveCompletionDelivery(
+function mergeSubagentUpdate(
   current: OrchestrationV2Subagent | undefined,
   next: OrchestrationV2Subagent,
 ): OrchestrationV2Subagent {
-  if (next.completionDelivery !== undefined || current?.completionDelivery === undefined) {
-    return next;
-  }
-  return { ...next, completionDelivery: current.completionDelivery };
+  const completionDelivery = next.completionDelivery ?? current?.completionDelivery;
+  const usage = preserveOrchestrationV2SubagentUsage(current?.usage, next.usage);
+  return completionDelivery === next.completionDelivery && usage === next.usage
+    ? next
+    : { ...next, completionDelivery, usage };
 }
 
 export function emptyProjection(
@@ -1146,7 +1148,7 @@ export function applyToProjection(
         ...base,
         subagents: upsertById(
           base.subagents,
-          preserveCompletionDelivery(
+          mergeSubagentUpdate(
             base.subagents.find((task) => task.id === event.payload.id),
             event.payload,
           ),
@@ -2853,19 +2855,35 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   excluded.completion_delivery_state,
                   orchestration_v2_projection_subagents.completion_delivery_state
                 ),
-                payload_json = CASE
-                  WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
-                    AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
-                  THEN json_set(
-                    excluded.payload_json,
-                    '$.completionDelivery',
-                    json_extract(
-                      orchestration_v2_projection_subagents.payload_json,
-                      '$.completionDelivery'
+                payload_json = json_patch(
+                  CASE
+                    WHEN json_type(excluded.payload_json, '$.completionDelivery') IS NULL
+                      AND json_type(orchestration_v2_projection_subagents.payload_json, '$.completionDelivery') IS NOT NULL
+                    THEN json_set(
+                      excluded.payload_json,
+                      '$.completionDelivery',
+                      json_extract(
+                        orchestration_v2_projection_subagents.payload_json,
+                        '$.completionDelivery'
+                      )
                     )
-                  )
-                  ELSE excluded.payload_json
-                END
+                    ELSE excluded.payload_json
+                  END,
+                  CASE
+                    WHEN json_type(orchestration_v2_projection_subagents.payload_json, '$.usage') IS NOT NULL
+                    THEN json_object('usage', json_patch(
+                      json_extract(orchestration_v2_projection_subagents.payload_json, '$.usage'),
+                      (
+                        SELECT json_group_object(key, value)
+                        FROM json_each(excluded.payload_json, '$.usage')
+                        WHERE value > 0 OR json_type(
+                          orchestration_v2_projection_subagents.payload_json, '$.usage.' || key
+                        ) IS NULL
+                      )
+                    ))
+                    ELSE '{}'
+                  END
+                )
             `;
               break;
             }

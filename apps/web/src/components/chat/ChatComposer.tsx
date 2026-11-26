@@ -15,6 +15,9 @@ import {
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useRightPanelStore } from "~/rightPanelStore";
+// fork: T3 Lab composer footer context/session telemetry ring + popover
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { ComposerTelemetryControl } from "~/fork/telemetry/ComposerTelemetryControl";
 import { importPastedComposerText, readPastedComposerContext } from "../composerInlineTokenPaste";
 import {
   questionAttachmentDraftId,
@@ -439,6 +442,9 @@ export interface ChatComposerProps {
 
   compactThreadUnavailable: boolean;
   compactDisabled: boolean;
+  // fork: optional live context window snapshot and compact tooltip for composer telemetry popover
+  composerTelemetryContextWindow?: ContextWindowSnapshot | null;
+  composerCompactDisabledReason?: string | null;
 
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -572,6 +578,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectName,
     compactThreadUnavailable,
     compactDisabled,
+    composerTelemetryContextWindow = null,
+    composerCompactDisabledReason = null,
     resolvedTheme,
     settings,
     keybindings,
@@ -4079,6 +4087,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {composerControls}
                   </div>
+                  {/* fork: toggleable composer context/session telemetry ring */}
+                  {routeKind === "server" && !dictationTakesFooter ? (
+                    <ComposerTelemetryControl
+                      threadRef={routeThreadRef}
+                      requestedModel={selectedModel}
+                      contextWindow={composerTelemetryContextWindow}
+                      compactContext={{
+                        onCompact: props.onCompactContext,
+                        disabled: compactDisabled,
+                        disabledReason: composerCompactDisabledReason,
+                      }}
+                      size={composerControlsCollapsed ? "xs" : "sm"}
+                      hidden={composerMenusClosed}
+                    />
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     // Stop state belongs to one thread; the composer stays mounted across threads.
                     key={`${environmentId}:${activeThreadId ?? "new"}`}

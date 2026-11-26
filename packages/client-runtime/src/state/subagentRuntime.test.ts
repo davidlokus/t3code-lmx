@@ -51,6 +51,12 @@ const member = (
 const groupsOf = (subagents: ReadonlyArray<ProjectedSubagent>) =>
   deriveWorkflowGroups(projectedSubagentsToRuntime(subagents));
 
+it("exposes partial provider-native usage without fabricating a token total", () => {
+  const usage = { contextTokens: 2_000, contextWindow: 64_000, requests: 2, costUsd: 0.01 };
+  const [agent] = projectedSubagentsToRuntime([subagent({ usage })]);
+  expect(agent?.usage).toEqual(usage);
+});
+
 describe("projectedSubagentsToRuntime workflow expansion", () => {
   it("uses a settled member's wall-clock completion separately from its execution duration", () => {
     const [, settled] = projectedSubagentsToRuntime([

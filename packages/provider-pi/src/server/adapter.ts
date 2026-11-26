@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   OrchestrationV2PlanStep,
   OrchestrationV2Subagent,
+  OrchestrationV2SubagentUsage,
   OrchestrationV2UserInputQuestion,
   type ChatAttachment,
   type ModelSelection,
@@ -27,6 +28,7 @@ import {
   type ProviderInstanceId,
   type MessageId,
   type OrchestrationV2ProviderTurnTokenUsage,
+  type TurnTokenUsage,
 } from "@t3tools/contracts";
 import { PiSettings } from "../settings.ts";
 import * as Cause from "effect/Cause";
@@ -122,6 +124,7 @@ const isDialectSubagentTask = Schema.is(
     result: Schema.NullOr(Schema.String),
   }),
 );
+const isDialectSubagentUsage = Schema.is(OrchestrationV2SubagentUsage);
 
 export const PiProviderCapabilitiesV2 = {
   runtimePolicy: { enforcement: "client-boundary" },
@@ -411,7 +414,8 @@ interface ActivePiTurn {
   latestCompactionAfterTokens: number | null;
   lastLiveUsedTokens: number | null;
   lastLiveCostUsd: number; // fork:
-  completedTurnCostUsd: number; // fork:
+  turnTokenUsage: TurnTokenUsage | undefined; // fork:
+  hasSubagents: boolean; // fork:
   currentMessageCostUsd: number; // fork:
   lastMessageUsage: PiMessageTokenUsage | undefined;
   settleProbeGeneration: number;
@@ -429,6 +433,25 @@ interface ActivePiTurn {
   stopTreeRefs?: PiTurnTreeRefs | null;
   /** The provider/model Pi reported on its latest assistant message. */
   reportedModel?: string;
+}
+
+function piTurnUsageFields(turn: ActivePiTurn) {
+  const { turnTokenUsage, reportedModel, hasSubagents } = turn;
+  return {
+    ...(turnTokenUsage === undefined
+      ? {}
+      : {
+          turnTokenUsage:
+            turnTokenUsage.hasSubagents === hasSubagents
+              ? turnTokenUsage
+              : { ...turnTokenUsage, hasSubagents },
+        }),
+    ...(reportedModel === undefined ? {} : { model: reportedModel }),
+  };
+}
+
+function addKnownTokens(before: number | undefined, next: number | undefined) {
+  return next === undefined ? before : (before ?? 0) + next;
 }
 
 interface PiTurnTreeRefs {
@@ -803,7 +826,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       let baselineModel: { provider: string; modelId: string } | null = null;
       let baselineThinking: string | null = null;
       let contextWindow: number | null = null;
-      let baselineSessionCostUsd = 0; // fork:
+      let baselineSessionCostUsd: number | null = 0; // fork:
+      let reportedSessionCostUsd = 0;
       const modelContextWindows = new Map<string, number>();
       let discoveredModels: ReadonlyArray<unknown> | null = null;
       let nextPromptId = 0;
@@ -1066,6 +1090,64 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         };
       };
 
+      const recordAssistantUsage = (turn: ActivePiTurn, message: unknown) => {
+        const usage = recordField(message, "usage");
+        const messageUsage = piMessageTokenUsage(usage);
+        const previous = turn.turnTokenUsage;
+        const inputTokens = addKnownTokens(previous?.inputTokens, messageUsage.inputTokens);
+        const outputTokens = addKnownTokens(previous?.outputTokens, messageUsage.outputTokens);
+        const cachedInputTokens = addKnownTokens(
+          previous?.cachedInputTokens,
+          messageUsage.cachedInputTokens,
+        );
+        const cacheCreationTokens = addKnownTokens(
+          previous?.cacheCreationTokens,
+          nonNegativeInteger(usage, "cacheWrite"),
+        );
+        const reasoningTokens = addKnownTokens(
+          previous?.reasoningTokens,
+          messageUsage.reasoningOutputTokens,
+        );
+        const finalCostUsd = recordNumber(recordField(usage, "cost"), "total");
+        const costUsd =
+          (previous?.costUsd ?? 0) +
+          (finalCostUsd !== undefined && finalCostUsd >= 0
+            ? finalCostUsd
+            : turn.currentMessageCostUsd);
+        turn.currentMessageCostUsd = 0;
+        let models = previous?.models;
+        const provider = recordString(message, "provider")?.trim();
+        const model = recordString(message, "model")?.trim();
+        if (provider && model) {
+          const reportedModel = `${provider}/${model}`;
+          turn.reportedModel = reportedModel;
+          if (!models?.includes(reportedModel)) models = [...(models ?? []), reportedModel];
+        }
+        const fields = {
+          usageScope: "main_agent" as const,
+          hasSubagents: turn.hasSubagents,
+          requestCount: (previous?.requestCount ?? 0) + 1,
+          ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+          ...(cacheCreationTokens === undefined ? {} : { cacheCreationTokens }),
+          ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+          ...(costUsd > 0 ? { costUsd } : {}),
+          ...(models === undefined ? {} : { models }),
+        };
+        turn.turnTokenUsage =
+          (previous === undefined || previous.usageStatus === "complete") &&
+          messageUsage.inputTokens !== undefined &&
+          messageUsage.outputTokens !== undefined &&
+          inputTokens !== undefined &&
+          outputTokens !== undefined
+            ? { ...fields, usageStatus: "complete", inputTokens, outputTokens }
+            : {
+                ...fields,
+                usageStatus: "partial",
+                ...(inputTokens === undefined ? {} : { inputTokens }),
+                ...(outputTokens === undefined ? {} : { outputTokens }),
+              };
+      };
+
       const rememberModelContextWindow = (model: unknown): number | null => {
         const provider = recordString(model, "provider");
         const id = recordString(model, "id");
@@ -1157,20 +1239,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         stats: unknown,
         fallbackUsedTokens: number | null,
         messageUsage: PiMessageTokenUsage | undefined,
-        fallbackSessionCostUsd: number,
+        sessionCostUsd: number,
         updatedAt: DateTime.Utc,
       ): OrchestrationV2ProviderTurnTokenUsage | undefined => {
         const contextUsage = recordField(stats, "contextUsage");
         const maxTokens = nonNegativeInteger(contextUsage, "contextWindow");
         const usedTokens =
           nonNegativeInteger(contextUsage, "tokens") ?? fallbackUsedTokens ?? undefined;
-        // fork: preserve authoritative whole-session USD cost when positive; omit zero/unpriced cost
-        const statsCostUsd = positiveFiniteNumber(stats, "cost");
-        const resolvedCostUsd = statsCostUsd ?? fallbackSessionCostUsd;
-        if (resolvedCostUsd > 0) {
-          baselineSessionCostUsd = resolvedCostUsd;
-        }
-        const cost = piUsdCost(resolvedCostUsd);
+        const cost = piUsdCost(sessionCostUsd);
         if (usedTokens === undefined || maxTokens === undefined || maxTokens === 0)
           return undefined;
         // Stats `tokens` are whole-session totals; the breakdown comes from the turn's last message.
@@ -1183,18 +1259,33 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         };
       };
 
-      const readTokenUsage = (turn: ActivePiTurn, updatedAt: DateTime.Utc) =>
-        request({ type: "get_session_stats" }, 2_000).pipe(
-          Effect.map((stats) =>
-            tokenUsageFromStats(
+      const readTokenUsage = (turn: ActivePiTurn, updatedAt: DateTime.Utc, readUsage: boolean) =>
+        (readUsage
+          ? request({ type: "get_session_stats" }, 2_000).pipe(
+              Effect.orElseSucceed(() => undefined),
+            )
+          : Effect.undefined
+        ).pipe(
+          Effect.map((stats) => {
+            const statsCostUsd = recordNumber(stats, "cost");
+            const fallback =
+              baselineSessionCostUsd === null
+                ? null
+                : baselineSessionCostUsd + (turn.turnTokenUsage?.costUsd ?? 0);
+            // Stats are an absolute session ledger, not another amount to add to this turn.
+            baselineSessionCostUsd =
+              statsCostUsd !== undefined && statsCostUsd >= 0
+                ? Math.max(statsCostUsd, fallback ?? 0)
+                : fallback;
+            reportedSessionCostUsd = Math.max(reportedSessionCostUsd, baselineSessionCostUsd ?? 0);
+            return tokenUsageFromStats(
               stats,
               turn.latestCompactionAfterTokens,
               turn.lastMessageUsage,
-              baselineSessionCostUsd + turn.completedTurnCostUsd + turn.currentMessageCostUsd,
+              reportedSessionCostUsd,
               updatedAt,
-            ),
-          ),
-          Effect.orElseSucceed(() => undefined),
+            );
+          }),
         );
 
       /**
@@ -1213,7 +1304,14 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             turn.currentMessageCostUsd = messageCostUsd;
           }
           const liveCostUsd =
-            baselineSessionCostUsd + turn.completedTurnCostUsd + turn.currentMessageCostUsd;
+            baselineSessionCostUsd === null
+              ? reportedSessionCostUsd
+              : Math.max(
+                  reportedSessionCostUsd,
+                  baselineSessionCostUsd +
+                    (turn.turnTokenUsage?.costUsd ?? 0) +
+                    turn.currentMessageCostUsd,
+                );
           if (
             usedTokens === undefined ||
             usedTokens === 0 ||
@@ -1225,6 +1323,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           }
           turn.lastLiveUsedTokens = usedTokens;
           turn.lastLiveCostUsd = liveCostUsd;
+          reportedSessionCostUsd = liveCostUsd;
           const cost = piUsdCost(liveCostUsd);
           const updatedAt = yield* DateTime.now;
           yield* emit({
@@ -1233,6 +1332,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             threadId: turn.turnInput.threadId,
             providerTurn: {
               ...turn.providerTurn,
+              ...piTurnUsageFields(turn),
               tokenUsage: {
                 usedTokens,
                 maxTokens: contextWindow,
@@ -1689,6 +1789,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           const task = recordString(result, "task");
           if (agent === undefined || task === undefined) continue;
           emitted = true;
+          turn.hasSubagents = true;
           const finished = completed || recordField(result, "finished") === true;
           const stopReason = recordString(result, "stopReason");
           const interrupted = finished && stopReason === "aborted";
@@ -1715,6 +1816,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         // Async launches return no results; their members arrive in the subagent-async widget.
         const asyncId = recordString(details, "asyncId");
         if (!emitted && asyncId !== undefined && !piAsyncRuns.has(asyncId)) {
+          turn.hasSubagents = true;
           const tracked = { turn, toolCallId, emitted: new Map<string, string>() };
           piAsyncRuns.set(asyncId, tracked);
           // Keeps the run ingesting after the coordinator's turn ends, until the run settles.
@@ -1762,6 +1864,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           : null;
         if (completedAt !== null) turn.subagentCompletedAt.set(nativeTaskId, completedAt);
         const title = task.title ?? task.agent;
+        const usage = recordField(task, "usage");
         const progress = task.progress === undefined ? {} : { progress: task.progress };
         yield* emit({
           type: "subagent.updated",
@@ -1783,6 +1886,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             model: task.model,
             status: task.status,
             ...progress,
+            ...(isDialectSubagentUsage(usage) ? { usage } : {}),
             result: task.result,
             startedAt,
             completedAt,
@@ -2314,7 +2418,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         }
         const treeRefs =
           turn.stopTreeRefs !== undefined ? turn.stopTreeRefs : yield* captureTurnTreeRefs();
-        const tokenUsage = readUsage ? yield* readTokenUsage(turn, completedAt) : undefined;
+        const tokenUsage = yield* readTokenUsage(turn, completedAt, readUsage);
         const failure = interrupted ? null : (turn.rejectedPromptFailure ?? turn.failure);
         yield* emit({
           type: "provider_turn.updated",
@@ -2331,7 +2435,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
             completedAt,
             ...(tokenUsage === undefined ? {} : { tokenUsage }),
-            ...(turn.reportedModel === undefined ? {} : { model: turn.reportedModel }),
+            ...piTurnUsageFields(turn),
           },
         });
         yield* updateProviderThread(
@@ -2417,6 +2521,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           nativeThreadRef: providerRef(sessionFile),
         };
         lastNativeThreadId = sessionFile;
+        baselineSessionCostUsd = null;
+        reportedSessionCostUsd = 0;
       };
 
       const scheduleSettleProbe = (
@@ -2554,6 +2660,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (turn !== null && role === "assistant") {
               turn.sawAgentActivity = true;
               turn.messageOrdinal += 1;
+              turn.currentMessageCostUsd = 0;
             }
             const readSteer = role === "user" ? turn?.unreadSteers.shift() : undefined;
             if (turn !== null && readSteer !== undefined) {
@@ -2610,15 +2717,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const message = event["message"];
             if (recordString(message, "role") !== "assistant") return;
             yield* completeOpenStreamItems(turn);
-            // fork: fold completed assistant message cost into the running turn total
-            const completedMessageCost = piMessageCostUsd(recordField(message, "usage"));
-            turn.completedTurnCostUsd += completedMessageCost ?? turn.currentMessageCostUsd;
-            turn.currentMessageCostUsd = 0;
-            const reportedProvider = recordString(message, "provider");
-            const reportedModelId = recordString(message, "model");
-            if (reportedProvider && reportedModelId) {
-              turn.reportedModel = `${reportedProvider}/${reportedModelId}`;
-            }
+            recordAssistantUsage(turn, message);
+            yield* emit({
+              type: "provider_turn.updated",
+              driver: PI_PROVIDER,
+              threadId: turn.turnInput.threadId,
+              providerTurn: { ...turn.providerTurn, ...piTurnUsageFields(turn) },
+            });
             if (recordString(message, "stopReason") === "error" && turn.failure === null) {
               turn.failure = makeProviderFailure({
                 message: recordString(message, "errorMessage") ?? "Pi reported a model error.",
@@ -2668,6 +2773,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             }
             if (owner !== null && owner !== undefined) {
               if (turn !== null && turn.providerTurn.id === owner.providerTurn.id) {
+                turn.hasSubagents = true;
                 const nativeTaskId = `${toolCallId}:subagent:${taskKey}`;
                 if (!owner.itemOrdinals.has(nativeTaskId)) {
                   owner.itemOrdinals.set(nativeTaskId, itemOrdinal(turn, nativeTaskId));
@@ -3443,7 +3549,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             baselineModel = null;
             baselineThinking = null;
             contextWindow = null;
-            baselineSessionCostUsd = 0; // fork:
+            baselineSessionCostUsd = resumeId == null ? 0 : null; // fork:
+            reportedSessionCostUsd = 0;
             const result =
               resumeId != null && existing !== undefined
                 ? yield* reportingResume(
@@ -3482,6 +3589,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           if (needsNewSession && nativeId === lastNativeThreadId) {
             return yield* protocolError("Pi did not create a distinct session file");
           }
+          if (threadState === null && resumeId != null) baselineSessionCostUsd = null;
           lastNativeThreadId = nativeId;
           const createdAt = yield* DateTime.now;
           const providerThread: OrchestrationV2ProviderThread =
@@ -3841,7 +3949,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               latestCompactionAfterTokens: null,
               lastLiveUsedTokens: null,
               lastLiveCostUsd: 0, // fork:
-              completedTurnCostUsd: 0, // fork:
+              turnTokenUsage: undefined, // fork:
+              hasSubagents: false, // fork:
               currentMessageCostUsd: 0, // fork:
               lastMessageUsage: undefined,
               settleProbeGeneration: 0,
@@ -4352,6 +4461,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                           "Pi rollback ownership changed during its fork",
                         );
                       lastNativeThreadId = forkSessionFile;
+                      baselineSessionCostUsd = null;
+                      reportedSessionCostUsd = 0;
                       appliedModel = null;
                       appliedThinking = null;
                       appliedSessionName = null;

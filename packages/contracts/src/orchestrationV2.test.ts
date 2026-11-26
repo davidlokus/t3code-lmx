@@ -27,6 +27,7 @@ import {
   OrchestrationV2TurnItemJson,
   withMessageSenderNote,
 } from "./orchestrationV2.ts";
+import { TurnTokenUsage } from "./providerRuntime.ts";
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
@@ -363,6 +364,7 @@ describe("orchestration V2 contracts", () => {
           completedAt: null,
           updatedAt: now,
         }),
+        usage: { totalTokens: 120, durationMs: 800, costUsd: 0.004 },
         workflow: {
           phases: [],
           agents: [
@@ -379,8 +381,8 @@ describe("orchestration V2 contracts", () => {
           ],
         },
       };
-      const { workflow, ...coordinator } = subagent;
-      const incoming = { ...encodeOrchestrationV2SubagentJson(coordinator), workflow };
+      const { usage, workflow, ...coordinator } = subagent;
+      const legacy = { ...encodeOrchestrationV2SubagentJson(coordinator), workflow };
       for (const codec of [
         OrchestrationV2SubagentJson,
         Schema.toCodecJson(OrchestrationV2Subagent),
@@ -389,8 +391,10 @@ describe("orchestration V2 contracts", () => {
         const decode = Schema.decodeUnknownSync(codec);
         const json: unknown = JSON.parse(JSON.stringify(encode(subagent)));
         expect(json).toMatchObject({
+          usage,
           workflow: { agents: [{ prompt: preview, result: preview }] },
         });
+        expect(decode(json).usage).toEqual(usage);
         expect(decode(json).workflow?.agents[0]).toMatchObject({
           prompt: preview,
           result: preview,
@@ -398,7 +402,8 @@ describe("orchestration V2 contracts", () => {
           effort: "xhigh",
           speed: "standard",
         });
-        expect(decode(incoming).workflow?.agents[0]).toMatchObject({
+        expect(decode(legacy).usage).toBeUndefined();
+        expect(decode(legacy).workflow?.agents[0]).toMatchObject({
           prompt: preview,
           result: preview,
           model: "claude-opus-5[1m]",
@@ -408,6 +413,25 @@ describe("orchestration V2 contracts", () => {
       }
     },
   );
+
+  it("accepts legacy turn usage and validates optional request counts and USD cost", () => {
+    const decode = Schema.decodeUnknownSync(Schema.toCodecJson(TurnTokenUsage));
+    const legacy = {
+      usageStatus: "complete",
+      usageScope: "main_agent",
+      hasSubagents: false,
+      inputTokens: 40,
+      outputTokens: 12,
+    };
+    expect(decode(legacy)).toEqual(legacy);
+    const withCost = { ...legacy, requestCount: 2, costUsd: 0.014 };
+    expect(decode(withCost)).toEqual(withCost);
+    expect(decode({ ...withCost, costUsd: 0 }).costUsd).toBe(0);
+    expect(() => decode({ ...withCost, requestCount: 0 })).toThrow();
+    expect(() => decode({ ...withCost, requestCount: 1.5 })).toThrow();
+    expect(() => decode({ ...withCost, costUsd: -0.01 })).toThrow();
+    expect(() => decode({ ...withCost, costUsd: Infinity })).toThrow();
+  });
 
   it.each([" leading.ts", "src/trailing.ts "])(
     "decodes the checkpoint file path %j exactly",

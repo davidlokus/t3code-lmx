@@ -3,6 +3,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 export const HUD_OPTIONS_STORAGE_KEY = "t3lab:hud-ui:v1";
 
 export type HudCardVisibilityKey =
+  | "showComposerRing"
   | "showContext"
   | "showSession"
   | "showQuota"
@@ -10,6 +11,7 @@ export type HudCardVisibilityKey =
   | "showSystem";
 
 export interface HudUiOptions {
+  readonly showComposerRing: boolean;
   readonly showContext: boolean;
   readonly showSession: boolean;
   readonly showQuota: boolean;
@@ -27,6 +29,7 @@ export interface HudOptionsStoreState extends HudUiOptions {
 }
 
 const DEFAULT_HUD_UI_OPTIONS: HudUiOptions = {
+  showComposerRing: true,
   showContext: true,
   showSession: true,
   showQuota: true,
@@ -47,6 +50,7 @@ function readBooleanOption(raw: Record<string, unknown>, key: keyof HudUiOptions
 export function parseHudUiOptions(raw: unknown): HudUiOptions {
   if (!isOptionsObject(raw)) return DEFAULT_HUD_UI_OPTIONS;
   return {
+    showComposerRing: readBooleanOption(raw, "showComposerRing"),
     showContext: readBooleanOption(raw, "showContext"),
     showSession: readBooleanOption(raw, "showSession"),
     showQuota: readBooleanOption(raw, "showQuota"),
@@ -81,8 +85,12 @@ function writePersistedHudUiOptions(options: HudUiOptions): void {
   }
 }
 
-export function isDefaultHudUiOptions(options: HudUiOptions): boolean {
+export function isDefaultHudUiOptions(
+  options: Omit<HudUiOptions, "showComposerRing"> & Partial<Pick<HudUiOptions, "showComposerRing">>,
+): boolean {
   return (
+    (options.showComposerRing ?? DEFAULT_HUD_UI_OPTIONS.showComposerRing) ===
+      DEFAULT_HUD_UI_OPTIONS.showComposerRing &&
     options.showContext === DEFAULT_HUD_UI_OPTIONS.showContext &&
     options.showSession === DEFAULT_HUD_UI_OPTIONS.showSession &&
     options.showQuota === DEFAULT_HUD_UI_OPTIONS.showQuota &&
