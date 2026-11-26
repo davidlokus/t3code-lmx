@@ -718,3 +718,112 @@ describe("omp session headers", () => {
     expect(readOmpSessionCwd(['{"type":"session","cwd":"  "}'])).toBeUndefined();
   });
 });
+
+describe("omp orchestration routing", () => {
+  const ask = {
+    type: "extension_ui_request",
+    id: "dialog",
+    method: "ask",
+    timeout: 3_000,
+    questions: [{ id: "db", question: "Which database?", options: [{ label: "SQLite" }] }],
+  };
+  const form = {
+    type: "extension_ui_request",
+    id: "dialog",
+    method: "form",
+    html: "<form><label><input name=trace type=checkbox>Trace</label></form>",
+  };
+  const reply = { type: "extension_ui_response", id: "dialog" };
+
+  it("keeps raw task results alongside the native subagent rows", () => {
+    const translator = makeOmpTranslator();
+    const task = {
+      type: "tool_execution_end",
+      toolName: "task",
+      toolCallId: "parent-call",
+      result: {
+        details: {
+          results: [
+            { id: "Scout", agent: "explore", task: "Read schema", exitCode: 0, output: "Found it" },
+          ],
+        },
+      },
+    };
+    expect(translator.fromOmp(task)).toMatchObject({
+      replies: [],
+      frames: [
+        task,
+        {
+          type: "t3.subagent_update",
+          taskKey: "Scout",
+          toolCallId: "parent-call",
+          task: { status: "completed", result: "Found it" },
+        },
+      ],
+    });
+    expect(translator.fromOmp(task)).toEqual({ replies: [], frames: [task] });
+  });
+
+  it.each([
+    [ask, { answers: { db: "SQLite" } }],
+    [form, { answers: { trace: ["on"] } }],
+    [{ ...approvalRequest, id: "dialog" }, { confirmed: true }],
+  ])("clears a $method descriptor when upstream cancels it", (request, answer) => {
+    const translator = makeOmpTranslator();
+    const cancel = {
+      type: "extension_ui_request",
+      id: "cancel-1",
+      method: "cancel",
+      targetId: "dialog",
+    };
+    expect(translator.fromOmp(request).frames[0]).toMatchObject({ id: "dialog" });
+    expect(translator.fromOmp(cancel)).toEqual({ frames: [cancel], replies: [] });
+    expect(translator.toOmp({ ...reply, ...answer })).toEqual({ ...reply, ...answer });
+    expect(translator.fromOmp(request).replies).toEqual([]);
+  });
+
+  it("cancels malformed requests, and withdraws a pending prompt on a duplicate ID", () => {
+    const translator = makeOmpTranslator();
+    const cancelled = { ...reply, cancelled: true };
+    const notice = { type: "extension_ui_request", method: "notify", notifyType: "error" };
+    for (const malformed of [
+      { ...ask, questions: [] },
+      { ...form, html: "<form><input type=file name=upload></form>" },
+    ]) {
+      expect(translator.fromOmp(malformed)).toMatchObject({
+        frames: [notice],
+        replies: [cancelled],
+      });
+    }
+    expect(translator.fromOmp(ask)).toMatchObject({
+      frames: [{ method: "ask", id: "dialog", timeout: 3_000, questions: [{ id: "db" }] }],
+      replies: [],
+    });
+    expect(translator.fromOmp(form)).toMatchObject({
+      frames: [{ method: "cancel", targetId: "dialog" }, notice],
+      replies: [cancelled],
+    });
+    expect(translator.fromOmp(form).frames[0]).toMatchObject({
+      method: "ask",
+      questions: [{ id: "trace" }],
+    });
+    expect(translator.toOmp({ ...reply, answers: { trace: ["on"] } })).toEqual({
+      ...reply,
+      data: { trace: "on" },
+    });
+  });
+
+  it("warns once for an invalid reply while explicit cancellation stays silent", () => {
+    const translator = makeOmpTranslator();
+    const cancelled = { ...reply, cancelled: true };
+    translator.fromOmp(ask);
+    const invalid = { ...reply, answers: { db: ["SQLite", "custom"] } };
+    expect(translator.toOmp(invalid)).toEqual(cancelled);
+    expect(translator.takeNotices()).toMatchObject([{ method: "notify", notifyType: "warning" }]);
+    expect(translator.toOmp(invalid)).toEqual(invalid);
+    expect(translator.takeNotices()).toEqual([]);
+    translator.fromOmp(form);
+    expect(translator.toOmp(cancelled)).toEqual(cancelled);
+    expect(translator.takeNotices()).toEqual([]);
+  });
+});

@@ -764,6 +764,271 @@ describe("OmpAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect("updates one subagent card from lifecycle through progress and final task output", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp();
+      const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+      yield* startTurn(runtime, providerThread, "full-access");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({ type: "tool_execution_start", toolName: "task", toolCallId: "task-1" });
+      const payload = {
+        id: "Scout",
+        parentToolCallId: "task-1",
+        agent: "explore",
+        index: 0,
+        agentSource: "bundled",
+        description: "Read schema",
+      };
+      yield* fake.emit({ type: "subagent_lifecycle", payload: { ...payload, status: "started" } });
+      const started = yield* takeEvent((event) => event.type === "subagent.updated");
+      if (started.type !== "subagent.updated") return assert.fail("expected a native subagent");
+      assert.equal(started.subagent.status, "running");
+      assert.equal(started.subagent.driver, OMP_PROVIDER);
+
+      yield* fake.emit({
+        type: "subagent_progress",
+        payload: {
+          ...payload,
+          task: "Find schema",
+          progress: { id: "Scout", status: "running", lastIntent: "Inspecting schema" },
+        },
+      });
+      const running = yield* takeEvent((event) => event.type === "subagent.updated");
+      if (running.type !== "subagent.updated") return assert.fail("expected subagent progress");
+      assert.equal(running.subagent.id, started.subagent.id);
+      assert.equal(running.subagent.progress, "Inspecting schema");
+      const streamed = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "subagent" &&
+          event.turnItem.progress === "Inspecting schema",
+      );
+      if (streamed.type !== "turn_item.updated" || streamed.turnItem.type !== "subagent")
+        return assert.fail("expected a subagent item");
+      assert.equal(streamed.turnItem.subagentId, started.subagent.id);
+
+      yield* fake.emit({
+        type: "subagent_lifecycle",
+        payload: { ...payload, status: "completed" },
+      });
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolName: "task",
+        toolCallId: "task-1",
+        isError: false,
+        result: {
+          content: [],
+          details: {
+            results: [
+              {
+                id: "Scout",
+                agent: "explore",
+                task: "Find schema",
+                exitCode: 0,
+                output: "Found it",
+              },
+            ],
+          },
+        },
+      });
+      const completed = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.result === "Found it",
+      );
+      if (completed.type !== "subagent.updated")
+        return assert.fail("expected final subagent state");
+      assert.equal(completed.subagent.id, started.subagent.id);
+      assert.equal(completed.subagent.status, "completed");
+      const finished = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "subagent" &&
+          event.turnItem.result === "Found it",
+      );
+      if (finished.type !== "turn_item.updated" || finished.turnItem.type !== "subagent")
+        return assert.fail("expected the completed subagent item");
+      assert.equal(finished.turnItem.id, streamed.turnItem.id);
+      assert.equal(finished.turnItem.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("reuses the node, plan and timeline item when a turn updates its checklist", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp();
+      const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+      yield* startTurn(runtime, providerThread, "full-access");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      const emitTodo = (toolCallId: string, op: string, status: string) =>
+        fake.emit({
+          type: "tool_execution_end",
+          toolName: "todo",
+          toolCallId,
+          isError: false,
+          result: {
+            details: {
+              op,
+              phases: [{ name: "Inspect", tasks: [{ content: "Read schema", status }] }],
+            },
+          },
+        });
+      const takeTodo = () =>
+        Effect.gen(function* () {
+          const plan = yield* takeEvent(
+            (event) => event.type === "plan.updated" && event.plan.kind === "todo_list",
+          );
+          const node = yield* takeEvent(
+            (event) => event.type === "node.updated" && event.node.kind === "todo_list",
+          );
+          const item = yield* takeEvent(
+            (event) => event.type === "turn_item.updated" && event.turnItem.type === "todo_list",
+          );
+          if (
+            plan.type !== "plan.updated" ||
+            plan.plan.kind !== "todo_list" ||
+            node.type !== "node.updated" ||
+            item.type !== "turn_item.updated" ||
+            item.turnItem.type !== "todo_list"
+          ) {
+            return assert.fail("expected a checklist plan, node and item");
+          }
+          assert.equal(node.node.id, plan.plan.nodeId);
+          assert.equal(item.turnItem.nodeId, node.node.id);
+          assert.equal(item.turnItem.planId, plan.plan.id);
+          assert.deepEqual(item.turnItem.steps, plan.plan.steps);
+          return { plan: plan.plan, item: item.turnItem };
+        });
+      yield* emitTodo("todo-1", "start", "in_progress");
+      const first = yield* takeTodo();
+      assert.equal(first.plan.status, "active");
+      assert.deepEqual(first.plan.steps, [{ id: "0:0", text: "Read schema", status: "running" }]);
+      yield* emitTodo("todo-2", "done", "completed");
+      const last = yield* takeTodo();
+      assert.equal(last.plan.id, first.plan.id);
+      assert.equal(last.plan.nodeId, first.plan.nodeId);
+      assert.equal(last.plan.status, "completed");
+      assert.equal(last.item.id, first.item.id);
+      assert.equal(last.item.ordinal, first.item.ordinal);
+      assert.deepEqual(last.item.steps, [{ id: "0:0", text: "Read schema", status: "completed" }]);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("submits native multi-question asks in wire order", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeOmp();
+      const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+      yield* startTurn(runtime, providerThread, "full-access");
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({
+        type: "extension_ui_request",
+        id: "ask-1",
+        method: "ask",
+        questions: [
+          {
+            id: "runtime",
+            question: "Which runtime?",
+            options: [{ label: "Node" }, { label: "Bun" }],
+          },
+          {
+            id: "checks",
+            question: "Which checks?",
+            multi: true,
+            options: [{ label: "Lint" }, { label: "Test" }],
+          },
+        ],
+      });
+      const requestId = yield* pendingApproval(takeEvent);
+      const item = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+      );
+      if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
+        return assert.fail("expected an ask item");
+      assert.equal(item.turnItem.requestId, requestId);
+      assert.deepEqual(
+        item.turnItem.questions.map((question) => question.id),
+        ["runtime", "checks"],
+      );
+      yield* runtime.respondToRuntimeRequest({
+        requestId,
+        answers: { checks: ["Test", "custom check"], runtime: "Node" },
+      });
+      assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+        type: "extension_ui_response",
+        id: "ask-1",
+        answers: [
+          { id: "runtime", selectedOptions: ["Node"] },
+          { id: "checks", selectedOptions: ["Test"], customInput: "custom check" },
+        ],
+      });
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "refuses unsupported forms, withdraws cancelled forms and submits scalar checkboxes",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeOmp();
+        const { runtime, takeEvent, providerThread } = yield* openRuntime(fake, "full-access");
+        yield* startTurn(runtime, providerThread, "full-access");
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "upload",
+          method: "form",
+          html: "<form><input type=file name=upload></form>",
+        });
+        assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+          type: "extension_ui_response",
+          id: "upload",
+          cancelled: true,
+        });
+        const notice = yield* takeEvent(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
+        );
+        if (notice.type !== "turn_item.updated" || notice.turnItem.type !== "system_notice")
+          return assert.fail("expected a form refusal");
+        assert.equal(notice.turnItem.level, "error");
+
+        const form = {
+          type: "extension_ui_request",
+          method: "form",
+          id: "form-2",
+          html: "<form><label><input type=checkbox name=trace>Trace</label><input type=hidden name=version value=2></form>",
+        };
+        yield* fake.emit(form);
+        const cancelledId = yield* pendingApproval(takeEvent);
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "cancel",
+          id: "cancel-1",
+          targetId: form.id,
+        });
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" &&
+            event.runtimeRequest.id === cancelledId &&
+            event.runtimeRequest.status === "cancelled",
+        );
+        const error = yield* runtime
+          .respondToRuntimeRequest({ requestId: cancelledId, answers: { trace: ["on"] } })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderAdapterRuntimeRequestResponseError");
+        yield* fake.emit({ ...form, id: "form-3" });
+        yield* runtime.respondToRuntimeRequest({
+          requestId: yield* pendingApproval(takeEvent),
+          answers: { trace: ["on"] },
+        });
+        assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+          type: "extension_ui_response",
+          id: "form-3",
+          data: { trace: "on", version: "2" },
+        });
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("completes a compaction omp skipped as a no-op instead of failing it", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeOmp();

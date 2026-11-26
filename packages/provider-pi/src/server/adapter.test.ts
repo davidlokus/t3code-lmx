@@ -5051,6 +5051,79 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect("forwards pre-structured extension questions and answers without flattening them", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const questions = [
+        {
+          id: "store",
+          header: "Store",
+          question: "Which store?",
+          options: [{ label: "Local", value: "local", description: "Use a file" }],
+        },
+        {
+          id: "checks",
+          header: "Checks",
+          question: "Which checks?",
+          multiSelect: true,
+          options: [{ label: "Tests", description: "Run the tests" }],
+        },
+      ];
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "ask",
+        id: "structured",
+        questions,
+      });
+      const pending = yield* takeEvent(
+        (event) =>
+          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+      );
+      if (pending.type !== "runtime_request.updated")
+        return assert.fail("expected a pending request");
+      assert.equal(pending.runtimeRequest.kind, "user_input");
+      const node = yield* takeEvent(
+        (event) => event.type === "node.updated" && event.node.kind === "user_input_request",
+      );
+      const item = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+      );
+      if (
+        node.type !== "node.updated" ||
+        item.type !== "turn_item.updated" ||
+        item.turnItem.type !== "user_input_request"
+      )
+        return assert.fail("expected a question node and item");
+      assert.equal(node.node.runtimeRequestId, pending.runtimeRequest.id);
+      assert.equal(item.turnItem.requestId, pending.runtimeRequest.id);
+      assert.deepEqual(item.turnItem.questions, questions);
+      const answers = { store: "local", checks: ["Tests", "Other check"] };
+      yield* runtime.respondToRuntimeRequest({ requestId: pending.runtimeRequest.id, answers });
+      assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+        type: "extension_ui_response",
+        id: "structured",
+        answers,
+      });
+
+      yield* fake.emit({ type: "extension_ui_request", method: "ask", id: "skip", questions });
+      const skipped = yield* takeEvent(
+        (event) =>
+          event.type === "runtime_request.updated" &&
+          event.runtimeRequest.nativeRequestRef?.nativeId === "skip",
+      );
+      if (skipped.type !== "runtime_request.updated")
+        return assert.fail("expected a dismissible request");
+      yield* runtime.respondToRuntimeRequest({ requestId: skipped.runtimeRequest.id });
+      assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+        type: "extension_ui_response",
+        id: "skip",
+        cancelled: true,
+      });
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("cancels startup dialogs when Pi exits before a turn exists", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

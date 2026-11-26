@@ -7,6 +7,9 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import * as Predicate from "effect/Predicate";
 import {
   ProviderDriverKind,
+  OrchestrationV2PlanStep,
+  OrchestrationV2Subagent,
+  OrchestrationV2UserInputQuestion,
   type ChatAttachment,
   type ModelSelection,
   type OrchestrationV2ExecutionNode,
@@ -18,9 +21,8 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2RuntimeRequest,
-  type OrchestrationV2Subagent,
+  type PlanId,
   type OrchestrationV2TurnItem,
-  type OrchestrationV2UserInputQuestion,
   type ProviderApprovalDecision,
   type ProviderInstanceId,
   type MessageId,
@@ -105,6 +107,20 @@ const SETTLE_PROBE_RETRY_DELAY = Duration.millis(100);
 // fork: OMP can record its cwd after the first line, but never read unbounded history to find it.
 const SESSION_HEADER_LINES = 8;
 const SESSION_HEADER_MAX_BYTES = 64 * 1024;
+
+// fork: normalized orchestration frames from RPC dialects use the existing event contracts.
+const isDialectQuestions = Schema.is(Schema.NonEmptyArray(OrchestrationV2UserInputQuestion));
+const isDialectTodoSteps = Schema.is(Schema.Array(OrchestrationV2PlanStep));
+const isDialectSubagentTask = Schema.is(
+  Schema.Struct({
+    agent: Schema.String,
+    task: Schema.String,
+    model: Schema.NullOr(Schema.String),
+    status: OrchestrationV2Subagent.fields.status,
+    progress: Schema.optional(Schema.String),
+    result: Schema.NullOr(Schema.String),
+  }),
+);
 
 export const PiProviderCapabilitiesV2 = {
   runtimePolicy: { enforcement: "client-boundary" },
@@ -384,6 +400,7 @@ interface ActivePiTurn {
   readonly toolArgs: Map<string, unknown>;
   readonly toolStartedAt: Map<string, DateTime.Utc>;
   readonly commandOutputBytes: Map<string, number>;
+  todoPlanId?: PlanId; // fork:
   interrupted: boolean;
   nativeAborted: boolean;
   sawAgentActivity: boolean;
@@ -421,7 +438,7 @@ interface PiTurnTreeRefs {
 
 interface PendingPiPrompt {
   readonly nativeRequestId: string;
-  readonly method: "select" | "confirm" | "input" | "editor";
+  readonly method: "select" | "confirm" | "input" | "editor" | "ask"; // fork:
   readonly questionId: string;
   readonly approvalKey: string;
   readonly expiresAt: number | null;
@@ -1244,6 +1261,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         startedAt: DateTime.Utc,
         completedAt: DateTime.Utc | null,
         parentNativeItemId?: string,
+        nativeItemRef: OrchestrationV2ProviderRef | null = providerRef(nativeItemId), // fork: synthetic artifacts have no native ref.
       ) =>
         emit({
           type: "node.updated",
@@ -1268,7 +1286,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             countsForRun: false,
             providerThreadId: turn.turnInput.providerThread.id,
             providerTurnId: turn.providerTurn.id,
-            nativeItemRef: providerRef(nativeItemId),
+            nativeItemRef,
             runtimeRequestId: null,
             checkpointScopeId: null,
             startedAt,
@@ -1820,15 +1838,18 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       const cancelPrompt = Effect.fn("PiAdapter.cancelPrompt")(function* (
         pending: PendingPiPrompt,
         resolvedAt: DateTime.Utc,
+        replyToProvider = true, // fork: upstream cancellation has already settled the native prompt.
       ) {
         if (pending.expirationFiber !== null) yield* Fiber.interrupt(pending.expirationFiber);
-        yield* connection
-          .send({
-            type: "extension_ui_response",
-            id: pending.nativeRequestId,
-            cancelled: true,
-          })
-          .pipe(Effect.ignore);
+        if (replyToProvider) {
+          yield* connection
+            .send({
+              type: "extension_ui_response",
+              id: pending.nativeRequestId,
+              cancelled: true,
+            })
+            .pipe(Effect.ignore);
+        }
         pending.runtimeRequest = {
           ...pending.runtimeRequest,
           status: "cancelled",
@@ -1945,11 +1966,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           yield* updateAsyncSubagents(event);
           return;
         }
+        // fork: withdraw a dialog the provider has already closed.
+        if (method === "cancel") {
+          const targetId = recordString(event, "targetId");
+          if (targetId === undefined) return;
+          for (const [requestId, pending] of pendingPrompts) {
+            if (pending.nativeRequestId !== targetId) continue;
+            pendingPrompts.delete(requestId);
+            yield* cancelPrompt(pending, yield* DateTime.now, false);
+            break;
+          }
+          return;
+        }
         if (
           method !== "select" &&
           method !== "confirm" &&
           method !== "input" &&
-          method !== "editor"
+          method !== "editor" &&
+          method !== "ask" // fork:
         ) {
           yield* Effect.logDebug("Ignoring pi extension UI update.", { method });
           return;
@@ -2055,8 +2089,25 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           method === "select" && turn !== null
             ? piAskUserSingleSelectQuestion(nativeRequestId, title, event, turn.toolArgs)
             : undefined;
-        const turnItem: OrchestrationV2TurnItem =
+        const structuredQuestions = event["questions"]; // fork:
+        const questions =
           method === "confirm"
+            ? undefined
+            : method === "ask"
+              ? isDialectQuestions(structuredQuestions)
+                ? structuredQuestions
+                : undefined
+              : [askUser?.question ?? piQuestion(nativeRequestId, method, title, event)];
+        if (method === "ask" && questions === undefined) {
+          yield* connection.send({
+            type: "extension_ui_response",
+            id: nativeRequestId,
+            cancelled: true,
+          });
+          return;
+        }
+        const turnItem: OrchestrationV2TurnItem =
+          questions === undefined
             ? {
                 ...itemBase,
                 type: "approval_request",
@@ -2068,7 +2119,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 ...itemBase,
                 type: "user_input_request",
                 requestId,
-                questions: [askUser?.question ?? piQuestion(nativeRequestId, method, title, event)],
+                questions,
               };
         const pending: PendingPiPrompt = {
           nativeRequestId,
@@ -2387,12 +2438,16 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         // Model hooks can show dialogs before turn ownership; keep requests session-scoped and buffer output.
         const interactiveUiRequest =
           event["type"] === "extension_ui_request" &&
-          ["select", "confirm", "input", "editor"].includes(String(event["method"]));
+          ["select", "confirm", "input", "editor", "ask", "cancel"].includes(
+            String(event["method"]),
+          ); // fork:
         if (
           threadState?.activeTurn === null &&
           pendingWake !== null &&
           !interactiveUiRequest &&
-          !String(event["type"]).startsWith("t3.") &&
+          (!String(event["type"]).startsWith("t3.") ||
+            event["type"] === "t3.subagent_update" ||
+            event["type"] === "t3.todo_list_update") && // fork: keep dialect results with the wake's turn.
           event["type"] !== "response"
         ) {
           pendingWake.events.push(event);
@@ -2542,6 +2597,69 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           case "tool_execution_end":
             if (turn !== null) yield* emitToolItem(turn, event, "end");
             return;
+          // fork: dialects supply normalized snapshots; the adapter owns T3 identities.
+          case "t3.subagent_update": {
+            const toolCallId = recordString(event, "toolCallId");
+            const taskKey = recordString(event, "taskKey");
+            const task = event["task"];
+            if (turn !== null && toolCallId && taskKey && isDialectSubagentTask(task)) {
+              yield* emitSubagent(turn, toolCallId, taskKey, task);
+            }
+            return;
+          }
+          case "t3.todo_list_update": {
+            const steps = event["steps"];
+            if (turn === null || !isDialectTodoSteps(steps)) return;
+            const time = yield* DateTime.now;
+            const nativeItemId = `${turn.providerTurn.id}:todo`;
+            const base = baseItemFields(turn, nativeItemId, time, time);
+            const planId =
+              turn.todoPlanId ??
+              (yield* idAllocator.allocate.plan({
+                threadId: base.threadId,
+                runId: base.runId,
+                driver: PI_PROVIDER,
+              }));
+            turn.todoPlanId = planId;
+            yield* emit({
+              type: "plan.updated",
+              driver: PI_PROVIDER,
+              plan: {
+                id: planId,
+                threadId: base.threadId,
+                runId: base.runId,
+                nodeId: base.nodeId,
+                kind: "todo_list",
+                status: steps.every((step) => step.status === "completed") ? "completed" : "active",
+                steps,
+              },
+            });
+            yield* emitItemNode(
+              turn,
+              nativeItemId,
+              "todo_list",
+              "completed",
+              time,
+              time,
+              undefined,
+              null,
+            );
+            yield* emit({
+              type: "turn_item.updated",
+              driver: PI_PROVIDER,
+              turnItem: {
+                ...base,
+                nativeItemRef: null,
+                type: "todo_list",
+                status: "completed",
+                title: null,
+                completedAt: time,
+                planId,
+                steps,
+              },
+            });
+            return;
+          }
           case "compaction_start": {
             if (turn === null) return;
             turn.settleProbeGeneration += 1;
@@ -4683,6 +4801,7 @@ function piUiResponse(
     if (decision === "decline") return { confirmed: false };
     return { cancelled: true };
   }
+  if (pending.method === "ask") return answers === undefined ? { cancelled: true } : { answers }; // fork:
   const answer = answers?.[pending.questionId];
   // RPC distinguishes empty dialog values from cancellation (undefined).
   if (typeof answer === "string") return { value: answer };

@@ -2,8 +2,16 @@
 import { assert, describe, it, vi } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
+import type { PiRpcRecord } from "@t3tools/provider-pi/server/rpc";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { makeOmpRpcConnection } from "./connection.ts";
@@ -73,6 +81,46 @@ const stubMcpServer = (callTool?: (signal: AbortSignal | null | undefined) => Pr
   return { calls, restore: () => spy.mockRestore() };
 };
 
+const decodeRecord = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+const controlledStartup = Effect.gen(function* () {
+  const stdout = yield* Queue.unbounded<Uint8Array>();
+  const stdin = yield* Queue.unbounded<PiRpcRecord>();
+  const spawner = ChildProcessSpawner.make(() =>
+    Effect.succeed(
+      ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(999_999_999),
+        exitCode: Effect.never,
+        isRunning: Effect.succeed(true),
+        kill: () => Effect.void,
+        unref: Effect.succeed(Effect.void),
+        stdin: Sink.forEach((chunk: Uint8Array) =>
+          Queue.offer(stdin, decodeRecord(new TextDecoder().decode(chunk))),
+        ),
+        stdout: Stream.fromQueue(stdout),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+      }),
+    ),
+  );
+  const connection = yield* makeOmpRpcConnection({
+    command: "omp",
+    args: ["--mode", "rpc"],
+    cwd: undefined,
+    env: {},
+  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+  return {
+    connection,
+    stdin,
+    emit: (frame: PiRpcRecord) =>
+      Queue.offer(stdout, new TextEncoder().encode(`${JSON.stringify(frame)}\n`)),
+  };
+});
+
 describe("omp connection", () => {
   it.effect("registers T3's MCP tools with omp and runs the calls omp hands back", () =>
     Effect.gen(function* () {
@@ -110,9 +158,20 @@ describe("omp connection", () => {
         ],
       );
       assert.deepEqual(mcp.calls[3]?.params, { cursor: "page-2" });
-      assert.deepEqual(
-        fake.allRequests().map((request) => request["type"]),
-        ["set_host_tools", "prompt"],
+      const types = fake.allRequests().map((request) => request["type"]);
+      assert.deepEqual(types.slice(-1), ["prompt"]);
+      assert.sameMembers(types.slice(0, -1), [
+        "set_host_tools",
+        "set_subagent_subscription",
+        "set_ask_dialog",
+      ]);
+      assert.include(
+        fake.allRequests().find((request) => request["type"] === "set_subagent_subscription"),
+        { level: "progress" },
+      );
+      assert.include(
+        fake.allRequests().find((request) => request["type"] === "set_ask_dialog"),
+        { enabled: true },
       );
 
       yield* fake.emit({
@@ -261,7 +320,70 @@ describe("omp connection", () => {
       yield* fake.emit(update);
       assert.deepEqual(yield* Queue.take(commands), update.commands);
       assert.deepEqual(yield* Queue.take(connection.events), update);
-      assert.isEmpty(fake.allRequests());
+      assert.isFalse(fake.allRequests().some((request) => request["type"] === "set_host_tools"));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("waits for both feature requests, then proceeds after rejection and timeout", () => {
+    const warnings: unknown[] = [];
+    const capture = Logger.make<unknown, void>(({ logLevel, message }) => {
+      if (logLevel === "Warn" && Array.isArray(message)) warnings.push(message[1]);
+    });
+    return Effect.gen(function* () {
+      const { connection, emit, stdin } = yield* controlledStartup;
+      yield* emit({ type: "ready" });
+      const setup = [yield* Queue.take(stdin), yield* Queue.take(stdin)];
+      const ask = setup.find((request) => request["type"] === "set_ask_dialog");
+      assert.isDefined(ask);
+      assert.sameMembers(
+        setup.map((request) => request["type"]),
+        ["set_subagent_subscription", "set_ask_dialog"],
+      );
+      yield* emit({
+        type: "response",
+        id: ask?.["id"],
+        command: "set_ask_dialog",
+        success: false,
+        error: "Unknown command",
+      });
+
+      const sent = yield* Deferred.make<void>();
+      yield* connection
+        .send({ type: "prompt", message: "Continue" })
+        .pipe(Effect.andThen(Deferred.succeed(sent, undefined)), Effect.forkScoped);
+      yield* TestClock.adjust("1 second");
+      assert.isFalse(yield* Deferred.isDone(sent));
+      yield* TestClock.adjust("5 seconds");
+      yield* Deferred.await(sent);
+      assert.deepEqual(yield* Queue.take(stdin), { type: "prompt", message: "Continue" });
+      assert.sameDeepMembers(warnings, [
+        { command: "set_ask_dialog", errorKind: "PiRpcError" },
+        { command: "set_subagent_subscription", errorKind: "PiRpcTimeoutError" },
+      ]);
+      yield* emit({ type: "ready" });
+      yield* emit({ type: "agent_start" });
+      yield* Queue.take(connection.events);
+      yield* connection.send({ type: "prompt", message: "Next turn" });
+      assert.deepEqual(yield* Queue.take(stdin), { type: "prompt", message: "Next turn" });
+    }).pipe(Effect.scoped, Effect.provide(Logger.layer([capture], { mergeWithExisting: false })));
+  });
+
+  it.effect("forwards a legacy prompt without waiting for ready", () =>
+    Effect.gen(function* () {
+      const { connection, emit, stdin } = yield* controlledStartup;
+      const prompt = yield* connection
+        .request({ type: "prompt", message: "Hello" })
+        .pipe(Effect.forkScoped);
+      const request = yield* Queue.take(stdin);
+      assert.include(request, { type: "prompt", message: "Hello" });
+      yield* emit({
+        type: "response",
+        id: request["id"],
+        command: "prompt",
+        success: true,
+        data: { agentInvoked: true },
+      });
+      assert.deepEqual(yield* Fiber.join(prompt), { agentInvoked: true });
     }).pipe(Effect.scoped),
   );
 });

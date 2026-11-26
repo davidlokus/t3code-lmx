@@ -19,6 +19,7 @@ import { makeOmpMcpClient, OmpMcpError } from "./mcpClient.ts";
 import { makeOmpTranslator, translateOmpResponseData } from "./protocol.ts";
 
 const HOST_TOOL_SETUP_TIMEOUT = Duration.seconds(10);
+const SESSION_FEATURE_TIMEOUT_MS = 5_000;
 
 export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
   options: PiDialectConnectOptions & {
@@ -31,9 +32,11 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
   const translator = makeOmpTranslator();
   const events = yield* Queue.unbounded<PiRpcRecord, PiRpcError>();
   const hostToolsReady = yield* Deferred.make<void>();
+  const sessionFeaturesReady = yield* Deferred.make<void>();
   const hostCalls = new Map<string, Fiber.Fiber<void>>();
   let registeredTools: ReadonlySet<string> | undefined;
-  let registrationStarted = false;
+  let readyReceived = false;
+  let sessionFeaturesSettled = false;
   const mcp =
     mcpSession === undefined
       ? undefined
@@ -59,6 +62,32 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
       return Effect.logWarning("omp could not load T3's MCP tools.", { cause });
     }),
     Effect.ensuring(Deferred.succeed(hostToolsReady, undefined)),
+  );
+
+  const initializeSessionFeatures = Effect.fn("OmpRpc.initializeSessionFeatures")(
+    function* () {
+      yield* Effect.forEach(
+        [
+          { type: "set_subagent_subscription", level: "progress" },
+          { type: "set_ask_dialog", enabled: true },
+        ],
+        (command) =>
+          raw.request(command, SESSION_FEATURE_TIMEOUT_MS).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("omp could not enable an RPC session feature.", {
+                command: command.type,
+                errorKind: cause._tag,
+              }),
+            ),
+          ),
+        { concurrency: 2, discard: true },
+      );
+    },
+    Effect.ensuring(
+      Effect.sync(() => {
+        sessionFeaturesSettled = true;
+      }).pipe(Effect.andThen(Deferred.succeed(sessionFeaturesReady, undefined))),
+    ),
   );
 
   const answerHostToolCall = Effect.fn("OmpRpc.hostToolCall")(function* (frame: PiRpcRecord) {
@@ -104,9 +133,10 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
   const route = Effect.fnUntraced(function* (frame: PiRpcRecord) {
     switch (frame["type"]) {
       case "ready":
-        if (mcp !== undefined && !registrationStarted) {
-          registrationStarted = true;
-          yield* registerHostTools().pipe(Effect.forkIn(scope));
+        if (!readyReceived) {
+          readyReceived = true;
+          yield* initializeSessionFeatures().pipe(Effect.forkIn(scope));
+          if (mcp !== undefined) yield* registerHostTools().pipe(Effect.forkIn(scope));
         }
         return;
       case "host_tool_call": {
@@ -143,19 +173,33 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
     Effect.catchCause((cause) =>
       Queue.failCause(events, cause).pipe(
         Effect.andThen(Deferred.succeed(hostToolsReady, undefined)),
+        Effect.andThen(Deferred.succeed(sessionFeaturesReady, undefined)),
       ),
     ),
     Effect.forkIn(scope),
   );
 
   // A prompt must not outrun the tool registration; a runtime that never sent `ready` cannot hang it.
-  const afterHostTools = (record: PiRpcRecord) =>
-    record["type"] === "prompt" && mcp !== undefined
+  const afterHostTools =
+    mcp !== undefined
       ? Deferred.await(hostToolsReady).pipe(
           Effect.timeoutOption(Duration.seconds(12)),
           Effect.asVoid,
         )
       : Effect.void;
+
+  const beforePrompt = (record: PiRpcRecord) =>
+    record["type"] !== "prompt"
+      ? Effect.void
+      : afterHostTools.pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              readyReceived && !sessionFeaturesSettled
+                ? Deferred.await(sessionFeaturesReady)
+                : Effect.void,
+            ),
+          ),
+        );
 
   // Notices the translator raised while translating a command go to the adapter like omp's own.
   const publishNotices = Effect.suspend(() =>
@@ -166,7 +210,7 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
 
   return {
     send: (record) =>
-      afterHostTools(record).pipe(
+      beforePrompt(record).pipe(
         Effect.andThen(
           Effect.suspend(() => {
             const translated = translator.toOmp(record);
@@ -175,7 +219,7 @@ export const makeOmpRpcConnection = Effect.fn("OmpRpc.connect")(function* (
         ),
       ),
     request: (record, timeoutMs?: number) =>
-      afterHostTools(record).pipe(
+      beforePrompt(record).pipe(
         Effect.andThen(Effect.suspend(() => raw.request(translator.toOmp(record), timeoutMs))),
         Effect.map((data) => translateOmpResponseData(String(record["type"]), data)),
       ),
