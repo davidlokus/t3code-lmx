@@ -40,9 +40,10 @@ export function ConnectionTracesSwitch() {
   const [saving, setSaving] = useState(false);
   const gt = useGT();
   const ready = AsyncResult.isSuccess(preferences) && !preferences.waiting;
+  // fork: match opt-in default for mobile connection traces
   const enabled = AsyncResult.isSuccess(preferences)
-    ? preferences.value.connectionTracesEnabled !== false
-    : true;
+    ? preferences.value.connectionTracesEnabled === true
+    : false;
 
   const change = (value: boolean) => {
     setSaving(true);

@@ -1,5 +1,6 @@
 // T3 ingest retains events and forwards to PostHog; UUIDs deduplicate retries there.
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isDoNotTrackEnabled } from "@t3tools/shared/otelEnvironment";
 import type { ClientOs } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -66,14 +67,12 @@ function retryDelayMs(failures: number, random: number): number {
   return Math.round(ceiling / 2 + (ceiling / 2) * random);
 }
 
+// fork: disable official T3/PostHog analytics by default, strip upstream ingest defaults, and honor DO_NOT_TRACK
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.String("T3CODE_POSTHOG_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
-  ),
-  posthogHost: Config.String("T3CODE_POSTHOG_HOST").pipe(
-    Config.withDefault("https://ingest.t3.codes"),
-  ),
-  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true)),
+  posthogKey: Config.String("T3CODE_POSTHOG_KEY").pipe(Config.withDefault("")),
+  posthogHost: Config.String("T3CODE_POSTHOG_HOST").pipe(Config.withDefault("")),
+  enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false)),
+  doNotTrack: Config.String("DO_NOT_TRACK").pipe(Config.withDefault("")),
   flushBatchSize: Config.Number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
   maxBufferedEvents: Config.Number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS").pipe(
     Config.withDefault(1_000),
@@ -120,6 +119,16 @@ function serverOsFromNodePlatform(platform: string): ClientOs {
   }
 }
 
+const disabledAnalyticsService = AnalyticsService.of({
+  record: Effect.fnUntraced(function* () {
+    return yield* Effect.succeed(false);
+  }),
+  flush: Effect.void,
+  recordOwners: Effect.fnUntraced(function* () {
+    yield* Effect.void;
+  }),
+});
+
 /** @public */
 /** @public */
 export const make = Effect.gen(function* () {
@@ -129,15 +138,23 @@ export const make = Effect.gen(function* () {
   // A managed policy can switch analytics off over the environment, never on.
   const policyAllows =
     ManagedPolicy.deniedBy(yield* ManagedPolicy.ManagedPolicy, "telemetry") === undefined;
+  const posthogKey = telemetryConfig.posthogKey.trim();
+  const posthogHost = telemetryConfig.posthogHost.trim();
+  const hasExplicitEndpoint = posthogKey.length > 0 && posthogHost.length > 0;
+  const dntFromConfig = isDoNotTrackEnabled({ DO_NOT_TRACK: telemetryConfig.doNotTrack });
+  // fork: short-circuit to a zero-IO no-op when disabled so anonymous-id is never created and no flush fiber runs
+  if (!hasExplicitEndpoint || !telemetryConfig.enabled || !policyAllows || dntFromConfig) {
+    return disabledAnalyticsService;
+  }
   // A cached PATH does not establish consent from the current login shell.
   const telemetryEnabled = Effect.suspend(() => {
-    if (!telemetryConfig.enabled || !policyAllows) return Effect.succeed(false);
+    if (isDoNotTrackEnabled(hostEnvironment)) return Effect.succeed(false);
     if (!awaitingShellConsent) return Effect.succeed(true);
     if (hostEnvironment.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING === "1")
       return Effect.succeed(false);
     const preference = hostEnvironment.T3CODE_TELEMETRY_ENABLED;
     return Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(
-      Config.withDefault(true),
+      Config.withDefault(false),
       Effect.provideService(
         ConfigProvider.ConfigProvider,
         ConfigProvider.fromEnv({
@@ -208,7 +225,7 @@ export const make = Effect.gen(function* () {
     if (!(yield* telemetryEnabled) || !distinctId) return;
 
     const payload = {
-      api_key: telemetryConfig.posthogKey,
+      api_key: posthogKey,
       batch: events.map((event) => ({
         uuid: event.uuid,
         event: event.event,
@@ -240,7 +257,7 @@ export const make = Effect.gen(function* () {
       })),
     };
 
-    yield* HttpClientRequest.post(`${telemetryConfig.posthogHost}/batch/`).pipe(
+    yield* HttpClientRequest.post(`${posthogHost}/batch/`).pipe(
       HttpClientRequest.bodyJson(payload),
       Effect.flatMap(httpClient.execute),
       Effect.flatMap(HttpClientResponse.filterStatusOk),

@@ -309,7 +309,8 @@ export const make = Effect.gen(function* () {
       mcpHostedApproval: true,
       shellThreadFamilies: true,
       shellOlderSettled: true,
-      agentFeedback: true,
+      // fork: hide upstream Agent feedback UI in T3 Lab (Extend)
+      agentFeedback: false,
     },
   };
 

@@ -318,13 +318,19 @@ export const load: Effect.Effect<OtelEnvironment> = Config.all({
   Effect.orDie,
 );
 
+// fork: honor the cross-tool DO_NOT_TRACK convention alongside T3CODE_TELEMETRY_ENABLED
+export const isDoNotTrackEnabled = (env: Readonly<Record<string, string | undefined>>): boolean =>
+  T3CODE_TRUE.includes(env.DO_NOT_TRACK?.trim().toLowerCase() ?? "");
+
+// fork: default relay tracing off unless explicitly opted in and not blocked by DO_NOT_TRACK
 export const isRelayTracingEnabled = (env: Readonly<Record<string, string | undefined>>) =>
+  !isDoNotTrackEnabled(env) &&
   Config.all({
     ...sdkFlags,
     telemetry: flag("T3CODE_TELEMETRY_ENABLED", T3CODE_TRUE, T3CODE_FALSE, String),
   }).pipe(
     Effect.map(
-      ({ telemetry, t3, spec }) => telemetry.value !== false && !(t3.value ?? spec.value ?? false),
+      ({ telemetry, t3, spec }) => telemetry.value === true && !(t3.value ?? spec.value ?? false),
     ),
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env))),
     Effect.orDie,

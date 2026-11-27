@@ -7,6 +7,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -461,6 +462,106 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
       }).pipe(Effect.provide(layerRuntime));
 
       assert.deepEqual(capturedPaths, []);
+    }),
+  );
+
+  it.effect(
+    "defaults off without writing anonymous-id or falling back to an upstream ingest host",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        for (const env of [{}, { T3CODE_TELEMETRY_ENABLED: true }]) {
+          let requests = 0;
+          const client = HttpClient.make((request) => {
+            requests += 1;
+            return respondWithStatus(204)(request);
+          });
+          const serverConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+            prefix: "t3-telemetry-default-off-",
+          });
+          const runtimeLayer = AnalyticsService.layer.pipe(
+            Layer.provideMerge(serverConfigLayer),
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(HostProcess.Platform, "darwin"),
+                Layer.succeed(HostProcess.Architecture, "arm64"),
+                Layer.succeed(HttpClient.HttpClient, client),
+                ManagedPolicy.layerTest(),
+              ),
+            ),
+          );
+
+          const anonymousIdExists = yield* Effect.gen(function* () {
+            const config = yield* ServerConfig.ServerConfig;
+            const analytics = yield* AnalyticsService.AnalyticsService;
+            const queued = yield* analytics.record("test.default-off", { index: 1 });
+            assert.isFalse(queued);
+            yield* analytics.recordOwners(
+              [{ source: "connect", ownerId: "a".repeat(64) }],
+              "server",
+            );
+            yield* analytics.flush;
+            return yield* fs.exists(config.anonymousIdPath);
+          }).pipe(Effect.provide(runtimeLayer));
+
+          assert.strictEqual(requests, 0);
+          assert.isFalse(anonymousIdExists);
+        }
+      }),
+  );
+
+  it.effect("blocks analytics when DO_NOT_TRACK is set at startup or discovered from shell", () =>
+    Effect.gen(function* () {
+      let startupRequests = 0;
+      const startupClient = HttpClient.make((request) => {
+        startupRequests += 1;
+        return respondWithStatus(204)(request);
+      });
+      const startupLayer = AnalyticsService.layer.pipe(
+        Layer.provideMerge(
+          ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-dnt-" }),
+        ),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              T3CODE_TELEMETRY_ENABLED: true,
+              DO_NOT_TRACK: "1",
+              T3CODE_POSTHOG_KEY: "phc_test_key",
+              T3CODE_POSTHOG_HOST: "http://localhost",
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(HostProcess.Platform, "darwin"),
+            Layer.succeed(HostProcess.Architecture, "arm64"),
+            Layer.succeed(HttpClient.HttpClient, startupClient),
+            ManagedPolicy.layerTest(),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const analytics = yield* AnalyticsService.AnalyticsService;
+        assert.isFalse(yield* analytics.record("test.dnt.startup"));
+        yield* analytics.flush;
+      }).pipe(Effect.provide(startupLayer));
+      assert.strictEqual(startupRequests, 0);
+
+      const env: NodeJS.ProcessEnv = { T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING: "1" };
+      const batches = yield* sendFor(
+        0,
+        respondWithStatus(204),
+        Effect.gen(function* () {
+          const analytics = yield* AnalyticsService.AnalyticsService;
+          env.T3CODE_TELEMETRY_ENABLED = "true";
+          env.DO_NOT_TRACK = "1";
+          delete env.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING;
+          assert.isFalse(yield* analytics.record("test.dnt.shell"));
+          yield* analytics.flush;
+        }),
+      ).pipe(Effect.provideService(HostProcess.Environment, env));
+      assert.deepEqual(batches, []);
     }),
   );
 });

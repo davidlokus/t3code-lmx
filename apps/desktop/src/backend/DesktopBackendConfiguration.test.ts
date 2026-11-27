@@ -794,6 +794,8 @@ describe("DesktopBackendConfiguration", () => {
         assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_SDK_DISABLED");
         assert.equal(config.env.T3CODE_TELEMETRY_ENABLED, "false");
         assert.include((config.env.WSLENV ?? "").split(":"), "T3CODE_TELEMETRY_ENABLED");
+        assert.equal(config.env.DO_NOT_TRACK, "1");
+        assert.include((config.env.WSLENV ?? "").split(":"), "DO_NOT_TRACK");
         assert.equal(config.env.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment.name=staging");
         assert.include((config.env.WSLENV ?? "").split(":"), "OTEL_RESOURCE_ATTRIBUTES");
       }).pipe(
@@ -815,6 +817,7 @@ describe("DesktopBackendConfiguration", () => {
         Effect.provideService(HostProcess.Environment, {
           OTEL_SDK_DISABLED: "true",
           T3CODE_TELEMETRY_ENABLED: "false",
+          DO_NOT_TRACK: "1",
           OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=staging",
         }),
       );

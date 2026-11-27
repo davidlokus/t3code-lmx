@@ -12,7 +12,8 @@ export function setConnectionTracesEnabled(enabled: boolean): void {
 void import("../../persistence/imperative")
   .then(({ loadPreferences }) => loadPreferences())
   .then((preferences) => {
-    if (!changedSinceLoad) sending = preferences.connectionTracesEnabled !== false;
+    // fork: opt-in only — keep mobile connection traces off unless explicitly enabled
+    if (!changedSinceLoad) sending = preferences.connectionTracesEnabled === true;
   })
   .catch((error: unknown) => {
     console.warn("[tracing] could not read the connection traces setting", error);
