@@ -1,4 +1,4 @@
-<!-- reviewed-through: 5b29b2d651 (2026-11-26) -->
+<!-- reviewed-through: 73c12e6611 (2026-11-27) -->
 
 # Lessons from Fork Work (`davidlokus/t3code-lmx`)
 
@@ -79,11 +79,11 @@
 
 ## 9. 同大版本扩展可选协议字段必须覆盖混合旧服、失败态与缓存版本测试
 
-- **规则**：① 保持 `USAGE_CONTRACT_VERSION` 等协议大版本不变而新增可选过滤/窗口字段时，前端必须基于**服务端回显字段**与去重后**实际贡献源**（`contributingEnvironments`）判断生效范围，在范围失败或全部被旧服排除时绝不渲染伪 `$0` / 预算 / 导出，且当 `AsyncResult` 失败保留旧 `previousSuccess` 时用按环境+时间锚点钉扎避免重查震荡。② 升级服务端持久化缓存版本号（如 `v17 → v18`）时，必须全局搜索旧文件名并同步更新所有升级测试断言。
-- **原因**：旧版服务端会静默忽略新可选字段（`projectFilter`、精确 MTD 边界）或拒绝 >24h 的 DST `Today` 请求；同时 React `AsyncResult.getOrElse` 在失败态仍返回上一次成功缓存，若直接按其覆盖降级标记会导致双查询键无限重渲染。
-- **铁证**：`feat/usage-dashboard` 在 5 轮跨模型只读 Review 中连续暴露混合舰队 `projectFilter` 污染、失败态伪 `$0`、以及回退/升级期间双键震荡问题；首轮 `check:changed` 亦检出 `UsageService.test.ts:3643` 硬编码 `usage-scan-cache-v17.json` 导致 10 个升级用例失败。
-- **代码守卫**：`apps/web/src/state/usage.test.ts`、`apps/web/src/fork/usage/usageDashboard.browser.test.tsx`、`apps/server/src/usage/UsageService.test.ts`。
-- **Seen**：1（2026-11-24，`feat/usage-dashboard`）
+- **规则**：① 保持 `USAGE_CONTRACT_VERSION` 等协议大版本不变而新增可选过滤/窗口字段时，前端必须基于**服务端回显字段**与去重后**实际贡献源**（`contributingEnvironments`）判断生效范围，在范围失败或全部被旧服排除时绝不渲染伪 `$0` / 预算 / 导出，且当 `AsyncResult` 失败保留旧 `previousSuccess` 时用按环境+时间锚点钉扎避免重查震荡。② 升级服务端持久化缓存版本号（如 `v17 → v18 → v19`）时，必须全局搜索旧文件名并同步更新所有升级测试断言；上游同步若遇到上游也独立占用同一版本号但字段槽位不同（如 Fork `v18` 占 slot 14 存 `cwdIndex` 而上游 `v18` 占 slot 14 存 `modelCalls`），严禁覆盖沿用同版本号，必须递增新版本号、将旧版本号移入 `LEGACY_SCAN_CACHE_FILE_NAMES` 并用结构特征识别旧 Fork 缓存实现无损迁移。
+- **原因**：旧版服务端会静默忽略新可选字段（`projectFilter`、精确 MTD 边界）或拒绝 >24h 的 DST `Today` 请求；同时 React `AsyncResult.getOrElse` 在失败态仍返回上一次成功缓存，若直接按其覆盖降级标记会导致双查询键无限重渲染；上游与 Fork 独立占号若不升版本，升级后会在用户机器上误把旧 Fork 缓存的 `cwdIndex` 当作上游 `modelCalls` 静默解码损坏。
+- **铁证**：① `feat/usage-dashboard` 在 5 轮跨模型只读 Review 中连续暴露混合舰队 `projectFilter` 污染、失败态伪 `$0`、以及回退/升级期间双键震荡问题，首轮 `check:changed` 亦检出 `UsageService.test.ts:3643` 硬编码 `usage-scan-cache-v17.json` 导致 10 个升级用例失败；② PR #35（`73c12e6611`，同步上游 627 提交）中 Fork 与上游均将扫描缓存升至 `v18` 但 slot 14 语义冲突，通过升至 `v19`（`usage-scan-cache-v19.json`）+ `version === 18 && cwds !== undefined` 无损迁移分支与单测解决。已按 ≥ 2 次规则升级写入 `FORK.md` 硬条款。
+- **代码守卫**：`apps/web/src/state/usage.test.ts`、`apps/web/src/fork/usage/usageDashboard.browser.test.tsx`、`apps/server/src/usage/usageScanCache.test.ts`、`apps/server/src/usage/UsageService.test.ts`。
+- **Seen**：2（2026-11-24 `feat/usage-dashboard`；2026-11-27 PR #35）
 
 ## 10. macOS 路径探测防 TCC 弹窗须全祖先最外层 `readLink` 且按次扫描隔离
 
@@ -95,11 +95,11 @@
 
 ## 11. 大跨度上游同步的 Fork CI 须自动分片，并警惕跨文件 Fork 断言漂移
 
-- **规则**：① `.github/workflows/fork-ci.yml` 保持 `plan` → `fast`（≤80 文件且未动根配置/lockfile 时走单机 `check:changed`）与 `sharded`（大同步或改动 `vite.config.ts`/`package.json`/`pnpm-workspace.yaml`/`pnpm-lock.yaml` 时并行拆为 `Static & Typecheck` + `Test Packages` + `Test Web 1..3/3` + `Test Server 1..8/8`，汇总到 `protect-lmx-lab` 必过的 `Fork checks` 门禁）双模式。② 上游同步若 `pnpm-lock.yaml` 冲突或自动合并后报 `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY`（残留旧 patch hash），先 `git checkout <target> -- pnpm-lock.yaml` 再跑 `vp i`。③ 修改共享注册表/适配器或品牌名（如 `PROVIDER_ORDER`、`PiAdapterV2` `tokenUsage`、`APP_BASE_NAME`）时，不可只依赖 `check:changed` 的同目录测试发现，须跨目录检索并复验图表、Replay 夹具与品牌断言测试。
-- **原因**：`apps/server` 配置 `fileParallelism: false`（服务端测试逐个串行），大跨度上游同步会拉起 500+ Vitest 文件，在单机 4 核 `ubuntu-latest` 上既会触发 `check:changed` 默认 `900s` 超时，也会因 CPU 争抢拖死 Chromium 浏览器测试；同时 `check:changed` 只跑变更文件同目录测试，会漏检此前 PR 留下的跨目录断言漂移。
-- **铁证**：PR #15（`e745f9705e`，同步 512 个上游提交）在单机 `Fork CI` Run `45556033883` 第 15 分钟因 596 文件超时被杀、Run `45558482027` 跑满 35m11s；改为分片双模式后 Run `45565260782` 11 分钟内直接揪出 PR #12 遗留的 `UsageProviderChart.test.ts`（缺 `omp`）与 `pi_output.ts`（缺 `cost`/`reasoningOutputTokens`）以及上游新增的 `McpAppFrame.browser.test.tsx`（硬编码 `"T3 Code"`），修齐后 Run `45567482753` 全部 13 个分片在 ~9 分钟绿灯通过。
-- **代码守卫**：`.github/workflows/fork-ci.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`apps/web/src/components/chat/McpAppFrame.browser.test.tsx`、`apps/web/src/components/usage/UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`。
-- **Seen**：1（2026-11-25，PR #15）
+- **规则**：① `.github/workflows/fork-ci.yml` 保持 `plan` → `fast`（≤80 文件且未动根配置/lockfile 时走单机 `check:changed`）与 `sharded`（大同步或改动 `vite.config.ts`/`package.json`/`pnpm-workspace.yaml`/`pnpm-lock.yaml` 时并行拆为 `Static & Typecheck` + `Test Packages` + `Test Web 1..3/3` + `Test Server 1..8/8`，汇总到 `protect-lmx-lab` 必过的 `Fork checks` 门禁）双模式。② 上游同步若 `pnpm-lock.yaml` 冲突或自动合并后报 `ERR_PNPM_LOCKFILE_MISSING_DEPENDENCY`（残留旧 patch hash），先 `git checkout <target> -- pnpm-lock.yaml` 再跑 `vp i`。③ 修改共享注册表、Provider 元数据、RPC 握手或品牌名（如 `PROVIDER_ORDER`、`PiAdapterV2` `tokenUsage`、`makeUsageLimits`、`makeOmpRpcConnection` `ready` 握手、`APP_BASE_NAME`）时，不可只依赖 `check:changed` 的同目录测试发现，须跨包检索并复验下游 `driver.test.ts`、图表、Replay 夹具（`OmpReplayFixtures` / `PiReplayFixtures`）与品牌断言测试。
+- **原因**：`apps/server` 配置 `fileParallelism: false`（服务端测试逐个串行），大跨度上游同步会拉起 500+ Vitest 文件，在单机 4 核 `ubuntu-latest` 上既会触发 `check:changed` 默认 `900s` 超时，也会因 CPU 争抢拖死 Chromium 浏览器测试；同时 `check:changed` 只跑变更文件同目录测试，会漏检此前增量 PR 留下的跨目录与跨包断言漂移。
+- **铁证**：① PR #15（`e745f9705e`，同步 512 个上游提交）在单机 `Fork CI` Run `45556033883` 第 15 分钟因 596 文件超时被杀、Run `45558482027` 跑满 35m11s；改为分片双模式后 Run `45565260782` 11 分钟内揪出 PR #12 遗留的 `UsageProviderChart.test.ts`（缺 `omp`）与 `pi_output.ts`（缺 `cost`/`reasoningOutputTokens`）以及上游新增的 `McpAppFrame.browser.test.tsx`（硬编码 `"T3 Code"`）；② PR #35（`73c12e6611`，同步 627 个上游提交）全量分片 CI Run `45984371300` 再次揪出两处此前增量 CI 漏网的跨文件回归：PR #21 新增 `planTier` 后 `packages/provider-muse/src/server/driver.ts` 的 `withLatestUsage` 未传全量 `report` 给 `makeUsageLimits` 导致 `driver.test.ts:212` 失败，以及 PR #30 在 `makeOmpRpcConnection` 的 `ready` 阶段新增 `set_subagent_subscription` / `set_ask_dialog` 握手但未同步更新 `apps/server` 下 4 个 `omp_transcript.ndjson` 导致 `OmpReplayFixtures.integration.test.ts` 全部 `PiReplayMismatchError`。已按 ≥ 2 次规则升级写入 `FORK.md` 硬条款。
+- **代码守卫**：`.github/workflows/fork-ci.yml`、`packages/shared/src/forkIdentity.guard.test.ts`、`packages/provider-muse/src/server/driver.test.ts`、`apps/server/src/orchestration-v2/testkit/OmpReplayFixtures.integration.test.ts`、`apps/web/src/components/chat/McpAppFrame.browser.test.tsx`、`apps/web/src/components/usage/UsageProviderChart.test.ts`、`apps/server/src/orchestration-v2/testkit/fixtures/simple/pi_output.ts`。
+- **Seen**：2（2026-11-25 PR #15；2026-11-27 PR #35）
 
 ## 12. `Fork Release` 不可用局部 `--filter` 安装配根级 `vp test run`，macOS 打包须用 `macos-26` 且在 Shell 内 `unset GITHUB_REPOSITORY`
 
