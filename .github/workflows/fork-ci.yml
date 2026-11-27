@@ -22,13 +22,25 @@ jobs:
     timeout-minutes: 5
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
+      needs_electron: ${{ steps.mode.outputs.needs_electron }}
+      needs_chromium: ${{ steps.mode.outputs.needs_chromium }}
+      needs_libsecret: ${{ steps.mode.outputs.needs_libsecret }}
     steps:
       - name: Checkout git history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          filter: blob:none
           sparse-checkout: |
             /package.json
+            /pnpm-workspace.yaml
+            /.github/scripts/ci-changes.cjs
+            /apps/*/package.json
+            /evals/package.json
+            /infra/*/package.json
+            /oxlint-plugin-t3code/package.json
+            /packages/*/package.json
+            /scripts/package.json
           sparse-checkout-cone-mode: false
 
       - name: Decide fast vs sharded mode
@@ -36,29 +48,56 @@ jobs:
         env:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
+          set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "mode=sharded" >> "$GITHUB_OUTPUT"
+            {
+              echo "mode=sharded"
+              echo "needs_electron=false"
+              echo "needs_chromium=false"
+              echo "needs_libsecret=false"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags origin lmx-lab:refs/remotes/origin/lmx-lab
+            git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags --filter=blob:none origin lmx-lab:refs/remotes/origin/lmx-lab
             BASE="$(git merge-base origin/lmx-lab HEAD)"
           else
             if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
               BASE="$BEFORE_SHA"
             else
-              echo "mode=sharded" >> "$GITHUB_OUTPUT"
+              {
+                echo "mode=sharded"
+                echo "needs_electron=false"
+                echo "needs_chromium=false"
+                echo "needs_libsecret=false"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
-          CHANGED="$(git diff --name-only "$BASE" HEAD)"
-          COUNT="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
+          CHANGED_FILE="$RUNNER_TEMP/changed.txt"
+          git diff --name-only "$BASE" HEAD | sed '/^$/d' > "$CHANGED_FILE"
+          COUNT="$(wc -l < "$CHANGED_FILE" | tr -d ' ')"
           echo "Changed files since ${BASE:0:10}: $COUNT"
-          if (( COUNT > 80 )) || printf '%s\n' "$CHANGED" | grep -Eq '^(vite\.config\.ts|package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml)$'; then
-            echo "mode=sharded" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=fast" >> "$GITHUB_OUTPUT"
-          fi
+          node - "$CHANGED_FILE" "$COUNT" "$GITHUB_OUTPUT" <<'NODE'
+          const fs = require("node:fs");
+          const { decide, readWorkspace } = require("./.github/scripts/ci-changes.cjs");
+          const [changedFile, countRaw, outputFile] = process.argv.slice(2);
+          const files = fs.readFileSync(changedFile, "utf8").split("\n").filter(Boolean);
+          const count = Number(countRaw);
+          const globalConfig = /^(vite\.config\.ts|package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|\.github\/workflows\/fork-ci\.yml)$/;
+          const { affected, outputs } = decide(files, readWorkspace(), false);
+          const everything = Boolean(outputs.test && outputs.test_packages === "");
+          const sharded = count > 80 || files.some((file) => globalConfig.test(file)) || everything;
+          const lines = [
+            `mode=${sharded ? "sharded" : "fast"}`,
+            `needs_electron=${affected.length > 0}`,
+            `needs_chromium=${Boolean(outputs.test_web || outputs.test_server)}`,
+            `needs_libsecret=${affected.includes("@t3tools/desktop")}`,
+          ];
+          console.log(`Affected packages (${affected.length}): ${affected.join(", ") || "none"}`);
+          console.log(lines.join(" "));
+          fs.appendFileSync(outputFile, `${lines.join("\n")}\n`);
+          NODE
 
   fast:
     name: Fast checks
@@ -73,36 +112,56 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          filter: blob:none
           sparse-checkout: |
             /*
             !/.repos/
             !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
           sparse-checkout-cone-mode: false
 
+      - name: Start installing desktop native test libraries
+        if: needs.plan.outputs.needs_libsecret == 'true'
+        run: |
+          (
+            set +e
+            sudo rm -f /var/lib/man-db/auto-update
+            sudo apt-get update -qq \
+              -o Acquire::Languages=none \
+              -o Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false \
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false &&
+              sudo apt-get install -y --no-install-recommends libsecret-1-dev pkg-config
+            echo "$?" > "$RUNNER_TEMP/apt-status"
+          ) > "$RUNNER_TEMP/apt.log" 2>&1 < /dev/null &
+
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
 
       - name: Cache Electron download
+        if: needs.plan.outputs.needs_electron == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
+        if: needs.plan.outputs.needs_electron == 'true'
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Resolve Playwright version
         id: playwright_version
+        if: needs.plan.outputs.needs_chromium == 'true'
         run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Chromium
         id: chromium_cache
+        if: needs.plan.outputs.needs_chromium == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
 
       - name: Install browser test dependencies
+        if: needs.plan.outputs.needs_chromium == 'true'
         run: |
           if [ "${{ steps.chromium_cache.outputs.cache-hit }}" != "true" ]; then
             node apps/web/node_modules/playwright/cli.js install --only-shell chromium
@@ -111,7 +170,14 @@ jobs:
           if [ -n "$browser" ] && ldd "$browser" | grep -q '=> not found'; then
             node apps/web/node_modules/playwright/cli.js install-deps chromium
           fi
-          sudo apt-get update -qq && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Finish installing desktop native test libraries
+        if: needs.plan.outputs.needs_libsecret == 'true'
+        timeout-minutes: 5
+        run: |
+          until test -s "$RUNNER_TEMP/apt-status"; do sleep 1; done
+          cat "$RUNNER_TEMP/apt.log"
+          exit "$(cat "$RUNNER_TEMP/apt-status")"
 
       - name: Run Fork invariant guard
         run: vp test run packages/shared/src/forkIdentity.guard.test.ts
@@ -119,7 +185,7 @@ jobs:
       - name: Check pull request changes
         if: github.event_name == 'pull_request'
         run: |
-          git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags origin lmx-lab:refs/remotes/origin/lmx-lab
+          git rev-parse --verify origin/lmx-lab >/dev/null 2>&1 || git fetch --no-tags --filter=blob:none origin lmx-lab:refs/remotes/origin/lmx-lab
           vp run check:changed origin/lmx-lab
 
       - name: Check changes pushed to lmx-lab
@@ -196,6 +262,19 @@ jobs:
             !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
           sparse-checkout-cone-mode: false
 
+      - name: Start installing native desktop test dependencies
+        run: |
+          (
+            set +e
+            sudo rm -f /var/lib/man-db/auto-update
+            sudo apt-get update -qq \
+              -o Acquire::Languages=none \
+              -o Acquire::IndexTargets::deb::DEP-11::DefaultEnabled=false \
+              -o Acquire::IndexTargets::deb::CNF::DefaultEnabled=false &&
+              sudo apt-get install -y --no-install-recommends libsecret-1-dev pkg-config
+            echo "$?" > "$RUNNER_TEMP/apt-status"
+          ) > "$RUNNER_TEMP/apt.log" 2>&1 < /dev/null &
+
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
         with:
@@ -210,17 +289,49 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
-      - name: Install native desktop test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y libsecret-1-dev pkg-config
+      - name: Finish installing native desktop test dependencies
+        timeout-minutes: 5
+        run: |
+          until test -s "$RUNNER_TEMP/apt-status"; do sleep 1; done
+          cat "$RUNNER_TEMP/apt.log"
+          exit "$(cat "$RUNNER_TEMP/apt-status")"
 
-      - name: Run non-web, non-server package tests
+      - name: Run non-web, non-server, non-mobile package tests
         run: |
           set -o pipefail
-          vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' test 2>&1 | python3 -u -c '
+          vp run --parallel --concurrency-limit 3 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/mobile' test 2>&1 | python3 -u -c '
           import sys
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
           '
+
+  test_mobile:
+    name: Test Mobile ${{ matrix.shard }}/2
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: false
+
+      - name: Test Mobile shard
+        run: vp run --filter @t3tools/mobile test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
   test_web:
     name: Test Web ${{ matrix.shard }}/3
@@ -323,7 +434,7 @@ jobs:
   check:
     name: Fork checks
     if: always() && github.repository == 'davidlokus/t3code-lmx'
-    needs: [plan, fast, static, test_packages, test_web, test_server]
+    needs: [plan, fast, static, test_packages, test_mobile, test_web, test_server]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -334,10 +445,11 @@ jobs:
           FAST_RESULT: ${{ needs.fast.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           PACKAGES_RESULT: ${{ needs.test_packages.result }}
+          MOBILE_RESULT: ${{ needs.test_mobile.result }}
           WEB_RESULT: ${{ needs.test_web.result }}
           SERVER_RESULT: ${{ needs.test_server.result }}
         run: |
-          echo "plan=$PLAN_RESULT mode=$MODE fast=$FAST_RESULT static=$STATIC_RESULT test_packages=$PACKAGES_RESULT test_web=$WEB_RESULT test_server=$SERVER_RESULT"
+          echo "plan=$PLAN_RESULT mode=$MODE fast=$FAST_RESULT static=$STATIC_RESULT test_packages=$PACKAGES_RESULT test_mobile=$MOBILE_RESULT test_web=$WEB_RESULT test_server=$SERVER_RESULT"
           if [[ "$PLAN_RESULT" != "success" ]]; then
             echo "Plan job failed ($PLAN_RESULT)" >&2
             exit 1
@@ -345,7 +457,7 @@ jobs:
           if [[ "$MODE" == "fast" ]]; then
             [[ "$FAST_RESULT" == "success" ]] || { echo "Fast checks did not succeed ($FAST_RESULT)" >&2; exit 1; }
           elif [[ "$MODE" == "sharded" ]]; then
-            for pair in "static:$STATIC_RESULT" "test_packages:$PACKAGES_RESULT" "test_web:$WEB_RESULT" "test_server:$SERVER_RESULT"; do
+            for pair in "static:$STATIC_RESULT" "test_packages:$PACKAGES_RESULT" "test_mobile:$MOBILE_RESULT" "test_web:$WEB_RESULT" "test_server:$SERVER_RESULT"; do
               name="${pair%%:*}"
               res="${pair#*:}"
               if [[ "$res" != "success" ]]; then

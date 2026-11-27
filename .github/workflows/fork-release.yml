@@ -46,6 +46,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          filter: blob:none
           sparse-checkout: |
             /*
             !/.repos/
@@ -60,7 +61,7 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin lmx-lab:refs/remotes/origin/lmx-lab
+          git fetch --no-tags --filter=blob:none origin lmx-lab:refs/remotes/origin/lmx-lab
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             TAG="$GITHUB_REF_NAME"
             DRY_RUN="false"
@@ -243,6 +244,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          filter: blob:none
           sparse-checkout: |
             /FORK.md
           sparse-checkout-cone-mode: false
