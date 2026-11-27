@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { forkIdentity, isForkDesktopProtocol } from "./forkIdentity.ts";
+import { isDoNotTrackEnabled, isRelayTracingEnabled } from "./otelEnvironment.ts";
 
 const readRepoFile = (relativePath: string) =>
   Effect.gen(function* () {
@@ -230,5 +231,74 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         "openspec/** and .agents/skills/** changes must stay inert in ci-changes.cjs",
       );
     }),
+  );
+
+  it.effect(
+    "keeps upstream telemetry, PostHog ingest, Axiom tracing, and agent feedback disabled by default",
+    () =>
+      Effect.gen(function* () {
+        assert.isFalse(isRelayTracingEnabled({}));
+        assert.isTrue(isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }));
+        assert.isFalse(
+          isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true", DO_NOT_TRACK: "1" }),
+        );
+        assert.isTrue(isDoNotTrackEnabled({ DO_NOT_TRACK: "1" }));
+        assert.isFalse(isDoNotTrackEnabled({ DO_NOT_TRACK: "0" }));
+
+        const analyticsSource = yield* readRepoFile(
+          "apps/server/src/telemetry/AnalyticsService.ts",
+        );
+        assert.notInclude(
+          analyticsSource,
+          "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m",
+          "official T3 PostHog key must not be bundled in T3 Lab",
+        );
+        assert.notInclude(
+          analyticsSource,
+          "https://ingest.t3.codes",
+          "official T3 ingest host must not be bundled as a default in T3 Lab",
+        );
+        assert.include(
+          analyticsSource,
+          'Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false))',
+          "T3CODE_TELEMETRY_ENABLED must default to false",
+        );
+        assert.include(
+          analyticsSource,
+          "isDoNotTrackEnabled",
+          "AnalyticsService must honor DO_NOT_TRACK",
+        );
+
+        const serverEnvSource = yield* readRepoFile(
+          "apps/server/src/environment/ServerEnvironment.ts",
+        );
+        assert.match(serverEnvSource, /\bagentFeedback:\s*false\b/);
+        assert.notMatch(serverEnvSource, /\bagentFeedback:\s*true\b/);
+
+        const onboardingSource = yield* readRepoFile(
+          "apps/web/src/components/cloud/ConnectOnboardingDialog.tsx",
+        );
+        assert.notMatch(onboardingSource, /publishAgentActivity.*useState\(true\)/);
+        assert.notInclude(onboardingSource, "setPublishAgentActivity(true)");
+
+        const mobileAppConfig = yield* readRepoFile("apps/mobile/app.config.ts");
+        assert.notInclude(
+          mobileAppConfig,
+          "https://api.axiom.co/v1/traces",
+          "mobile config must not fall back to the upstream Axiom endpoint",
+        );
+
+        const mobileDiagnostics = yield* readRepoFile(
+          "apps/mobile/src/features/observability/diagnosticsSetting.ts",
+        );
+        assert.include(mobileDiagnostics, "preferences.connectionTracesEnabled === true");
+        assert.notInclude(mobileDiagnostics, "preferences.connectionTracesEnabled !== false");
+
+        const mobileObserve = yield* readRepoFile(
+          "apps/mobile/src/features/observability/observe.ts",
+        );
+        assert.include(mobileObserve, "preferences.crashReportsEnabled === true");
+        assert.notInclude(mobileObserve, "preferences.crashReportsEnabled !== false");
+      }),
   );
 });

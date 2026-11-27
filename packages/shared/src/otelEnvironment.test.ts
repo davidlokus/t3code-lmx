@@ -387,44 +387,82 @@ describe("OtelEnvironment", () => {
 });
 
 describe("isRelayTracingEnabled", () => {
-  it("defaults on and respects the T3CODE SDK override of the standard kill switch", () => {
-    assert.isTrue(OtelEnvironment.isRelayTracingEnabled({}));
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ OTEL_SDK_DISABLED: "true" }));
+  it("defaults off, requires explicit opt-in, and honors DO_NOT_TRACK and SDK kill switches", () => {
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({}));
+    assert.isTrue(OtelEnvironment.isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }));
+    assert.isFalse(
+      OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
+        DO_NOT_TRACK: "1",
+      }),
+    );
+    assert.isFalse(
+      OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
+        DO_NOT_TRACK: " true ",
+      }),
+    );
     assert.isTrue(
       OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
+        DO_NOT_TRACK: "0",
+      }),
+    );
+    assert.isFalse(
+      OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
+        OTEL_SDK_DISABLED: "true",
+      }),
+    );
+    assert.isTrue(
+      OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
         OTEL_SDK_DISABLED: "true",
         T3CODE_OTEL_SDK_DISABLED: "false",
       }),
     );
     assert.isFalse(
       OtelEnvironment.isRelayTracingEnabled({
+        T3CODE_TELEMETRY_ENABLED: "true",
         OTEL_SDK_DISABLED: "false",
         T3CODE_OTEL_SDK_DISABLED: "true",
       }),
     );
   });
 
-  it.effect("product opt-out beats SDK enable without disabling user-configured tracing", () =>
-    Effect.gen(function* () {
-      const env = {
-        T3CODE_TELEMETRY_ENABLED: "false",
-        T3CODE_OTEL_SDK_DISABLED: "false",
-        OTEL_SDK_DISABLED: "true",
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://user.example.test/v1/traces",
-      };
-      assert.isFalse(OtelEnvironment.isRelayTracingEnabled(env));
+  it("recognizes standard truthy DO_NOT_TRACK spellings", () => {
+    for (const value of ["1", "true", "TRUE", " yes ", "on", "y"]) {
+      assert.isTrue(OtelEnvironment.isDoNotTrackEnabled({ DO_NOT_TRACK: value }), value);
+    }
+    for (const value of [undefined, "", "0", "false", "no", "off", "n"]) {
+      assert.isFalse(OtelEnvironment.isDoNotTrackEnabled({ DO_NOT_TRACK: value }), String(value));
+    }
+  });
 
-      const otel = yield* load(env);
-      assert.isFalse(otel.disabled);
-      assert.deepStrictEqual(
-        otel.traces,
-        OtelEnvironment.OtelSignal.Export({
-          url: env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
-          variable: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-          protocol: "http/protobuf",
-          headers: undefined,
-        }),
-      );
-    }),
+  it.effect(
+    "product opt-out and DO_NOT_TRACK beat SDK enable without disabling user-configured tracing",
+    () =>
+      Effect.gen(function* () {
+        const env = {
+          T3CODE_TELEMETRY_ENABLED: "false",
+          DO_NOT_TRACK: "1",
+          T3CODE_OTEL_SDK_DISABLED: "false",
+          OTEL_SDK_DISABLED: "true",
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://user.example.test/v1/traces",
+        };
+        assert.isFalse(OtelEnvironment.isRelayTracingEnabled(env));
+
+        const otel = yield* load(env);
+        assert.isFalse(otel.disabled);
+        assert.deepStrictEqual(
+          otel.traces,
+          OtelEnvironment.OtelSignal.Export({
+            url: env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+            variable: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            protocol: "http/protobuf",
+            headers: undefined,
+          }),
+        );
+      }),
   );
 });

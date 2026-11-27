@@ -166,9 +166,10 @@ function CrashReportsSetting() {
   const [saving, setSaving] = useState(false);
   const gt = useGT();
   const ready = AsyncResult.isSuccess(preferences) && !preferences.waiting;
+  // fork: match opt-in default for mobile crash reports
   const enabled = AsyncResult.isSuccess(preferences)
-    ? preferences.value.crashReportsEnabled !== false
-    : true;
+    ? preferences.value.crashReportsEnabled === true
+    : false;
 
   const change = (value: boolean) => {
     setSaving(true);
