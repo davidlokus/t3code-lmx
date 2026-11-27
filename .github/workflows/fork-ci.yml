@@ -296,14 +296,38 @@ jobs:
           cat "$RUNNER_TEMP/apt.log"
           exit "$(cat "$RUNNER_TEMP/apt-status")"
 
-      - name: Run non-web, non-server, non-mobile package tests
+      - name: Run remaining workspace package tests
         run: |
           set -o pipefail
-          vp run --parallel --concurrency-limit 3 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/mobile' test 2>&1 | python3 -u -c '
+          vp run --parallel --concurrency-limit 2 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/mobile' --filter '!@t3tools/client-runtime' test 2>&1 | python3 -u -c '
           import sys
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
           '
+
+  test_client_runtime:
+    name: Test Client Runtime
+    needs: plan
+    if: github.repository == 'davidlokus/t3code-lmx' && needs.plan.outputs.mode == 'sharded'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          save-pnpm-store: false
+
+      - name: Test Client Runtime
+        run: vp run --filter @t3tools/client-runtime test
 
   test_mobile:
     name: Test Mobile ${{ matrix.shard }}/2
@@ -434,7 +458,8 @@ jobs:
   check:
     name: Fork checks
     if: always() && github.repository == 'davidlokus/t3code-lmx'
-    needs: [plan, fast, static, test_packages, test_mobile, test_web, test_server]
+    needs:
+      [plan, fast, static, test_packages, test_client_runtime, test_mobile, test_web, test_server]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -445,11 +470,12 @@ jobs:
           FAST_RESULT: ${{ needs.fast.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           PACKAGES_RESULT: ${{ needs.test_packages.result }}
+          CLIENT_RUNTIME_RESULT: ${{ needs.test_client_runtime.result }}
           MOBILE_RESULT: ${{ needs.test_mobile.result }}
           WEB_RESULT: ${{ needs.test_web.result }}
           SERVER_RESULT: ${{ needs.test_server.result }}
         run: |
-          echo "plan=$PLAN_RESULT mode=$MODE fast=$FAST_RESULT static=$STATIC_RESULT test_packages=$PACKAGES_RESULT test_mobile=$MOBILE_RESULT test_web=$WEB_RESULT test_server=$SERVER_RESULT"
+          echo "plan=$PLAN_RESULT mode=$MODE fast=$FAST_RESULT static=$STATIC_RESULT test_packages=$PACKAGES_RESULT test_client_runtime=$CLIENT_RUNTIME_RESULT test_mobile=$MOBILE_RESULT test_web=$WEB_RESULT test_server=$SERVER_RESULT"
           if [[ "$PLAN_RESULT" != "success" ]]; then
             echo "Plan job failed ($PLAN_RESULT)" >&2
             exit 1
@@ -457,7 +483,7 @@ jobs:
           if [[ "$MODE" == "fast" ]]; then
             [[ "$FAST_RESULT" == "success" ]] || { echo "Fast checks did not succeed ($FAST_RESULT)" >&2; exit 1; }
           elif [[ "$MODE" == "sharded" ]]; then
-            for pair in "static:$STATIC_RESULT" "test_packages:$PACKAGES_RESULT" "test_mobile:$MOBILE_RESULT" "test_web:$WEB_RESULT" "test_server:$SERVER_RESULT"; do
+            for pair in "static:$STATIC_RESULT" "test_packages:$PACKAGES_RESULT" "test_client_runtime:$CLIENT_RUNTIME_RESULT" "test_mobile:$MOBILE_RESULT" "test_web:$WEB_RESULT" "test_server:$SERVER_RESULT"; do
               name="${pair%%:*}"
               res="${pair#*:}"
               if [[ "$res" != "success" ]]; then
