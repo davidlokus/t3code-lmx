@@ -120,10 +120,8 @@ export const MuseDriver: ProviderDriver<
                 ...(report.authLabel
                   ? { auth: { ...provider.auth, label: report.authLabel } }
                   : {}),
-                usageLimits: makeUsageLimits({
-                  checkedAt: report.checkedAt,
-                  windows: report.windows,
-                }),
+                // fork: Preserve optional account metadata (e.g. planTier) across snapshot refreshes.
+                usageLimits: makeUsageLimits(report),
               }
             : provider,
         ),
