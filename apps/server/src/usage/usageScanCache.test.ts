@@ -100,7 +100,12 @@ describe("scan cache round trip", () => {
       mtimeMs: 300,
       provider: "grok",
       records: [
-        record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
+        record({
+          provider: "grok",
+          model: "grok-4.5-build",
+          modelCalls: 8,
+          dedupeKey: "s:p:grok-4.5-build",
+        }),
         record({ provider: "grok", model: "<synthetic>", dedupeKey: "s:p:<synthetic>" }),
       ],
       tailRecords: [record({ provider: "grok", model: "<synthetic>", dedupeKey: null })],
@@ -376,11 +381,52 @@ describe("scan cache round trip", () => {
     expect([...restored.keys()]).toEqual(providers);
     for (const provider of providers) {
       const cached = restored.get(provider);
-      expect(cached?.size).toBe(provider === "grok" ? 400 : -1);
-      expect(cached?.position.resumeOffset).toBe(provider === "grok" ? 200 : 0);
+      expect(cached?.size).toBe(-1);
+      expect(cached?.position.resumeOffset).toBe(0);
       expect(cached?.records[0]?.totals.outputTokens).toBe(5);
       expect(cached?.records[0]?.cwd).toBeUndefined();
     }
+  });
+
+  it("migrates legacy fork v18 caches (slot 14 cwdIndex) without corrupting modelCalls", () => {
+    const legacyForkV18 = {
+      version: 18,
+      models: ["claude-fable-5", "grok-4.5-build"],
+      sessions: ["session-a"],
+      cwds: ["/work/repo"],
+      files: {
+        "/claude.jsonl": {
+          s: 400,
+          m: 200,
+          p: "claude",
+          r: [[1_786_000_000_000, 0, 0, 2, 3, 4, 5, 1, null, 0.02, 0, null, null, 0, 0]],
+          t: [],
+          mr: 0,
+          o: 200,
+          gl: 64,
+          gh: 0xdeadbeef,
+          cs: null,
+        },
+        "/grok.jsonl": {
+          s: 400,
+          m: 200,
+          p: "grok",
+          r: [[1_786_000_000_000, 1, 0, 2, 3, 4, 5, 1, null, 0.02, 0]],
+          t: [],
+          mr: 0,
+          o: 200,
+          gl: 64,
+          gh: 0xdeadbeef,
+          cs: null,
+        },
+      },
+    };
+    const restored = decodeScanCache(legacyForkV18, TEST_FORMAT_MAP);
+    expect(restored.get("/claude.jsonl")?.size).toBe(400);
+    expect(restored.get("/claude.jsonl")?.records[0]?.cwd).toBe("/work/repo");
+    expect(restored.get("/claude.jsonl")?.records[0]?.modelCalls).toBeUndefined();
+    expect(restored.get("/grok.jsonl")?.size).toBe(-1);
+    expect(restored.get("/grok.jsonl")?.position.resumeOffset).toBe(0);
   });
 
   it.each(["s:p:grok-4.5", "s:p:1786000000000:grok-4.5"])(

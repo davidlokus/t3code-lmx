@@ -1,6 +1,6 @@
-// T3 ingest retains events and forwards to PostHog; UUIDs deduplicate retries there.
+// T3 ingest retains events and deduplicates retries by UUID.
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { isDoNotTrackEnabled } from "@t3tools/shared/otelEnvironment";
+import { isDoNotTrackSet } from "@t3tools/shared/otelEnvironment";
 import type { ClientOs } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
@@ -69,8 +69,8 @@ function retryDelayMs(failures: number, random: number): number {
 
 // fork: disable official T3/PostHog analytics by default, strip upstream ingest defaults, and honor DO_NOT_TRACK
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.String("T3CODE_POSTHOG_KEY").pipe(Config.withDefault("")),
-  posthogHost: Config.String("T3CODE_POSTHOG_HOST").pipe(Config.withDefault("")),
+  ingestKey: Config.String("T3CODE_TELEMETRY_KEY").pipe(Config.withDefault("")),
+  ingestHost: Config.String("T3CODE_TELEMETRY_HOST").pipe(Config.withDefault("")),
   enabled: Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false)),
   doNotTrack: Config.String("DO_NOT_TRACK").pipe(Config.withDefault("")),
   flushBatchSize: Config.Number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
@@ -79,6 +79,31 @@ const TelemetryEnvConfig = Config.all({
   ),
   wslDistroName: Config.String("WSL_DISTRO_NAME").pipe(Config.option),
 });
+
+// Users name or import their own distros, so only well-known families are reported.
+const WSL_DISTRO_FAMILIES = [
+  ["ubuntu", "Ubuntu"],
+  ["debian", "Debian"],
+  ["kali", "Kali"],
+  ["opensuse", "openSUSE"],
+  ["suse", "SUSE"],
+  ["sles", "SUSE"],
+  ["oraclelinux", "OracleLinux"],
+  ["almalinux", "AlmaLinux"],
+  ["rockylinux", "RockyLinux"],
+  ["fedora", "Fedora"],
+  ["archlinux", "Arch"],
+  ["alpine", "Alpine"],
+  ["nixos", "NixOS"],
+  ["pengwin", "Pengwin"],
+  ["docker-desktop", "docker-desktop"],
+] as const;
+
+export const wslDistroFamily = (distroName: string): string | undefined => {
+  const name = distroName.trim().toLowerCase();
+  if (name === "") return undefined;
+  return WSL_DISTRO_FAMILIES.find(([prefix]) => name.startsWith(prefix))?.[1] ?? "other";
+};
 
 export class AnalyticsService extends Context.Service<
   AnalyticsService,
@@ -130,7 +155,6 @@ const disabledAnalyticsService = AnalyticsService.of({
 });
 
 /** @public */
-/** @public */
 export const make = Effect.gen(function* () {
   const telemetryConfig = yield* TelemetryEnvConfig;
   const hostEnvironment = yield* HostProcess.Environment;
@@ -138,17 +162,17 @@ export const make = Effect.gen(function* () {
   // A managed policy can switch analytics off over the environment, never on.
   const policyAllows =
     ManagedPolicy.deniedBy(yield* ManagedPolicy.ManagedPolicy, "telemetry") === undefined;
-  const posthogKey = telemetryConfig.posthogKey.trim();
-  const posthogHost = telemetryConfig.posthogHost.trim();
-  const hasExplicitEndpoint = posthogKey.length > 0 && posthogHost.length > 0;
-  const dntFromConfig = isDoNotTrackEnabled({ DO_NOT_TRACK: telemetryConfig.doNotTrack });
+  const ingestKey = telemetryConfig.ingestKey.trim();
+  const ingestHost = telemetryConfig.ingestHost.trim();
+  const hasExplicitEndpoint = ingestKey.length > 0 && ingestHost.length > 0;
+  const dntFromConfig = isDoNotTrackSet({ DO_NOT_TRACK: telemetryConfig.doNotTrack });
   // fork: short-circuit to a zero-IO no-op when disabled so anonymous-id is never created and no flush fiber runs
   if (!hasExplicitEndpoint || !telemetryConfig.enabled || !policyAllows || dntFromConfig) {
     return disabledAnalyticsService;
   }
   // A cached PATH does not establish consent from the current login shell.
   const telemetryEnabled = Effect.suspend(() => {
-    if (isDoNotTrackEnabled(hostEnvironment)) return Effect.succeed(false);
+    if (isDoNotTrackSet(hostEnvironment)) return Effect.succeed(false);
     if (!awaitingShellConsent) return Effect.succeed(true);
     if (hostEnvironment.T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING === "1")
       return Effect.succeed(false);
@@ -184,6 +208,9 @@ export const make = Effect.gen(function* () {
   const clientType = serverConfig.mode === "desktop" ? "desktop-app" : "cli-web-client";
   const hostPlatform = yield* HostProcess.Platform;
   const hostArchitecture = yield* HostProcess.Architecture;
+  const wslDistro = Option.getOrUndefined(
+    Option.flatMapNullishOr(telemetryConfig.wslDistroName, wslDistroFamily),
+  );
 
   const enqueueBufferedEvent = (
     uuid: string,
@@ -225,7 +252,7 @@ export const make = Effect.gen(function* () {
     if (!(yield* telemetryEnabled) || !distinctId) return;
 
     const payload = {
-      api_key: posthogKey,
+      api_key: ingestKey,
       batch: events.map((event) => ({
         uuid: event.uuid,
         event: event.event,
@@ -242,14 +269,14 @@ export const make = Effect.gen(function* () {
               ...(installId === null ? {} : { installId }),
               $process_person_profile: false,
               platform: hostPlatform,
-              wsl: Option.getOrUndefined(telemetryConfig.wslDistroName),
+              wsl: wslDistro,
               arch: hostArchitecture,
               t3CodeVersion: packageJson.version,
               telemetryChannel: ServerConfig.telemetryChannel,
               clientType,
               serverOs: serverOsFromNodePlatform(hostPlatform),
               serverArch: hostArchitecture,
-              serverWslDistro: Option.getOrUndefined(telemetryConfig.wslDistroName),
+              serverWslDistro: wslDistro,
               serverAppVersion: packageJson.version,
               serverMode: serverConfig.mode,
             },
@@ -257,7 +284,7 @@ export const make = Effect.gen(function* () {
       })),
     };
 
-    yield* HttpClientRequest.post(`${posthogHost}/batch/`).pipe(
+    yield* HttpClientRequest.post(`${ingestHost}/batch/`).pipe(
       HttpClientRequest.bodyJson(payload),
       Effect.flatMap(httpClient.execute),
       Effect.flatMap(HttpClientResponse.filterStatusOk),

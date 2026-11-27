@@ -28,7 +28,7 @@ import {
 import { OmpSettings } from "@t3tools/provider-omp/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import { antigravityWindowLimitsModel, hubRoutes } from "@t3tools/shared/usageLimits";
+import { hubRoutes } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -594,7 +594,10 @@ export const make = Effect.gen(function* () {
       checkedAt,
     } as const;
     const finish = (
-      result: Pick<UsageLimitSourceSnapshot, "accounts" | "quotaAccounts" | "error">,
+      result: Pick<
+        UsageLimitSourceSnapshot,
+        "accounts" | "quotaAccounts" | "unreadProviders" | "error"
+      >,
       cacheTarget = target,
       scope?: string,
     ): SourceReading => ({
@@ -679,7 +682,14 @@ export const make = Effect.gen(function* () {
           yield* Effect.logDebug("usage limit source read failed", { id, cause: accounts.failure });
           return finish({ accounts: [], error: accounts.failure.detail }, credentialedTarget);
         }
-        return finish({ accounts: accounts.success }, credentialedTarget);
+        const { unreadProviders } = accounts.success;
+        return finish(
+          {
+            accounts: accounts.success.accounts,
+            ...(unreadProviders.length > 0 ? { unreadProviders } : {}),
+          },
+          credentialedTarget,
+        );
       }
     }
   });
@@ -1037,10 +1047,7 @@ export function hubPoolResetAt(
     // An unread account may be the one still blocked, so its refill is unknown.
     if (account.usageLimits.unavailable) return null;
     const spent = account.usageLimits.windows.filter(
-      (window) =>
-        window.usedPercent >= 100 &&
-        windowLimitsModel(window, model) &&
-        (account.driver !== "antigravity" || antigravityWindowLimitsModel(window, model)),
+      (window) => window.usedPercent >= 100 && windowLimitsModel(window, model),
     );
     if (spent.length === 0) return null;
     const resets = spent.map((window) => Date.parse(window.resetsAt ?? ""));

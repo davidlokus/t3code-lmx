@@ -10,7 +10,8 @@ import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import { mergeUsageCopies } from "./usageAggregation.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-const USAGE_SCAN_CACHE_VERSION = 18 as const;
+// fork: bump to v19 to unify upstream v18 modelCalls (slot 14) with fork cwdIndex (slot 15) without misreading existing fork v18 caches.
+const USAGE_SCAN_CACHE_VERSION = 19 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
@@ -18,8 +19,9 @@ const SPEED_COMPATIBLE_SINCE_VERSION = 4;
  * replace it, dropping saved usage for deleted transcripts. Separate files keep
  * the newer one; older files are removed once it is saved.
  */
-export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v18.json";
+export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v19.json";
 export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+  "usage-scan-cache-v18.json",
   "usage-scan-cache-v17.json",
   "usage-scan-cache-v16.json",
   "usage-scan-cache-v15.json",
@@ -68,6 +70,7 @@ type SerializedRecord = readonly [
   rateModelIndex?: number | null,
   unresolvedServiceTierTurnId?: string | null,
   cacheCreation1hTokens?: number,
+  modelCalls?: number,
   cwdIndex?: number | null,
 ];
 
@@ -143,13 +146,20 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
       ? ([
           record.unresolvedServiceTierTurnId ?? null,
           record.cacheCreation1hTokens ?? 0,
+          record.modelCalls !== undefined && record.modelCalls > 1 ? record.modelCalls : 1,
           intern(tables.cwds, tables.cwdIndex, record.cwd),
         ] as const)
-      : record.cacheCreation1hTokens !== undefined
-        ? ([record.unresolvedServiceTierTurnId ?? null, record.cacheCreation1hTokens] as const)
-        : record.unresolvedServiceTierTurnId !== undefined
-          ? ([record.unresolvedServiceTierTurnId] as const)
-          : ([] as const)),
+      : record.modelCalls !== undefined && record.modelCalls > 1
+        ? ([
+            record.unresolvedServiceTierTurnId ?? null,
+            record.cacheCreation1hTokens ?? 0,
+            record.modelCalls,
+          ] as const)
+        : record.cacheCreation1hTokens !== undefined
+          ? ([record.unresolvedServiceTierTurnId ?? null, record.cacheCreation1hTokens] as const)
+          : record.unresolvedServiceTierTurnId !== undefined
+            ? ([record.unresolvedServiceTierTurnId] as const)
+            : ([] as const)),
   ];
   return {
     s: entry.size,
@@ -227,6 +237,8 @@ export function decodeScanCache(
   const models = root.models as readonly string[];
   const sessions = root.sessions as readonly string[];
   const cwds = root.cwds;
+  // Legacy fork v18 caches stored cwdIndex in slot 14 (without modelCalls); upstream v18 stored modelCalls there.
+  const isLegacyForkV18 = version === 18 && cwds !== undefined;
 
   // Reject entire corrupt entries; partial survivors would appear warm and hide usage until the file changes.
   const decodeRecords = (
@@ -251,8 +263,11 @@ export function decodeScanCache(
         rateModelIndex,
         unresolvedServiceTierTurnId,
         cacheCreation1h = 0,
-        cwdIndex,
+        rawSlot14,
+        rawSlot15,
       ] = row as SerializedRecord;
+      const modelCalls = isLegacyForkV18 ? 1 : (rawSlot14 ?? 1);
+      const cwdIndex = isLegacyForkV18 ? rawSlot14 : rawSlot15;
       const speed = typeof speedIndex === "number" ? SPEEDS[speedIndex] : undefined;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
@@ -264,6 +279,9 @@ export function decodeScanCache(
         model === undefined ||
         (unresolvedServiceTierTurnId != null && typeof unresolvedServiceTierTurnId !== "string") ||
         !Number.isFinite(cacheCreation1h) ||
+        typeof modelCalls !== "number" ||
+        !Number.isFinite(modelCalls) ||
+        modelCalls < 0 ||
         (rateModelIndex != null && rateModel === undefined) ||
         (cwdIndex != null && cwd === undefined) ||
         !Number.isFinite(uncached) ||
@@ -280,6 +298,7 @@ export function decodeScanCache(
       // parser cannot remove their previously saved local placeholders.
       if (provider === "claude" && model === CLAUDE_SYNTHETIC_MODEL) continue;
 
+      const calls = Math.trunc(modelCalls);
       records.push({
         provider,
         timestampMs,
@@ -297,6 +316,7 @@ export function decodeScanCache(
         ...(cacheCreation1h > 0 ? { cacheCreation1hTokens: cacheCreation1h } : {}),
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
         speed,
+        ...(calls > 1 ? { modelCalls: calls } : {}),
         ...(version >= 7 && unresolvedServiceTierTurnId != null
           ? { unresolvedServiceTierTurnId }
           : {}),
@@ -353,13 +373,14 @@ export function decodeScanCache(
     ) {
       continue;
     }
-    // Keep history for deleted rollouts, but re-parse incompatible reducer state.
-    // v17 keys Grok turns by time, restoring turns previously dropped as repeats.
-    // v18 re-reads transcript headers and trailing titles, preserving rows for deleted files.
+    // Keep history for deleted rollouts, but re-parse incompatible reducer state:
+    // v13 1h cache writes, v14 Codex ledgers, v15 rewound Codex counters,
+    // v17 time-keyed Grok turns, v18 fork cwd/titles + upstream Grok modelCalls,
+    // v19 unified modelCalls + cwd layout.
     const legacy =
-      (version < 18 &&
+      ((version < 18 || (version === 18 && cwds === undefined)) &&
         (entry.p === "claude" || entry.p === "codex" || entry.p === "omp" || entry.p === "pi")) ||
-      (entry.p === "grok" && version < 17) ||
+      (entry.p === "grok" && (version < 18 || isLegacyForkV18)) ||
       (format.state !== undefined && version < 6);
     // A corrupt state disqualifies the entry: resuming with it would attach
     // appended usage to the wrong model or replay fork-copied history.

@@ -318,13 +318,37 @@ export const load: Effect.Effect<OtelEnvironment> = Config.all({
   Effect.orDie,
 );
 
-// fork: honor the cross-tool DO_NOT_TRACK convention alongside T3CODE_TELEMETRY_ENABLED
-export const isDoNotTrackEnabled = (env: Readonly<Record<string, string | undefined>>): boolean =>
+// Variables CI services set on their runners. `CI=false` or `CI=0` means not CI.
+const CI_VARIABLES = [
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITLAB_CI",
+  "CIRCLECI",
+  "TRAVIS",
+  "BUILDKITE",
+  "JENKINS_URL",
+  "TEAMCITY_VERSION",
+  "TF_BUILD",
+  "BITBUCKET_BUILD_NUMBER",
+  "CODEBUILD_BUILD_ID",
+  "DRONE",
+  "APPVEYOR",
+] as const;
+
+/** CI runs are not installs, so telemetry is off there unless `T3CODE_TELEMETRY_ENABLED` says otherwise. */
+export const isCiEnvironment = (env: Readonly<Record<string, string | undefined>>) =>
+  CI_VARIABLES.some((name) => {
+    const value = env[name]?.trim().toLowerCase();
+    return value !== undefined && value !== "" && value !== "false" && value !== "0";
+  });
+
+/** The cross-tool `DO_NOT_TRACK=1` convention turns off product analytics and relay tracing. */
+export const isDoNotTrackSet = (env: Readonly<Record<string, string | undefined>>): boolean =>
   T3CODE_TRUE.includes(env.DO_NOT_TRACK?.trim().toLowerCase() ?? "");
 
 // fork: default relay tracing off unless explicitly opted in and not blocked by DO_NOT_TRACK
 export const isRelayTracingEnabled = (env: Readonly<Record<string, string | undefined>>) =>
-  !isDoNotTrackEnabled(env) &&
+  !isDoNotTrackSet(env) &&
   Config.all({
     ...sdkFlags,
     telemetry: flag("T3CODE_TELEMETRY_ENABLED", T3CODE_TRUE, T3CODE_FALSE, String),

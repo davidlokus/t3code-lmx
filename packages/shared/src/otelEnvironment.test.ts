@@ -386,6 +386,19 @@ describe("OtelEnvironment", () => {
   });
 });
 
+describe("isCiEnvironment", () => {
+  it("treats a set CI variable as CI, except empty, false, and 0", () => {
+    assert.isFalse(OtelEnvironment.isCiEnvironment({}));
+    assert.isTrue(OtelEnvironment.isCiEnvironment({ CI: "1" }));
+    assert.isTrue(OtelEnvironment.isCiEnvironment({ TF_BUILD: "True" }));
+    assert.isTrue(OtelEnvironment.isCiEnvironment({ BITBUCKET_BUILD_NUMBER: "42" }));
+    for (const value of ["", " ", "false", "FALSE", "0"]) {
+      assert.isFalse(OtelEnvironment.isCiEnvironment({ CI: value }), `CI=${value}`);
+    }
+    assert.isTrue(OtelEnvironment.isCiEnvironment({ CI: "false", GITLAB_CI: "true" }));
+  });
+});
+
 describe("isRelayTracingEnabled", () => {
   it("defaults off, requires explicit opt-in, and honors DO_NOT_TRACK and SDK kill switches", () => {
     assert.isFalse(OtelEnvironment.isRelayTracingEnabled({}));
@@ -432,11 +445,22 @@ describe("isRelayTracingEnabled", () => {
 
   it("recognizes standard truthy DO_NOT_TRACK spellings", () => {
     for (const value of ["1", "true", "TRUE", " yes ", "on", "y"]) {
-      assert.isTrue(OtelEnvironment.isDoNotTrackEnabled({ DO_NOT_TRACK: value }), value);
+      assert.isTrue(OtelEnvironment.isDoNotTrackSet({ DO_NOT_TRACK: value }), value);
     }
     for (const value of [undefined, "", "0", "false", "no", "off", "n"]) {
-      assert.isFalse(OtelEnvironment.isDoNotTrackEnabled({ DO_NOT_TRACK: value }), String(value));
+      assert.isFalse(OtelEnvironment.isDoNotTrackSet({ DO_NOT_TRACK: value }), String(value));
     }
+  });
+
+  it("is off on a CI runner unless T3CODE_TELEMETRY_ENABLED turns it on", () => {
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ CI: "true" }));
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ JENKINS_URL: "https://ci.example" }));
+    assert.isTrue(
+      OtelEnvironment.isRelayTracingEnabled({ CI: "true", T3CODE_TELEMETRY_ENABLED: "true" }),
+    );
+    assert.isFalse(
+      OtelEnvironment.isRelayTracingEnabled({ CI: "true", T3CODE_TELEMETRY_ENABLED: "false" }),
+    );
   });
 
   it.effect(

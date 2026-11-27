@@ -123,7 +123,6 @@ const LOGIN_SHELL_ENV_NAMES = [
   "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS",
   "T3CODE_TELEMETRY_ENABLED",
-  // fork: capture DO_NOT_TRACK from the user's login shell
   "DO_NOT_TRACK",
   "T3CODE_FEATURE_FLAGS",
   "T3CODE_RELEASE_BASE_URL",
@@ -462,11 +461,10 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
     if (!config.env.FNM_MULTISHELL_PATH && profile.FNM_MULTISHELL_PATH) {
       config.env.FNM_MULTISHELL_PATH = profile.FNM_MULTISHELL_PATH;
     }
-    if (!config.env.T3CODE_TELEMETRY_ENABLED && profile.T3CODE_TELEMETRY_ENABLED) {
-      config.env.T3CODE_TELEMETRY_ENABLED = profile.T3CODE_TELEMETRY_ENABLED;
-    }
-    if (!config.env.DO_NOT_TRACK && profile.DO_NOT_TRACK) {
-      config.env.DO_NOT_TRACK = profile.DO_NOT_TRACK;
+    for (const name of ["T3CODE_TELEMETRY_ENABLED", "DO_NOT_TRACK"] as const) {
+      if (!config.env[name] && profile[name]) {
+        config.env[name] = profile[name];
+      }
     }
     return Boolean(noProfile.PATH && profile.PATH);
   },
