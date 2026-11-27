@@ -120,10 +120,8 @@ export const MuseDriver: ProviderDriver<
                 ...(report.authLabel
                   ? { auth: { ...provider.auth, label: report.authLabel } }
                   : {}),
-                usageLimits: makeUsageLimits({
-                  checkedAt: report.checkedAt,
-                  windows: report.windows,
-                }),
+                // fork: Preserve optional account metadata (e.g. planTier) across snapshot refreshes.
+                usageLimits: makeUsageLimits(report),
               }
             : provider,
         ),
@@ -133,6 +131,7 @@ export const MuseDriver: ProviderDriver<
       resolveProviderMaintenanceCapabilitiesEffect(museMaintenance, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnvironment,
+        npmCacheDir: path.join(host.paths.providerStatusCacheDir, "npm"),
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),

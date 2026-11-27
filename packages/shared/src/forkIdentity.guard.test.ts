@@ -8,7 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { forkIdentity, isForkDesktopProtocol } from "./forkIdentity.ts";
-import { isDoNotTrackEnabled, isRelayTracingEnabled } from "./otelEnvironment.ts";
+import { isDoNotTrackSet, isRelayTracingEnabled } from "./otelEnvironment.ts";
 
 const readRepoFile = (relativePath: string) =>
   Effect.gen(function* () {
@@ -242,8 +242,8 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         assert.isFalse(
           isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true", DO_NOT_TRACK: "1" }),
         );
-        assert.isTrue(isDoNotTrackEnabled({ DO_NOT_TRACK: "1" }));
-        assert.isFalse(isDoNotTrackEnabled({ DO_NOT_TRACK: "0" }));
+        assert.isTrue(isDoNotTrackSet({ DO_NOT_TRACK: "1" }));
+        assert.isFalse(isDoNotTrackSet({ DO_NOT_TRACK: "0" }));
 
         const analyticsSource = yield* readRepoFile(
           "apps/server/src/telemetry/AnalyticsService.ts",
@@ -265,7 +265,7 @@ it.layer(NodeServices.layer)("T3 Lab (Extend) fork invariants", (it) => {
         );
         assert.include(
           analyticsSource,
-          "isDoNotTrackEnabled",
+          "isDoNotTrackSet",
           "AnalyticsService must honor DO_NOT_TRACK",
         );
 

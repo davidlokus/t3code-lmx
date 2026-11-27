@@ -1,6 +1,10 @@
 import { T, Var, useGT, useMessages } from "gt-react";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
-import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationV2ProjectedTurnItem,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import {
   isJsonToolText,
   toolCallLines,
@@ -15,6 +19,9 @@ import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { ExternalLinkIcon } from "lucide-react";
 import { memo, type ReactNode, Suspense, use } from "react";
 
+import { canOpenLinksInApp, resolveLinkTarget } from "../../browser/browserLinkTarget";
+import { useOpenLink } from "../../browser/useOpenLink";
+import { useClientSettings } from "../../hooks/useSettings";
 import { useRenderedAppearance } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
@@ -31,6 +38,7 @@ import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ShellCommandBlock } from "./ShellCommandBlock";
 import { useInitialOutputReady, type TurnItemSource } from "./timelineRowContext";
+import { formatFileChangeLine } from "./V2ItemInspector.logic";
 
 interface V2ItemInspectorProps {
   readonly onInitialOutputReady?: (() => void) | undefined;
@@ -197,6 +205,41 @@ export function FetchedToolOutput(props: {
   );
 }
 
+function WebSearchResultLink(props: {
+  readonly href: string;
+  readonly threadRef: ScopedThreadRef;
+  readonly children: ReactNode;
+}) {
+  const openLink = useOpenLink(props.threadRef);
+  // Subscribe so the synchronous _blank decision sees hydrated settings, as ChatMarkdown does.
+  const linkTargetPreference = useClientSettings((settings) => settings.browserLinkTarget);
+  return (
+    <a
+      href={props.href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 font-medium text-foreground hover:underline"
+      onClick={(event) => {
+        if (
+          resolveLinkTarget({
+            url: props.href,
+            event,
+            preference: linkTargetPreference,
+            canOpenInApp: canOpenLinksInApp(props.threadRef),
+          }) !== "app"
+        ) {
+          return;
+        }
+        event.preventDefault();
+        void openLink(props.href, { event }).catch(console.error);
+      }}
+    >
+      {props.children}
+      <ExternalLinkIcon className="size-3" />
+    </a>
+  );
+}
+
 function ToolCallBody(
   props: ToolOutputState & {
     readonly command?: string;
@@ -333,11 +376,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
             <ul className="space-y-1 font-mono text-muted-foreground">
               {item.changes.map((change) => (
                 <li key={JSON.stringify([change.operation, change.oldPath, change.path])}>
-                  {change.operation} {change.oldPath ? `${change.oldPath} → ` : ""}
-                  {formatWorkspaceRelativePath(change.path, props.workspaceRoot)}
-                  {change.fileType || change.mimeType
-                    ? ` (${[change.fileType, change.mimeType].filter(Boolean).join(", ")})`
-                    : ""}
+                  {formatFileChangeLine(change, props.workspaceRoot)}
                 </li>
               ))}
             </ul>
@@ -372,15 +411,15 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
             return (
               <li key={JSON.stringify(result)}>
                 {safeHref ? (
-                  <a
+                  <WebSearchResultLink
                     href={safeHref}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 font-medium text-foreground hover:underline"
+                    threadRef={{
+                      environmentId: props.environmentId,
+                      threadId: props.projectedItem.sourceThreadId,
+                    }}
                   >
                     {result.title ?? result.url}
-                    <ExternalLinkIcon className="size-3" />
-                  </a>
+                  </WebSearchResultLink>
                 ) : (
                   <p className="font-medium text-foreground">
                     {result.title ?? result.url ?? gt("Search result")}

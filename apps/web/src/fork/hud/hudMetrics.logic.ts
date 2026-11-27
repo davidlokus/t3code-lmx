@@ -22,6 +22,7 @@ import {
   type ResourceTelemetrySourceStatus,
   type ServerProvider,
   type ServerProviderUsageLimits,
+  type ServerProviderUsageWindow,
   type ThreadId,
   type ProviderTurnId,
   type ServerSettings,
@@ -35,7 +36,6 @@ import {
 } from "@t3tools/shared/modelReferencePricing";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import {
-  antigravityWindowLimitsModel,
   collectLimitAccounts,
   collectLimitPools,
   displayLimitWindows,
@@ -1855,6 +1855,20 @@ function parseOmpModelSubprovider(model: string | null | undefined): {
   const subprovider = trimmed.slice(0, slashIndex).trim().toLowerCase();
   const bareModel = trimmed.slice(slashIndex + 1).trim();
   return subprovider && bareModel ? { subprovider, bareModel } : null;
+}
+
+function antigravityQuotaFamily(id: string) {
+  if (!id.startsWith("gemini")) return "shared";
+  return id.includes("argon") ? "argon" : id.includes("carbon") ? "carbon" : "gemini";
+}
+
+function antigravityWindowLimitsModel(
+  window: Pick<ServerProviderUsageWindow, "id">,
+  model: string | null,
+): boolean {
+  const base = model?.slice(model.lastIndexOf("/") + 1);
+  if (base === undefined || !/^(gemini|claude|gpt)/.test(base)) return true;
+  return antigravityQuotaFamily(window.id) === antigravityQuotaFamily(base);
 }
 
 function filterLimitsForSubproviderModel(
