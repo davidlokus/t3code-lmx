@@ -416,6 +416,7 @@ function wireUsageMocks(options?: {
     label: "Workstation",
     isPending: false,
     canReadDiagnostics: true,
+    accessRequests: [],
     isConnected: true,
     error: null,
     summary,
@@ -815,6 +816,7 @@ describe("UsageDashboard", () => {
           label: "Workstation",
           isPending: true,
           canReadDiagnostics: true,
+          accessRequests: [],
           isConnected: true,
           error: null,
           summary: null,
@@ -826,6 +828,7 @@ describe("UsageDashboard", () => {
           label: "Workstation",
           isPending: true,
           canReadDiagnostics: true,
+          accessRequests: [],
           isConnected: true,
           error: null,
           summary: null,
@@ -872,6 +875,7 @@ describe("UsageDashboard", () => {
           label: "Workstation",
           isPending: false,
           canReadDiagnostics: true,
+          accessRequests: [],
           isConnected: true,
           error: "This environment could not report usage.",
           summary: null,
@@ -883,6 +887,7 @@ describe("UsageDashboard", () => {
           label: "Workstation",
           isPending: false,
           canReadDiagnostics: true,
+          accessRequests: [],
           isConnected: true,
           error: "This environment could not report usage.",
           summary: null,
@@ -948,6 +953,7 @@ describe("UsageDashboard", () => {
       label: "Workstation",
       isPending: false,
       canReadDiagnostics: true,
+      accessRequests: [],
       isConnected: false,
       error: null,
       summary: withFastAndOffline,
@@ -1082,6 +1088,7 @@ describe("UsageDashboard", () => {
               label: "Primary Host",
               isPending: true,
               canReadDiagnostics: true,
+              accessRequests: [],
               isConnected: true,
               error: "This environment could not report usage.",
               rejectedOversizedHourlyWindow: true,
@@ -1093,6 +1100,7 @@ describe("UsageDashboard", () => {
               label: "Primary Host",
               isPending: false,
               canReadDiagnostics: true,
+              accessRequests: [],
               isConnected: true,
               error: null,
               hasFreshModernSummary: true,
@@ -1105,6 +1113,7 @@ describe("UsageDashboard", () => {
           label: "Old Peer",
           isPending: false,
           canReadDiagnostics: true,
+          accessRequests: [],
           isConnected: true,
           error: legacyPeerRejected ? "This environment could not report usage." : null,
           ...(legacyPeerRejected ? { rejectedOversizedHourlyWindow: true } : {}),
@@ -1173,5 +1182,58 @@ describe("UsageDashboard", () => {
       useUsageOptionsStore.getState().resetUsageUiOptions();
       vi.restoreAllMocks();
     }
+  });
+
+  it("prompts for agent usage access before rendering usage data when an environment has unanswered access requests", async () => {
+    await page.viewport(1360, 960);
+    globalThis.localStorage.removeItem(USAGE_UI_OPTIONS_STORAGE_KEY);
+    useUsageOptionsStore.getState().resetUsageUiOptions();
+    vi.mocked(useUsage).mockReset();
+    vi.mocked(useUsageComparison).mockReset();
+    vi.mocked(useUsageComparison).mockReturnValue({ merged: null, isPending: false });
+
+    const emptyMerged = mergeUsage([], USAGE_CONTRACT_VERSION);
+    const pendingAccessEnv: EnvironmentUsageStatus = {
+      environmentId: ENV_ID,
+      label: "Workstation",
+      isPending: false,
+      canReadDiagnostics: true,
+      accessRequests: [
+        {
+          instanceId: ProviderInstanceId.make("claude-main"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          provider: "claude",
+          paths: ["/home/dev/.claude"],
+        },
+      ],
+      isConnected: true,
+      error: null,
+      summary: null,
+    };
+    vi.mocked(useUsage).mockReturnValue({
+      merged: emptyMerged,
+      environments: [pendingAccessEnv],
+      selectedEnvironments: [pendingAccessEnv],
+      excludedLegacyEnvironments: [],
+      answeredEnvironmentIds: new Set(),
+      hasEligibleAnswer: false,
+      eligibleHasLegacyServer: false,
+      detectedLegacyEnvironmentIds: new Set(),
+      isStaleScope: false,
+      isPending: false,
+      shown: null,
+      isPartial: false,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <UsagePage />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByRole("heading", { name: "Show agent usage?" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Allow", exact: true })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Don't allow" })).toBeVisible();
   });
 });

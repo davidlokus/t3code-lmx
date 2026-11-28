@@ -731,7 +731,7 @@ export const make = Effect.gen(function* () {
         readSource(id as UsageLimitSourceId, config).pipe(
           Effect.map((reading) => ({ id, config, reading })),
         ),
-      { concurrency: 4 },
+      { concurrency: "unbounded" },
     );
     // fork: Only read local claude-swap backup cache when explicitly opted in via server settings.
     let claudeSwapReading: SourceReading | undefined;

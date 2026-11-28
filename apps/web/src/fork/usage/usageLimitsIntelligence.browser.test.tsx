@@ -144,6 +144,7 @@ function installUsageMock(
     label: spec.label,
     isConnected: true,
     canReadDiagnostics: true,
+    accessRequests: [],
     summary,
     error: null,
     isPending: false,

@@ -211,6 +211,7 @@ function makeEnv(
     label,
     isPending: false,
     canReadDiagnostics: true,
+    accessRequests: [],
     isConnected: true,
     error: null,
     summary,
