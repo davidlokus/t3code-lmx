@@ -22,10 +22,7 @@ import {
   resolveThreadActivityTimestamp,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import {
-  formatWorkingDurationLabel,
-  resolveThreadProviderStack,
-} from "@t3tools/client-runtime/state/models";
+import { formatWorkingDurationLabel } from "@t3tools/client-runtime/state/models";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import {
@@ -127,6 +124,10 @@ import { InlineButton } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import {
+  SidebarThreadHostPressureIcon,
+  SidebarThreadHostPressureLine,
+} from "./SidebarThreadHostPressure";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
 import { observeVisibleAnimation } from "~/lib/visibleAnimation";
@@ -256,22 +257,22 @@ function renderSidebarProviderVisual(input: {
   entry: SidebarProviderEntry | null;
   runtimeProviderName?: string | null | undefined;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
-  muted?: boolean;
 }) {
   if (input.entry !== null) {
-    const showInstanceBadge =
-      !input.muted &&
-      shouldShowInstanceBadge(input.entry, input.providerEntryByInstanceId.values());
+    const showInstanceBadge = shouldShowInstanceBadge(
+      input.entry,
+      input.providerEntryByInstanceId.values(),
+    );
     return (
       <ProviderInstanceIcon
         driverKind={input.entry.driverKind}
         displayName={input.entry.displayName}
-        accentColor={input.muted ? undefined : input.entry.accentColor}
+        accentColor={input.entry.accentColor}
         acpRegistryAgentId={input.entry.acpRegistryAgentId}
         acpRegistryIconUrl={input.entry.acpRegistryIconUrl}
         showBadge={showInstanceBadge}
-        size={input.muted ? "default" : "compact"}
-        iconClassName={input.muted ? "size-3 opacity-35 grayscale" : "opacity-75"}
+        size="compact"
+        iconClassName="opacity-75"
       />
     );
   }
@@ -285,8 +286,8 @@ function renderSidebarProviderVisual(input: {
       <ProviderInstanceIcon
         driverKind={fallback.inferredDriverKind}
         displayName={fallback.displayName}
-        size={input.muted ? "default" : "compact"}
-        iconClassName={input.muted ? "size-3 opacity-35 grayscale" : "opacity-75"}
+        size="compact"
+        iconClassName="opacity-75"
       />
     );
   }
@@ -294,48 +295,28 @@ function renderSidebarProviderVisual(input: {
     <span
       data-testid="sidebar-provider-fallback-monogram"
       aria-label={fallback.displayName}
-      className={cn(
-        "inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm bg-muted text-5xs font-semibold tracking-tight text-muted-foreground",
-        input.muted && "size-3 opacity-45 grayscale",
-      )}
+      className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm bg-muted text-5xs font-semibold tracking-tight text-muted-foreground"
     >
       {fallback.fallbackInitials}
     </span>
   );
 }
 
-function SidebarProviderStack(props: {
+function SidebarProviderIcon(props: {
   thread: SidebarThreadSummary;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
 }) {
-  const stack = resolveThreadProviderStack(props.thread);
-  const currentInstanceId = stack[stack.length - 1]!;
+  const currentInstanceId =
+    props.thread.runtime?.providerInstanceId ?? props.thread.modelSelection.instanceId;
   const currentEntry = props.providerEntryByInstanceId.get(currentInstanceId) ?? null;
-  const current = renderSidebarProviderVisual({
-    instanceId: currentInstanceId,
-    entry: currentEntry,
-    runtimeProviderName: props.thread.runtime?.providerName,
-    providerEntryByInstanceId: props.providerEntryByInstanceId,
-  });
-  if (stack.length === 1) {
-    return <span className="inline-flex shrink-0 items-center">{current}</span>;
-  }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5">
-      {stack.slice(0, -1).map((instanceId) => {
-        const entry = props.providerEntryByInstanceId.get(instanceId) ?? null;
-        return (
-          <span key={instanceId} className="inline-flex items-center">
-            {renderSidebarProviderVisual({
-              instanceId,
-              entry,
-              providerEntryByInstanceId: props.providerEntryByInstanceId,
-              muted: true,
-            })}
-          </span>
-        );
+    <span className="inline-flex shrink-0 items-center">
+      {renderSidebarProviderVisual({
+        instanceId: currentInstanceId,
+        entry: currentEntry,
+        runtimeProviderName: props.thread.runtime?.providerName,
+        providerEntryByInstanceId: props.providerEntryByInstanceId,
       })}
-      <span className="relative z-10 inline-flex items-center">{current}</span>
     </span>
   );
 }
@@ -427,6 +408,7 @@ function SidebarThreadTooltip({
             <MiddleTruncate value={formatWorktreePathForDisplay(worktreePath)} className="flex" />
           </div>
         ) : null}
+        <SidebarThreadHostPressureLine environmentId={thread.environmentId} threadId={thread.id} />
         {branchMismatch ? (
           <div className="flex min-w-0 items-start gap-2 text-warning">
             <CircleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
@@ -723,6 +705,7 @@ type SidebarThreadRowProps = {
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
+  onPin: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
@@ -789,6 +772,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     onThreadClick,
     onUnsettle,
     onUnsnooze,
+    onPin,
     onUnpin,
     readOpensPullRequestsInRightPanel,
     renamingTitle,
@@ -909,7 +893,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isUnread,
     isWoke,
   });
-  const topStatus =
+  const runStatus =
     status === "preparing" || status === "working"
       ? {
           label:
@@ -970,6 +954,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           className: "text-success-foreground",
                         }
                       : null;
+  const topStatus =
+    status === "connecting" || status === "reconnecting" || status === "offline"
+      ? {
+          label:
+            status === "connecting"
+              ? gt("Connecting")
+              : status === "reconnecting"
+                ? gt("Reconnecting")
+                : gt("Offline"),
+          icon: "connection" as const,
+          className: "text-muted-foreground",
+        }
+      : runStatus;
   const isWokeSignal = rightSignal.kind === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1083,6 +1080,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     event.preventDefault();
     event.stopPropagation();
     onUnsnooze(threadRef);
+  };
+  const handlePinClick = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onPin(threadRef);
   };
   const handleUnpinClick = (event: ReactMouseEvent) => {
     event.preventDefault();
@@ -1347,6 +1349,28 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       />
     )
   ) : null;
+  const pinButton =
+    !props.isPinned && props.pinningSupported && canOperateThread && !sortable?.isDragging ? (
+      <SharedTooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={gt("Pin thread")}
+            onClick={handlePinClick}
+            // sr-only, not hidden: a display:none button drops out of the Tab order
+            // once the pointer leaves, so keyboard users could never reach it.
+            className="sr-only inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:not-sr-only focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring group-any-hover/sidebar-row:not-sr-only group-focus-visible/sidebar-row:not-sr-only"
+          />
+        }
+        label={<T>Pin thread</T>}
+      >
+        <PinIcon aria-hidden className="size-3 shrink-0" />
+      </SharedTooltipTrigger>
+    ) : null;
+
+  const hostPressureIcon = (
+    <SidebarThreadHostPressureIcon environmentId={thread.environmentId} threadId={thread.id} />
+  );
 
   const diff = latestRunDiff(thread);
   // fork: smart row-2 metadata slots, worktree-without-branch fallback, and single-line collapse
@@ -1376,7 +1400,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   });
   const metaLineEmpty = !showSecondRow;
   const providerStackNode = (
-    <SidebarProviderStack
+    <SidebarProviderIcon
       thread={thread}
       providerEntryByInstanceId={props.providerEntryByInstanceId}
     />
@@ -1500,6 +1524,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   {title}
                   {!renderFolderSecondRow ? titleLineIcons : null}
                   {pinIndicator}
+                  {hostPressureIcon}
                   {isRegeneratingTitle ? (
                     <span role="status" className="sr-only">
                       <T>Regenerating title</T>
@@ -1652,6 +1677,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {providerStackNode}
               </span>
               {pinIndicator}
+              {hostPressureIcon}
               {terminalStatusIcon}
               {issueBadge}
               {isRegeneratingTitle ? (
@@ -1807,6 +1833,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 <ProjectFavicon project={props.project} className="size-3.5 shrink-0" />
               ) : null}
               {pinIndicator}
+              {pinButton}
+              {hostPressureIcon}
               {title}
               {titleLineIcons}
               {isRegeneratingTitle ? (
@@ -1907,6 +1935,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {/* Left of the status slot, the pin would slide when hover swaps the
                   label for the wider row controls. */}
                 {pinIndicator}
+                {pinButton}
+                {hostPressureIcon}
                 {props.projectDisplayName ? (
                   <span
                     className={cn(

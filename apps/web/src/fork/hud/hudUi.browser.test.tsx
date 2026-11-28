@@ -881,6 +881,7 @@ describe("T3 Lab right-side Thread HUD", () => {
           onUpdateProjectScript={scriptResult}
           onDeleteProjectScript={scriptResult}
           usage={usage}
+          taskList={null}
         />
       </ChatCanvasContext>,
     );

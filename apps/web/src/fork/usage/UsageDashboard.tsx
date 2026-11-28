@@ -40,6 +40,7 @@ import { ChatGptUsageButton } from "~/components/settings/ChatGptUsageButton";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Skeleton } from "~/components/ui/skeleton";
+import { UsageAccessQuestion, type UsageAccessPrompt } from "~/components/usage/UsageAccessDialog";
 import { UsageModelDialog } from "~/components/usage/UsageModelDialog";
 import { UsagePriceOverrides } from "~/components/usage/UsagePriceOverrides";
 import {
@@ -480,6 +481,14 @@ export function UsageDashboard() {
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
   );
+  const accessPrompts: UsageAccessPrompt[] = selectedEnvironments.flatMap((environment) =>
+    environment.accessRequests.map((request) => ({
+      environmentId: environment.environmentId,
+      environmentLabel: environment.label,
+      instanceId: request.instanceId,
+      driver: request.driver,
+    })),
+  );
   const connectedEnvironmentIds = new Set(
     selectedEnvironments
       .filter((environment) => environment.isConnected)
@@ -553,7 +562,7 @@ export function UsageDashboard() {
           if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
             return refreshUsageLimits(
               environmentId,
-              () => refreshProviders({ environmentId, input: {} }),
+              () => refreshProviders({ environmentId, input: { limitsOnly: true } }),
               automatic,
             );
           }
@@ -851,7 +860,9 @@ export function UsageDashboard() {
 
         <ScrollArea className="min-h-0 flex-1" observeContent>
           <div className="mx-auto flex w-full max-w-none flex-col gap-5 px-5 pt-5 pb-12 sm:px-6">
-            {selectedEnvironments.length === 0 ? (
+            {accessPrompts.length > 0 ? (
+              <UsageAccessQuestion prompts={accessPrompts} />
+            ) : selectedEnvironments.length === 0 ? (
               <p className="py-12 text-center text-sm text-muted-foreground">
                 {environments.length === 0
                   ? showingLimits

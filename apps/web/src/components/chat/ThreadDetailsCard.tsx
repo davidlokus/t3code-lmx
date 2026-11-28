@@ -81,11 +81,11 @@ export function ThreadDetailsCard({
     const measure = () => {
       const frame = element.closest<HTMLElement>("[data-thread-details-card]");
       const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
-      // PR and issue lists, servers, repositories, lineage, side chats and automations scroll as they grow.
+      // PR and issue lists, servers, repositories, tasks, lineage, side chats and automations scroll as they grow.
       // Counting them toward density would hide the section and workspace controls when the user asks to see more.
       const lists = element.querySelectorAll<HTMLElement>(
         // fork: exclude T3 Lab HUD sections from density-collapse measurement so Workspace/Git stay visible
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-details-issue-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-details-repository-overflow], [data-thread-hud-panel]",
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-details-issue-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-details-repository-overflow], [data-thread-details-task-list], [data-thread-hud-panel]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
